@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "posmobile",
-    "slug": "posmobile",
+    "name": "IgoroTech POS",
+    "slug": "igorotech-pos",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

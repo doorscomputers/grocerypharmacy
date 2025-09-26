@@ -1,0 +1,297 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Alert,
+} from 'react-native';
+import {
+  Card,
+  Title,
+  Button,
+  DataTable,
+  IconButton,
+  Portal,
+  Dialog,
+  TextInput,
+  Paragraph,
+  Chip,
+  useTheme,
+} from 'react-native-paper';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { StackNavigationProp } from '@react-navigation/stack';
+import { RootStackParamList } from '../App';
+import { DatabaseService } from '../database/DatabaseService';
+import { User } from '../database/schema';
+import { useAuth } from '../contexts/AuthContext';
+import { RoleGuard } from '../components/RoleGuard';
+import { PermissionService } from '../utils/permissions';
+
+type UserManagementScreenNavigationProp = StackNavigationProp<
+  RootStackParamList,
+  'UserManagement'
+>;
+
+type Props = {
+  navigation: UserManagementScreenNavigationProp;
+};
+
+export default function UserManagementScreen({ navigation }: Props) {
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dialogVisible, setDialogVisible] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [newUser, setNewUser] = useState({
+    username: '',
+    full_name: '',
+    role: 'CASHIER' as 'ADMIN' | 'CASHIER' | 'MANAGER',
+    password: '',
+  });
+  const theme = useTheme();
+  const { user: currentUser } = useAuth();
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  const loadUsers = async () => {
+    try {
+      setLoading(true);
+      const dbService = DatabaseService.getInstance();
+      const fetchedUsers = await dbService.getUsers();
+      setUsers(fetchedUsers as User[]);
+    } catch (error) {
+      console.error('Error loading users:', error);
+      Alert.alert('Error', 'Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateUser = async () => {
+    if (!newUser.username || !newUser.full_name || !newUser.password) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    try {
+      const dbService = DatabaseService.getInstance();
+      await dbService.createUser({
+        username: newUser.username,
+        full_name: newUser.full_name,
+        role: newUser.role,
+        password_hash: `$2b$10$demo_hash_${newUser.password}`, // In production, properly hash the password
+      });
+
+      setDialogVisible(false);
+      setNewUser({ username: '', full_name: '', role: 'CASHIER', password: '' });
+      loadUsers();
+      Alert.alert('Success', 'User created successfully');
+    } catch (error) {
+      console.error('Error creating user:', error);
+      Alert.alert('Error', 'Failed to create user');
+    }
+  };
+
+  const handleToggleUserStatus = async (user: User) => {
+    try {
+      const dbService = DatabaseService.getInstance();
+      await dbService.updateUser(user.id, { is_active: !user.is_active });
+      loadUsers();
+    } catch (error) {
+      console.error('Error updating user status:', error);
+      Alert.alert('Error', 'Failed to update user status');
+    }
+  };
+
+  const getRoleColor = (role: string) => {
+    switch (role) {
+      case 'ADMIN':
+        return theme.colors.error;
+      case 'MANAGER':
+        return theme.colors.primary;
+      case 'CASHIER':
+        return theme.colors.outline;
+      default:
+        return theme.colors.outline;
+    }
+  };
+
+  return (
+    <RoleGuard permission="MANAGE_USERS">
+      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <View style={styles.header}>
+          <Title style={styles.title}>User Management</Title>
+          <Button
+            mode="contained"
+            onPress={() => setDialogVisible(true)}
+            icon="account-plus"
+            style={styles.addButton}
+          >
+            Add User
+          </Button>
+        </View>
+
+        <ScrollView style={styles.content}>
+          <Card style={styles.card}>
+            <Card.Content>
+              <DataTable>
+                <DataTable.Header>
+                  <DataTable.Title>Username</DataTable.Title>
+                  <DataTable.Title>Full Name</DataTable.Title>
+                  <DataTable.Title>Role</DataTable.Title>
+                  <DataTable.Title>Status</DataTable.Title>
+                  <DataTable.Title>Actions</DataTable.Title>
+                </DataTable.Header>
+
+                {users.map((user) => (
+                  <DataTable.Row key={user.id}>
+                    <DataTable.Cell>{user.username}</DataTable.Cell>
+                    <DataTable.Cell>{user.full_name}</DataTable.Cell>
+                    <DataTable.Cell>
+                      <Chip
+                        textStyle={{ color: 'white' }}
+                        style={{ backgroundColor: getRoleColor(user.role) }}
+                        compact
+                      >
+                        {PermissionService.getRoleDisplayName(user.role as any)}
+                      </Chip>
+                    </DataTable.Cell>
+                    <DataTable.Cell>
+                      <Chip
+                        mode={user.is_active ? 'outlined' : 'flat'}
+                        textStyle={{
+                          color: user.is_active ? theme.colors.primary : theme.colors.error
+                        }}
+                        compact
+                      >
+                        {user.is_active ? 'Active' : 'Inactive'}
+                      </Chip>
+                    </DataTable.Cell>
+                    <DataTable.Cell>
+                      <IconButton
+                        icon={user.is_active ? 'account-cancel' : 'account-check'}
+                        size={20}
+                        onPress={() => handleToggleUserStatus(user)}
+                        disabled={user.id === currentUser?.id}
+                      />
+                    </DataTable.Cell>
+                  </DataTable.Row>
+                ))}
+              </DataTable>
+
+              {users.length === 0 && !loading && (
+                <View style={styles.emptyState}>
+                  <Paragraph style={styles.emptyText}>No users found</Paragraph>
+                </View>
+              )}
+            </Card.Content>
+          </Card>
+        </ScrollView>
+
+        <Portal>
+          <Dialog visible={dialogVisible} onDismiss={() => setDialogVisible(false)}>
+            <Dialog.Title>Add New User</Dialog.Title>
+            <Dialog.Content>
+              <TextInput
+                label="Username"
+                value={newUser.username}
+                onChangeText={(text) => setNewUser({ ...newUser, username: text })}
+                mode="outlined"
+                style={styles.dialogInput}
+                autoCapitalize="none"
+              />
+              <TextInput
+                label="Full Name"
+                value={newUser.full_name}
+                onChangeText={(text) => setNewUser({ ...newUser, full_name: text })}
+                mode="outlined"
+                style={styles.dialogInput}
+              />
+              <TextInput
+                label="Password"
+                value={newUser.password}
+                onChangeText={(text) => setNewUser({ ...newUser, password: text })}
+                mode="outlined"
+                secureTextEntry
+                style={styles.dialogInput}
+              />
+              <View style={styles.roleSelector}>
+                <Paragraph>Role:</Paragraph>
+                <View style={styles.roleChips}>
+                  {(['CASHIER', 'MANAGER', 'ADMIN'] as const).map((role) => (
+                    <Chip
+                      key={role}
+                      selected={newUser.role === role}
+                      onPress={() => setNewUser({ ...newUser, role })}
+                      style={styles.roleChip}
+                      textStyle={{ color: newUser.role === role ? 'white' : undefined }}
+                    >
+                      {PermissionService.getRoleDisplayName(role)}
+                    </Chip>
+                  ))}
+                </View>
+              </View>
+            </Dialog.Content>
+            <Dialog.Actions>
+              <Button onPress={() => setDialogVisible(false)}>Cancel</Button>
+              <Button mode="contained" onPress={handleCreateUser}>
+                Create User
+              </Button>
+            </Dialog.Actions>
+          </Dialog>
+        </Portal>
+      </SafeAreaView>
+    </RoleGuard>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  addButton: {
+    elevation: 2,
+  },
+  content: {
+    flex: 1,
+    padding: 16,
+  },
+  card: {
+    elevation: 4,
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  emptyText: {
+    fontSize: 16,
+    opacity: 0.6,
+  },
+  dialogInput: {
+    marginBottom: 16,
+  },
+  roleSelector: {
+    marginTop: 8,
+  },
+  roleChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  roleChip: {
+    marginRight: 8,
+    marginBottom: 8,
+  },
+});

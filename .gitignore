@@ -39,3 +39,24 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Claude configuration
+.claude/
+
+# Database and debug files
+*.db
+*.sqlite
+debug-db.js
+clear-data.js
+clear-data.sql
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# OS specific
+Thumbs.db
