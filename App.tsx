@@ -29,6 +29,15 @@ import PhysicalCountReportScreen from './screens/PhysicalCountReportScreen';
 import DatabaseViewerScreen from './screens/DatabaseViewerScreen';
 import UserManagementScreen from './screens/UserManagementScreen';
 import PermissionManagementScreen from './screens/PermissionManagementScreen';
+import TestDataScreen from './screens/TestDataScreen';
+import SupplierManagementScreen from './screens/SupplierManagementScreen';
+import PurchaseOrderScreen from './screens/PurchaseOrderScreen';
+import SupplierPaymentsScreen from './screens/SupplierPaymentsScreen';
+import DamagedItemsScreen from './screens/DamagedItemsScreen';
+import DamagedItemsHistoryScreen from './screens/DamagedItemsHistoryScreen';
+import InventoryMovementsScreen from './screens/InventoryMovementsScreen';
+import CustomerManagementScreen from './screens/CustomerManagementScreen';
+import CustomerPaymentsScreen from './screens/CustomerPaymentsScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -44,6 +53,15 @@ export type RootStackParamList = {
   DatabaseViewer: undefined;
   UserManagement: undefined;
   PermissionManagement: undefined;
+  TestData: undefined;
+  SupplierManagement: undefined;
+  PurchaseOrder: undefined;
+  SupplierPayments: undefined;
+  DamagedItems: undefined;
+  DamagedItemsHistory: undefined;
+  InventoryMovements: undefined;
+  CustomerManagement: undefined;
+  CustomerPayments: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -255,6 +273,51 @@ export default function App() {
               name="PermissionManagement"
               component={PermissionManagementScreen}
               options={{ title: 'Permission Management' }}
+            />
+            <Stack.Screen
+              name="TestData"
+              component={TestDataScreen}
+              options={{ title: 'Test Data Generator' }}
+            />
+            <Stack.Screen
+              name="SupplierManagement"
+              component={SupplierManagementScreen}
+              options={{ title: 'Supplier Management' }}
+            />
+            <Stack.Screen
+              name="PurchaseOrder"
+              component={PurchaseOrderScreen}
+              options={{ title: 'Purchase Orders' }}
+            />
+            <Stack.Screen
+              name="SupplierPayments"
+              component={SupplierPaymentsScreen}
+              options={{ title: 'Supplier Payments' }}
+            />
+            <Stack.Screen
+              name="DamagedItems"
+              component={DamagedItemsScreen}
+              options={{ title: 'Damaged Items' }}
+            />
+            <Stack.Screen
+              name="DamagedItemsHistory"
+              component={DamagedItemsHistoryScreen}
+              options={{ title: 'Damage History & Reports' }}
+            />
+            <Stack.Screen
+              name="InventoryMovements"
+              component={InventoryMovementsScreen}
+              options={{ title: 'Inventory Movements' }}
+            />
+            <Stack.Screen
+              name="CustomerManagement"
+              component={CustomerManagementScreen}
+              options={{ title: 'Customer Management' }}
+            />
+            <Stack.Screen
+              name="CustomerPayments"
+              component={CustomerPaymentsScreen}
+              options={{ title: 'Customer Payments' }}
             />
           </Stack.Navigator>
         </NavigationContainer>

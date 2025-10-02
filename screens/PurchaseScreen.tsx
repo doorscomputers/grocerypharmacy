@@ -77,7 +77,7 @@ export default function PurchaseScreen({ navigation }: Props) {
   const loadProducts = async () => {
     try {
       const dbService = DatabaseService.getInstance();
-      const rawProductList = await dbService.getProducts();
+      const rawProductList = await dbService.getProducts(true); // Only active products for purchasing
       setProducts(rawProductList as Product[]);
     } catch (error) {
       console.error('Error loading products:', error);

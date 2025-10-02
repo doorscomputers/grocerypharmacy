@@ -23,6 +23,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { DatabaseService } from '../database/DatabaseService';
+import { DatabaseBackupService } from '../utils/DatabaseBackupService';
+import { useAuth } from '../contexts/AuthContext';
 
 type SettingsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -60,6 +62,7 @@ export default function SettingsScreen({ navigation }: Props) {
   } | null>(null);
   const [tempValue, setTempValue] = useState('');
   const theme = useTheme();
+  const { user } = useAuth();
 
   useEffect(() => {
     loadSettings();
@@ -121,19 +124,129 @@ export default function SettingsScreen({ navigation }: Props) {
   };
 
   const handleBackup = async () => {
-    Alert.alert(
-      'Backup Database',
-      'Export database backup feature would be implemented here.',
-      [{ text: 'OK' }]
-    );
+    try {
+      setLoading(true);
+      const backupService = DatabaseBackupService.getInstance();
+
+      Alert.alert(
+        'Create Backup',
+        'This will create a backup file of all your data. Continue?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Backup',
+            onPress: async () => {
+              try {
+                const backupPath = await backupService.createBackup();
+                await backupService.shareBackup(backupPath);
+                Alert.alert('Success', 'Database backup created and shared successfully!');
+              } catch (error) {
+                console.error('Backup failed:', error);
+                Alert.alert('Error', `Backup failed: ${error}`);
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      Alert.alert('Error', `Failed to create backup: ${error}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleRestore = async () => {
+    // Check if user has permission to restore (Admin or Manager only)
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'MANAGER')) {
+      Alert.alert(
+        'Access Denied',
+        'Only administrators and managers can restore database backups.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     Alert.alert(
       'Restore Database',
-      'Import database restore feature would be implemented here.',
-      [{ text: 'OK' }]
+      'This will replace ALL current data with data from a backup file. This action cannot be undone!',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Choose Backup File',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              const backupService = DatabaseBackupService.getInstance();
+              const success = await backupService.restoreFromFile();
+
+              if (success) {
+                Alert.alert(
+                  'Success',
+                  'Database restored successfully. Please restart the app to see changes.',
+                  [
+                    {
+                      text: 'OK',
+                      onPress: () => {
+                        // Reload settings after restore
+                        loadSettings();
+                      }
+                    }
+                  ]
+                );
+              }
+            } catch (error) {
+              console.error('Restore failed:', error);
+              Alert.alert('Error', `Restore failed: ${error}`);
+            } finally {
+              setLoading(false);
+            }
+          }
+        }
+      ]
     );
+  };
+
+  const handleClearPhysicalInventory = async () => {
+    Alert.alert(
+      'Clear Physical Inventory Data',
+      'This will delete all physical inventory history, count sessions, and reset all product stock quantities to zero. This action cannot be undone!',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Confirm Clear',
+              'Are you sure? This will permanently delete all physical inventory data and reset stock quantities to zero.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Clear All',
+                  style: 'destructive',
+                  onPress: performClearPhysicalInventory,
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  const performClearPhysicalInventory = async () => {
+    try {
+      setLoading(true);
+      const dbService = DatabaseService.getInstance();
+      await dbService.clearPhysicalInventoryData();
+      Alert.alert('Success', 'Physical inventory data cleared and stock quantities reset to zero successfully.');
+    } catch (error) {
+      console.error('Error clearing physical inventory data:', error);
+      Alert.alert('Error', 'Failed to clear physical inventory data');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleReset = async () => {
@@ -167,6 +280,74 @@ export default function SettingsScreen({ navigation }: Props) {
   const performReset = async () => {
     // In a real app, this would reset the database
     Alert.alert('Success', 'Database reset successfully. Please restart the app.');
+  };
+
+  const handleValidateDatabase = async () => {
+    try {
+      setLoading(true);
+      const backupService = DatabaseBackupService.getInstance();
+      const validation = await backupService.validateDatabase();
+
+      if (validation.isValid) {
+        Alert.alert(
+          'Database Validation',
+          'Database is healthy and all integrity checks passed.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Database Issues Found',
+          `Found ${validation.errors.length} issue(s):\\n\\n${validation.errors.join('\\n')}\\n\\nWould you like to attempt repair?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Repair',
+              onPress: async () => {
+                try {
+                  const repair = await backupService.repairDatabase();
+                  Alert.alert(
+                    repair.success ? 'Repair Successful' : 'Repair Failed',
+                    repair.message,
+                    [{ text: 'OK' }]
+                  );
+                } catch (error) {
+                  Alert.alert('Error', `Repair failed: ${error}`);
+                }
+              }
+            }
+          ]
+        );
+      }
+    } catch (error) {
+      Alert.alert('Error', `Validation failed: ${error}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOptimizeDatabase = async () => {
+    Alert.alert(
+      'Optimize Database',
+      'This will analyze, reindex, and compact the database to improve performance. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Optimize',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              const backupService = DatabaseBackupService.getInstance();
+              await backupService.optimizeDatabase();
+              Alert.alert('Success', 'Database optimization completed successfully!');
+            } catch (error) {
+              Alert.alert('Error', `Optimization failed: ${error}`);
+            } finally {
+              setLoading(false);
+            }
+          }
+        }
+      ]
+    );
   };
 
   const settingsList = [
@@ -278,6 +459,57 @@ export default function SettingsScreen({ navigation }: Props) {
               <Divider />
 
               <List.Item
+                title="Validate Database"
+                description="Check database integrity and repair if needed"
+                left={props => <List.Icon {...props} icon="database-check" />}
+                right={props => <Button mode="outlined" compact onPress={handleValidateDatabase}>Validate</Button>}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Optimize Database"
+                description="Improve database performance"
+                left={props => <List.Icon {...props} icon="tune" />}
+                right={props => <Button mode="outlined" compact onPress={handleOptimizeDatabase}>Optimize</Button>}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Test Data Generator"
+                description="Add 5000 test products for testing"
+                left={props => <List.Icon {...props} icon="test-tube" />}
+                right={props => <Button mode="outlined" compact onPress={() => navigation.navigate('TestData')}>Generate</Button>}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Clear Physical Inventory"
+                description="Delete physical inventory data and reset stock to zero"
+                left={props => <List.Icon {...props} icon="package-variant" />}
+                right={props => (
+                  <Button
+                    mode="outlined"
+                    compact
+                    textColor="#FF9800"
+                    onPress={handleClearPhysicalInventory}
+                    loading={loading}
+                    disabled={loading}
+                  >
+                    Clear
+                  </Button>
+                )}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
                 title="Reset All Data"
                 description="Delete all data (cannot be undone)"
                 left={props => <List.Icon {...props} icon="delete-alert" />}
@@ -355,9 +587,9 @@ export default function SettingsScreen({ navigation }: Props) {
                 Format: 000-000-000-000
               </Paragraph>
             )}
-            {currentSetting?.key === 'permit_number' && (
+            {currentSetting?.key === 'pos_serial' && (
               <Paragraph style={styles.helperText}>
-                Format: FP-000000000-000
+                Format: POS000000
               </Paragraph>
             )}
             {currentSetting?.key === 'vat_rate' && (

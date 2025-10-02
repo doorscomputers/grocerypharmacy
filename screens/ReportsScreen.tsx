@@ -5,6 +5,7 @@ import {
   ScrollView,
   Alert,
   Share,
+  Text,
 } from 'react-native';
 import {
   Card,
@@ -122,30 +123,66 @@ export default function ReportsScreen({ navigation }: Props) {
       const dbService = DatabaseService.getInstance();
       const db = dbService.getDatabase();
 
-      const dateFilter = startDate && endDate
-        ? `AND DATE(e.created_at) BETWEEN '${startDate}' AND '${endDate}'`
-        : '';
+      let dateFilter = '';
+      if (startDate && endDate && startDate.trim() && endDate.trim()) {
+        // Try both date and created_at for better compatibility
+        dateFilter = `AND (DATE(pcs.date) BETWEEN '${startDate}' AND '${endDate}' OR DATE(pcs.created_at) BETWEEN '${startDate}' AND '${endDate}')`;
+        console.log('Date filter SQL:', dateFilter);
+        console.log('Date range:', { startDate, endDate });
+      } else if (startDate && startDate.trim()) {
+        dateFilter = `AND (DATE(pcs.date) >= '${startDate}' OR DATE(pcs.created_at) >= '${startDate}')`;
+        console.log('Start date filter SQL:', dateFilter);
+      } else if (endDate && endDate.trim()) {
+        dateFilter = `AND (DATE(pcs.date) <= '${endDate}' OR DATE(pcs.created_at) <= '${endDate}')`;
+        console.log('End date filter SQL:', dateFilter);
+      } else {
+        console.log('No date filter applied - showing all sessions');
+      }
+
+      console.log('Loading inventory history with date filter:', { startDate, endDate, dateFilter });
+
+      // First, let's see what sessions exist without filtering
+      const allSessions = await db.getAllAsync(`
+        SELECT
+          pcs.session_id,
+          pcs.date,
+          pcs.created_at,
+          DATE(pcs.date) as date_only,
+          DATE(pcs.created_at) as created_date_only
+        FROM physical_count_sessions pcs
+        ORDER BY pcs.created_at DESC
+        LIMIT 10
+      `);
+      console.log('Sample sessions in database:', allSessions);
 
       // Get physical inventory count sessions with user information and date filtering
       const rawSessions = await db.getAllAsync(`
         SELECT
-          e.reference_number,
-          e.description,
-          e.amount,
-          e.created_at,
-          e.entry_type,
-          e.cashier_id,
-          u.full_name as performed_by,
-          u.username as user_username
-        FROM ejournal e
-        LEFT JOIN users u ON e.cashier_id = u.id
-        WHERE e.entry_type = 'SYSTEM'
-        AND e.description LIKE '%Physical inventory count completed%'
+          pcs.session_id as reference_number,
+          pcs.notes as description,
+          pcs.total_discrepancy_value as amount,
+          pcs.created_at,
+          'PHYSICAL_COUNT' as entry_type,
+          pcs.started_by as cashier_id,
+          u1.full_name as performed_by,
+          u1.username as user_username,
+          pcs.date,
+          pcs.status,
+          pcs.total_items,
+          pcs.counted_items,
+          pcs.discrepancy_count,
+          u2.full_name as completed_by_name
+        FROM physical_count_sessions pcs
+        LEFT JOIN users u1 ON pcs.started_by = u1.id
+        LEFT JOIN users u2 ON pcs.completed_by = u2.id
+        WHERE 1=1
         ${dateFilter}
-        ORDER BY e.created_at DESC
+        ORDER BY pcs.created_at DESC
         LIMIT 50
       `);
       const sessions = rawSessions as InventorySession[];
+
+      console.log(`Found ${sessions.length} physical count sessions with date filter:`, sessions.map(s => ({ id: s.reference_number, date: s.date, status: s.status })));
 
       // For each session, get the detailed item counts (optimized)
       const sessionsWithDetails = await Promise.all(
@@ -153,57 +190,36 @@ export default function ReportsScreen({ navigation }: Props) {
           try {
             const rawItems = await db.getAllAsync(`
               SELECT
-                im.product_id,
-                im.quantity as physical_quantity,
-                im.notes,
-                im.created_at,
+                pcd.product_id,
+                pcd.physical_quantity,
+                pcd.system_quantity,
+                pcd.discrepancy,
+                pcd.value_discrepancy,
+                pcd.status,
+                pcd.notes,
+                pcd.counted_at as created_at,
                 p.name as product_name,
                 p.code as product_code,
                 p.unit,
-                p.cost as unit_cost
-              FROM inventory_movements im
-              JOIN products p ON im.product_id = p.id
-              WHERE im.notes LIKE ?
-              AND im.movement_type = 'ADJUSTMENT'
-              AND im.reference_type = 'MANUAL_ADJUSTMENT'
+                pcd.unit_cost
+              FROM physical_count_details pcd
+              JOIN products p ON pcd.product_id = p.id
+              WHERE pcd.session_id = ?
               ORDER BY p.name
               LIMIT 100
-            `, [`PHYSICAL_COUNT|${session.reference_number}|%`]);
+            `, [session.reference_number]);
             const items = rawItems as InventoryCountItem[];
 
             console.log(`Loading session ${index + 1}/${sessions.length}: ${session.reference_number}`);
 
-            // Parse system quantities and discrepancies from notes
-            const itemsWithDetails = items.map(item => {
-            const notes = item.notes || '';
-            // New format: PHYSICAL_COUNT|sessionId|System:value|Physical:value|Diff:value|Status:value|Cost:value
-            const parts = notes.split('|');
-
-            let systemQuantity = 0;
-            let physicalQuantity = item.physical_quantity;
-            let discrepancy = 0;
-            let unitCost = item.unit_cost || 0;
-
-            parts.forEach(part => {
-              if (part.startsWith('System:')) {
-                systemQuantity = parseInt(part.replace('System:', '')) || 0;
-              } else if (part.startsWith('Physical:')) {
-                physicalQuantity = parseInt(part.replace('Physical:', '')) || 0;
-              } else if (part.startsWith('Diff:')) {
-                discrepancy = parseInt(part.replace('Diff:', '')) || 0;
-              } else if (part.startsWith('Cost:')) {
-                unitCost = parseFloat(part.replace('Cost:', '')) || 0;
-              }
-            });
-
-            return {
+            // Data is already structured from physical_count_details table
+            const itemsWithDetails = items.map(item => ({
               ...item,
-              system_quantity: systemQuantity,
-              physical_quantity: physicalQuantity,
-              discrepancy: discrepancy,
-              value_discrepancy: discrepancy * unitCost
-            };
-          });
+              system_quantity: item.system_quantity || 0,
+              physical_quantity: item.physical_quantity || 0,
+              discrepancy: item.discrepancy || 0,
+              value_discrepancy: item.value_discrepancy || 0
+            }));
 
             return {
               ...session,
@@ -299,8 +315,9 @@ export default function ReportsScreen({ navigation }: Props) {
   };
 
   const printReport = async () => {
-    if (!currentReport) return;
+    if (!currentReport || loading) return; // Prevent concurrent sharing
 
+    setLoading(true);
     try {
       let html = '';
 
@@ -314,11 +331,41 @@ export default function ReportsScreen({ navigation }: Props) {
         html = generateInventoryHistoryHTML(currentReport);
       }
 
-      const { uri } = await Print.printToFileAsync({ html });
-      await Sharing.shareAsync(uri);
+      const { uri } = await Print.printToFileAsync({
+        html,
+        base64: false,
+        margins: {
+          left: 20,
+          top: 20,
+          right: 20,
+          bottom: 20,
+        },
+        width: 612,
+        height: 792,
+      });
+
+      console.log('PDF generated successfully at:', uri);
+
+      // Check if sharing is available before attempting to share
+      if (await Sharing.isAvailableAsync()) {
+        // Use the original simple sharing approach that was working before
+        await Sharing.shareAsync(uri);
+      } else {
+        Alert.alert('Info', 'Report generated successfully. Sharing is not available on this device.');
+      }
     } catch (error) {
-      console.error('Print error:', error);
-      Alert.alert('Error', 'Failed to generate report');
+      console.error('PDF generation error:', error);
+      if (error.message?.includes('rejected')) {
+        Alert.alert('Info', 'Another sharing operation is in progress. Please wait and try again.');
+      } else if (error.message?.includes('print') || error.message?.includes('PDF')) {
+        Alert.alert('PDF Error', 'Failed to generate PDF. Please try again or contact support if the issue persists.');
+      } else if (error.message?.includes('sharing') || error.message?.includes('share')) {
+        Alert.alert('Sharing Error', 'Failed to share the report. The PDF was generated but sharing failed.');
+      } else {
+        Alert.alert('Error', `Failed to generate or share report: ${error.message || 'Unknown error'}`);
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -986,21 +1033,83 @@ export default function ReportsScreen({ navigation }: Props) {
             <ScrollView style={styles.reportContent}>
               {currentReport && (
                 <View style={styles.reportPreview}>
-                  <Paragraph style={styles.previewText}>
-                    Report generated successfully!
-                  </Paragraph>
-                  <Paragraph style={styles.previewSubtext}>
-                    Use the Print/Share button to export the report.
-                  </Paragraph>
+                  {reportType === 'inventory' ? (
+                    <View>
+                      <Text style={styles.reportTitle}>Physical Inventory History</Text>
+                      <Text style={styles.reportSubtitle}>
+                        Date Range: {currentReport.dateRange?.startDate} to {currentReport.dateRange?.endDate}
+                      </Text>
+
+                      {inventoryHistory.map((session, index) => (
+                        <View key={session.reference_number} style={styles.sessionCard}>
+                          <Text style={styles.sessionHeader}>
+                            📊 Session: {session.reference_number}
+                          </Text>
+                          <Text style={styles.sessionDate}>
+                            Date: {session.date} | Status: {session.status}
+                          </Text>
+                          <Text style={styles.sessionStats}>
+                            Total Items: {session.total_items} | Counted: {session.counted_items}
+                          </Text>
+                          {session.performed_by && (
+                            <Text style={styles.sessionUser}>
+                              Started by: {session.performed_by}
+                            </Text>
+                          )}
+
+                          {session.items && session.items.length > 0 && (
+                            <View style={styles.itemsList}>
+                              <Text style={styles.itemsHeader}>Items Counted:</Text>
+                              {session.items.slice(0, 10).map((item, itemIndex) => (
+                                <View key={itemIndex} style={styles.itemRow}>
+                                  <Text style={styles.itemName}>{item.product_name}</Text>
+                                  <Text style={styles.itemQuantities}>
+                                    System: {item.system_quantity} → Physical: {item.physical_quantity}
+                                  </Text>
+                                  {item.discrepancy !== 0 && (
+                                    <Text style={[styles.itemDiscrepancy,
+                                      item.discrepancy > 0 ? styles.positive : styles.negative]}>
+                                      Diff: {item.discrepancy > 0 ? '+' : ''}{item.discrepancy}
+                                    </Text>
+                                  )}
+                                </View>
+                              ))}
+                              {session.items.length > 10 && (
+                                <Text style={styles.moreItems}>
+                                  ... and {session.items.length - 10} more items
+                                </Text>
+                              )}
+                            </View>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  ) : (
+                    <View>
+                      <Paragraph style={styles.previewText}>
+                        Report generated successfully!
+                      </Paragraph>
+                      <Paragraph style={styles.previewSubtext}>
+                        Use the Print/Share button to export the report.
+                      </Paragraph>
+                    </View>
+                  )}
                 </View>
               )}
             </ScrollView>
           </Dialog.ScrollArea>
           <Dialog.Actions>
             <Button onPress={() => setReportVisible(false)}>Close</Button>
-            <Button onPress={printReport} mode="contained">
-              Print/Share
-            </Button>
+            {reportType === 'inventory' && (
+              <Button onPress={printReport} mode="outlined">
+                Export PDF
+              </Button>
+            )}
+            {reportType !== 'inventory' && (
+              <Button onPress={printReport} mode="contained">
+                Print/Share
+              </Button>
+            )}
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -1194,5 +1303,92 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     opacity: 0.7,
+  },
+  // On-screen report styles
+  reportTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8,
+    color: '#2196F3',
+  },
+  reportSubtitle: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 16,
+    opacity: 0.7,
+  },
+  sessionCard: {
+    backgroundColor: '#f5f5f5',
+    padding: 12,
+    marginVertical: 6,
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#2196F3',
+  },
+  sessionHeader: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+    color: '#2196F3',
+  },
+  sessionDate: {
+    fontSize: 12,
+    marginBottom: 2,
+    opacity: 0.8,
+  },
+  sessionStats: {
+    fontSize: 12,
+    marginBottom: 2,
+    fontWeight: '500',
+  },
+  sessionUser: {
+    fontSize: 12,
+    marginBottom: 8,
+    fontStyle: 'italic',
+    opacity: 0.7,
+  },
+  itemsList: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#ddd',
+  },
+  itemsHeader: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 6,
+    color: '#333',
+  },
+  itemRow: {
+    marginBottom: 6,
+    paddingLeft: 8,
+  },
+  itemName: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 2,
+  },
+  itemQuantities: {
+    fontSize: 12,
+    opacity: 0.8,
+    marginBottom: 2,
+  },
+  itemDiscrepancy: {
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  positive: {
+    color: '#4CAF50',
+  },
+  negative: {
+    color: '#F44336',
+  },
+  moreItems: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 6,
+    opacity: 0.6,
   },
 });

@@ -7,6 +7,8 @@ import {
   ScrollView,
   TouchableOpacity,
   Text,
+  Modal,
+  Dimensions,
 } from 'react-native';
 import {
   Card,
@@ -23,7 +25,9 @@ import {
   IconButton,
   Chip,
   DataTable,
+  Appbar,
 } from 'react-native-paper';
+import { CameraView, Camera } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
@@ -86,54 +90,75 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
   const [countNotes, setCountNotes] = useState('');
   const [currentSession, setCurrentSession] = useState<CountSession | null>(null);
   const [viewMode, setViewMode] = useState<'all' | 'pending' | 'discrepancies' | 'none'>('none');
+  const [scannerVisible, setScannerVisible] = useState(false);
+  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [scanned, setScanned] = useState(false);
   const theme = useTheme();
 
   useEffect(() => {
     initializeCount();
+    getCameraPermissions();
   }, []);
 
-  const initializeCount = async () => {
-    try {
-      if (!user) {
-        Alert.alert('Error', 'You must be logged in to perform physical inventory count.');
-        return;
+  // Debounced search effect
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (searchQuery.trim().length >= 3) {
+        searchProducts(searchQuery.trim());
+      } else {
+        setProducts([]); // Clear search results
       }
+    }, 300); // 300ms debounce
 
-      console.log('Initializing Physical Inventory Count...');
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  const getCameraPermissions = async () => {
+    const { status } = await Camera.requestCameraPermissionsAsync();
+    setHasPermission(status === 'granted');
+  };
+
+  const searchProducts = async (searchTerm: string) => {
+    try {
+      const dbService = DatabaseService.getInstance();
+      // Search for products matching the term, limit to 20 results for performance
+      const searchResults = await dbService.getProducts(true, 20, searchTerm);
+      console.log(`Found ${searchResults.length} products for search: "${searchTerm}"`);
+      setProducts(searchResults);
+    } catch (error) {
+      console.error('Error searching products:', error);
+      setProducts([]);
+    }
+  };
+
+  const addProductToCount = async (product: Product) => {
+    if (!currentSession || !user) {
+      Alert.alert('Error', 'No active count session');
+      return;
+    }
+
+    // Check if product already in count list
+    const existingItem = countItems.find(item => item.product_id === product.id);
+    if (existingItem) {
+      Alert.alert('Already Added', `${product.name} is already in your count list`);
+      return;
+    }
+
+    try {
       const dbService = DatabaseService.getInstance();
 
-      // Add timeout to prevent hanging
-      const productList = await Promise.race([
-        dbService.getProducts(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
-      ]) as any[];
-
-      console.log(`Loaded ${productList.length} products for counting`);
-      setProducts(productList);
-
-      // Create session in database
-      const sessionId = `COUNT_${Date.now()}`;
-      await dbService.createPhysicalCountSession({
-        session_id: sessionId,
-        started_by: user.id,
-        total_items: productList.length,
-        notes: `Physical count started by ${user.full_name}`
+      // Add to database
+      await dbService.createPhysicalCountDetail({
+        session_id: currentSession.id,
+        product_id: product.id,
+        product_code: product.code,
+        product_name: product.name,
+        system_quantity: product.stock_quantity,
+        unit_cost: product.cost
       });
 
-      // Create count details in database
-      for (const product of productList) {
-        await dbService.createPhysicalCountDetail({
-          session_id: sessionId,
-          product_id: product.id,
-          product_code: product.code,
-          product_name: product.name,
-          system_quantity: product.stock_quantity,
-          unit_cost: product.cost
-        });
-      }
-
-      // Initialize count items for UI
-      const items: PhysicalCountItem[] = productList.map(product => ({
+      // Add to UI count list
+      const newCountItem: PhysicalCountItem = {
         product_id: product.id,
         product_code: product.code,
         product_name: product.name,
@@ -143,30 +168,62 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
         unit: product.unit,
         unit_cost: product.cost,
         value_discrepancy: 0,
-        status: 'pending',
-      }));
+        status: 'pending'
+      };
 
-      setCountItems(items);
+      setCountItems(prev => [...prev, newCountItem]);
 
-      // Create count session for UI
+      // Update session total
+      setCurrentSession(prev => prev ? {
+        ...prev,
+        total_items: prev.total_items + 1
+      } : null);
+
+      Alert.alert('Added', `${product.name} added to count list`);
+      setSearchQuery(''); // Clear search after adding
+    } catch (error) {
+      console.error('Error adding product to count:', error);
+      Alert.alert('Error', 'Failed to add product to count');
+    }
+  };
+
+  const initializeCount = async () => {
+    try {
+      if (!user) {
+        Alert.alert('Error', 'You must be logged in to perform physical inventory count.');
+        return;
+      }
+
+      console.log('Initializing Physical Inventory Count Session...');
+
+      // Create count session in database WITHOUT loading all products
+      const sessionId = `COUNT_${Date.now()}`;
+      const dbService = DatabaseService.getInstance();
+
+      await dbService.createPhysicalCountSession({
+        session_id: sessionId,
+        started_by: user.id,
+        total_items: 0, // Will be updated as products are added
+        notes: `Physical count started by ${user.full_name} - Search-based counting`
+      });
+
+      // Create session for UI - starts empty, products added via search
       const session: CountSession = {
         id: sessionId,
         date: new Date().toISOString().split('T')[0],
         status: 'in_progress',
-        total_items: items.length,
+        total_items: 0,
         counted_items: 0,
         total_discrepancy_value: 0,
       };
 
       setCurrentSession(session);
-      console.log('Physical Inventory Count initialized successfully');
+      setCountItems([]); // Start with empty count list
+      setProducts([]); // Start with empty search results
+      console.log('Physical Inventory Count session initialized - ready for search-based counting');
     } catch (error) {
       console.error('Error initializing count:', error);
-      if (error.message === 'Timeout') {
-        Alert.alert('Loading Error', 'The app is taking too long to load products. Please check your database connection and try again.');
-      } else {
-        Alert.alert('Initialization Error', 'Failed to initialize physical inventory count. Please restart the app.');
-      }
+      Alert.alert('Initialization Error', 'Failed to initialize physical inventory count session.');
     }
   };
 
@@ -379,39 +436,77 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     }
   };
 
-  const getFilteredItems = () => {
-    let filteredItems = countItems;
+  const handleBarcodeScanned = ({ type, data }: { type: string; data: string }) => {
+    setScanned(true);
+    setScannerVisible(false);
 
-    // Apply search filter first
-    if (searchQuery && searchQuery.trim().length >= 3) {
-      filteredItems = filteredItems.filter(item =>
-        item.product_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.product_code.toLowerCase().includes(searchQuery.toLowerCase())
+    // Set the search query to the scanned barcode
+    setSearchQuery(data);
+
+    // Auto-focus and select the first matching product if only one result
+    setTimeout(() => {
+      const items = countItems.filter(item =>
+        item.product_name.toLowerCase().includes(data.toLowerCase()) ||
+        item.product_code.toLowerCase().includes(data.toLowerCase()) ||
+        item.product_code === data
       );
-    }
 
-    // If there's a search query with 3+ characters, show all matching items regardless of view mode
-    if (searchQuery.trim() && searchQuery.trim().length >= 3) {
-      return filteredItems;
-    }
-
-    // Performance optimization: Don't show any items if no search and no specific view
-    if (!searchQuery.trim()) {
-      // Only show specific view modes, not all items initially
-      switch (viewMode) {
-        case 'pending':
-          return filteredItems.filter(item => item.status === 'pending');
-        case 'discrepancies':
-          return filteredItems.filter(item => item.status === 'counted' && item.discrepancy !== 0);
-        case 'all':
-          return filteredItems; // Show all only when explicitly requested
-        case 'none':
-        default:
-          return []; // Don't show any items initially for performance
+      if (items.length === 1) {
+        console.log('Single match found, auto-selecting for count:', items[0].product_name);
+        handleCountProduct(items[0]);
+      } else if (items.length > 1) {
+        Alert.alert(
+          'Multiple Matches',
+          `Found ${items.length} products matching "${data}". Please select the correct one from the list.`
+        );
+      } else {
+        Alert.alert(
+          'No Match',
+          `No products found matching barcode "${data}". Please check the barcode and try again.`
+        );
       }
+    }, 100);
+
+    // Reset scanner state after a delay
+    setTimeout(() => setScanned(false), 2000);
+  };
+
+  const handleScannerPress = () => {
+    if (hasPermission === null) {
+      Alert.alert('Permission', 'Requesting camera permission...');
+      getCameraPermissions();
+      return;
     }
 
-    return []; // Default: show nothing until user searches or selects view
+    if (hasPermission === false) {
+      Alert.alert(
+        'Camera Permission',
+        'Camera permission is required for barcode scanning. Please enable it in your device settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => getCameraPermissions() }
+        ]
+      );
+      return;
+    }
+
+    setScannerVisible(true);
+    setScanned(false);
+  };
+
+  const getFilteredItems = () => {
+    // When not searching, show corrected items if that view is selected
+    if (!searchQuery.trim() && viewMode === 'discrepancies') {
+      return countItems.filter(item => item.status === 'counted' && item.discrepancy !== 0);
+    }
+
+    // When not searching and no specific view, show all items in count list
+    if (!searchQuery.trim()) {
+      return countItems;
+    }
+
+    // When searching, return empty - search results are shown in separate section
+    return [];
   };
 
   const getProgressData = () => {
@@ -466,25 +561,12 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
 
             <View style={styles.filterChips}>
               <Chip
-                selected={viewMode === 'pending'}
-                onPress={() => setViewMode('pending')}
-                style={styles.filterChip}
-              >
-                Pending ({countItems.filter(item => item.status === 'pending').length})
-              </Chip>
-              <Chip
                 selected={viewMode === 'discrepancies'}
                 onPress={() => setViewMode('discrepancies')}
                 style={styles.filterChip}
+                icon="alert-circle"
               >
-                Discrepancies ({discrepancySummary.total})
-              </Chip>
-              <Chip
-                selected={viewMode === 'all'}
-                onPress={() => setViewMode('all')}
-                style={styles.filterChip}
-              >
-                All Items
+                Corrected Items ({discrepancySummary.total})
               </Chip>
             </View>
           </Card.Content>
@@ -526,7 +608,10 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
                     onPress={() => setSearchQuery('')}
                   />
                 ) : (
-                  <TextInput.Icon icon="barcode-scan" />
+                  <TextInput.Icon
+                    icon="barcode-scan"
+                    onPress={handleScannerPress}
+                  />
                 )
               }
             />
@@ -540,7 +625,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
               </Paragraph>
             ) : (
               <Paragraph style={styles.searchIndicator}>
-                🔍 Found {filteredItems.length} result(s) for "{searchQuery}"
+                🔍 Found {products.length} product(s) for "{searchQuery}" - Tap to add to count
               </Paragraph>
             )}
             {/* Debug info */}
@@ -554,97 +639,138 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
             )}
           </View>
 
-          {/* Product Count List */}
-          <View style={styles.productSection}>
-            <Title style={styles.sectionTitle}>
-              Products to Count ({filteredItems.length})
-            </Title>
-
-            <View style={styles.productListContainer}>
-              <FlatList
-                data={filteredItems}
-                keyExtractor={(item) => item.product_id.toString()}
-                renderItem={({ item }) => {
-                  const statusIcon = item.status === 'counted'
-                    ? (item.discrepancy === 0 ? "✓" : "⚠")
-                    : "📦";
-                  const statusColor = item.status === 'counted'
-                    ? (item.discrepancy === 0 ? "#4CAF50" : "#FF9800")
-                    : "#666";
-
-                  return (
+          {/* Search Results - Show when searching */}
+          {searchQuery.trim().length >= 3 && (
+            <View style={styles.productSection}>
+              <Title style={styles.sectionTitle}>
+                🔍 Search Results ({products.length}) - Tap to Add to Count
+              </Title>
+              <View style={styles.productListContainer}>
+                <FlatList
+                  data={products}
+                  keyExtractor={(item) => item.id.toString()}
+                  renderItem={({ item }) => (
                     <TouchableOpacity
-                      style={[
-                        styles.productItem,
-                        item.status === 'counted' && styles.countedProductItem,
-                        item.discrepancy !== 0 && item.status === 'counted' && styles.discrepancyProductItem
-                      ]}
-                      onPress={() => handleCountProduct(item)}
+                      style={[styles.productItem, styles.searchResultItem]}
+                      onPress={() => addProductToCount(item)}
                       activeOpacity={0.7}
                     >
                       <View style={styles.productItemContent}>
-                        <View style={[styles.productIcon, { backgroundColor: `${statusColor}15` }]}>
-                          <Text style={[styles.productIconText, { color: statusColor }]}>
-                            {statusIcon}
-                          </Text>
+                        <View style={[styles.productIcon, { backgroundColor: '#2196F315' }]}>
+                          <Text style={[styles.productIconText, { color: '#2196F3' }]}>➕</Text>
                         </View>
-
                         <View style={styles.productInfo}>
-                          <Text style={styles.productName} numberOfLines={2}>
-                            {item.product_name}
-                          </Text>
-                          <Text style={styles.productCode}>
-                            Code: {item.product_code}
-                          </Text>
-                          <View style={styles.productMetaRow}>
-                            <Text style={styles.productSystem}>
-                              System: {item.system_quantity} {item.unit}
+                          <Text style={styles.productName} numberOfLines={2}>{item.name}</Text>
+                          <Text style={styles.productCode}>Code: {item.code}</Text>
+                          <Text style={styles.productSystem}>Stock: {item.stock_quantity} {item.unit}</Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                  style={styles.productList}
+                  contentContainerStyle={styles.productListContent}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  ListEmptyComponent={() => (
+                    <View style={styles.emptyProductsContainer}>
+                      <Text style={styles.emptyIconText}>🔍</Text>
+                      <Text style={styles.emptyProductsTitle}>No Products Found</Text>
+                      <Text style={styles.emptyProductsText}>Try a different search term</Text>
+                    </View>
+                  )}
+                />
+              </View>
+            </View>
+          )}
+
+          {/* Count Items - Show when not searching */}
+          {!searchQuery.trim() && (
+            <View style={styles.productSection}>
+              <Title style={styles.sectionTitle}>
+                📊 Products to Count ({filteredItems.length})
+              </Title>
+              <View style={styles.productListContainer}>
+                <FlatList
+                  data={filteredItems}
+                  keyExtractor={(item) => item.product_id.toString()}
+                  renderItem={({ item }) => {
+                    const statusIcon = item.status === 'counted'
+                      ? (item.discrepancy === 0 ? "✓" : "⚠")
+                      : "📦";
+                    const statusColor = item.status === 'counted'
+                      ? (item.discrepancy === 0 ? "#4CAF50" : "#FF9800")
+                      : "#666";
+
+                    return (
+                      <TouchableOpacity
+                        style={[
+                          styles.productItem,
+                          item.status === 'counted' && styles.countedProductItem,
+                          item.discrepancy !== 0 && item.status === 'counted' && styles.discrepancyProductItem
+                        ]}
+                        onPress={() => handleCountProduct(item)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.productItemContent}>
+                          <View style={[styles.productIcon, { backgroundColor: `${statusColor}15` }]}>
+                            <Text style={[styles.productIconText, { color: statusColor }]}>
+                              {statusIcon}
                             </Text>
-                            {item.status === 'counted' && (
-                              <Text style={styles.productPhysical}>
-                                Physical: {item.physical_quantity}
+                          </View>
+
+                          <View style={styles.productInfo}>
+                            <Text style={styles.productName} numberOfLines={2}>
+                              {item.product_name}
+                            </Text>
+                            <Text style={styles.productCode}>
+                              Code: {item.product_code}
+                            </Text>
+                            <View style={styles.productMetaRow}>
+                              <Text style={styles.productSystem}>
+                                System: {item.system_quantity} {item.unit}
+                              </Text>
+                              {item.status === 'counted' && (
+                                <Text style={styles.productPhysical}>
+                                  Physical: {item.physical_quantity}
+                                </Text>
+                              )}
+                            </View>
+                            {item.status === 'counted' && item.discrepancy !== 0 && (
+                              <Text style={[
+                                styles.discrepancyDisplay,
+                                { color: item.discrepancy > 0 ? '#4CAF50' : '#F44336' }
+                              ]}>
+                                Difference: {item.discrepancy >= 0 ? '+' : ''}{item.discrepancy} • Value: ₱{item.value_discrepancy.toFixed(2)}
                               </Text>
                             )}
                           </View>
-                          {item.status === 'counted' && item.discrepancy !== 0 && (
-                            <Text style={[
-                              styles.discrepancyDisplay,
-                              { color: item.discrepancy > 0 ? '#4CAF50' : '#F44336' }
-                            ]}>
-                              Difference: {item.discrepancy >= 0 ? '+' : ''}{item.discrepancy} • Value: ₱{item.value_discrepancy.toFixed(2)}
-                            </Text>
-                          )}
-                        </View>
 
-                        <TouchableOpacity
-                          style={styles.countButton}
-                          onPress={() => handleCountProduct(item)}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={styles.countButtonText}>📊</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                }}
-                style={styles.productList}
-                contentContainerStyle={styles.productListContent}
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                ListEmptyComponent={() => (
-                  <View style={styles.emptyProductsContainer}>
-                    <Text style={styles.emptyIconText}>🔍</Text>
-                    <Text style={styles.emptyProductsTitle}>
-                      {searchQuery.trim() ? 'No Results Found' : 'No Products to Count'}
-                    </Text>
-                    <Text style={styles.emptyProductsText}>
-                      {searchQuery.trim() ? 'Try a different search term' : 'All products have been counted'}
-                    </Text>
-                  </View>
-                )}
-              />
+                          <TouchableOpacity
+                            style={styles.countButton}
+                            onPress={() => handleCountProduct(item)}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={styles.countButtonText}>📊</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }}
+                  style={styles.productList}
+                  contentContainerStyle={styles.productListContent}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  ListEmptyComponent={() => (
+                    <View style={styles.emptyProductsContainer}>
+                      <Text style={styles.emptyIconText}>🔍</Text>
+                      <Text style={styles.emptyProductsTitle}>No Items to Count</Text>
+                      <Text style={styles.emptyProductsText}>Search for products to add to your count list</Text>
+                    </View>
+                  )}
+                />
+              </View>
             </View>
-          </View>
+          )}
 
         </View>
 
@@ -807,6 +933,49 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
+
+      {/* Barcode Scanner Modal */}
+      <Modal
+        visible={scannerVisible}
+        animationType="slide"
+        onRequestClose={() => setScannerVisible(false)}
+      >
+        <View style={styles.scannerContainer}>
+          <Appbar.Header>
+            <Appbar.BackAction onPress={() => setScannerVisible(false)} />
+            <Appbar.Content title="Scan Product Barcode" />
+          </Appbar.Header>
+
+          {hasPermission && (
+            <CameraView
+              style={styles.camera}
+              facing="back"
+              onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
+              barcodeScannerSettings={{
+                barcodeTypes: ['ean13', 'ean8', 'code128', 'code39', 'upc_a', 'upc_e'],
+              }}
+            >
+              <View style={styles.scannerOverlay}>
+                <View style={styles.scannerFrame} />
+                <Paragraph style={styles.scannerText}>
+                  {scanned ? 'Barcode scanned! Processing...' : 'Point camera at product barcode'}
+                </Paragraph>
+              </View>
+            </CameraView>
+          )}
+
+          {!hasPermission && (
+            <View style={styles.permissionContainer}>
+              <Paragraph style={styles.permissionText}>
+                Camera permission is required for barcode scanning
+              </Paragraph>
+              <Button mode="contained" onPress={getCameraPermissions}>
+                Grant Permission
+              </Button>
+            </View>
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -919,6 +1088,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.2,
     shadowRadius: 2,
+  },
+  searchResultItem: {
+    borderColor: '#2196F3',
+    borderWidth: 1,
   },
   productItemContent: {
     flexDirection: 'row',
@@ -1213,5 +1386,47 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
     marginVertical: 4,
+  },
+  scannerContainer: {
+    flex: 1,
+    backgroundColor: 'black',
+  },
+  camera: {
+    flex: 1,
+  },
+  scannerOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  scannerFrame: {
+    width: 250,
+    height: 250,
+    borderWidth: 2,
+    borderColor: 'white',
+    borderRadius: 10,
+    backgroundColor: 'transparent',
+  },
+  scannerText: {
+    color: 'white',
+    fontSize: 16,
+    textAlign: 'center',
+    marginTop: 20,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    padding: 10,
+    borderRadius: 5,
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: 'white',
+  },
+  permissionText: {
+    textAlign: 'center',
+    marginBottom: 20,
+    fontSize: 16,
   },
 });

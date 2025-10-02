@@ -676,6 +676,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     padding: 16,
+    paddingBottom: 32, // Extra bottom padding for safe area
   },
   headerCard: {
     marginBottom: 16,
@@ -863,6 +864,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 180,
     maxHeight: 250,
+    marginBottom: 16, // Extra margin for bottom spacing
   },
   summaryCard: {
     elevation: 4,
@@ -889,6 +891,7 @@ const styles = StyleSheet.create({
   actionSection: {
     alignItems: 'center',
     paddingVertical: 16,
+    paddingBottom: 24, // Extra bottom padding for button area
   },
   actionText: {
     textAlign: 'center',

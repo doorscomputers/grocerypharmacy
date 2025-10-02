@@ -62,6 +62,9 @@ export default function SalesScreen({ navigation }: Props) {
   const [paymentVisible, setPaymentVisible] = useState(false);
   const [amountTendered, setAmountTendered] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'CHECK' | 'ONLINE' | 'CHARGE_INVOICE'>('CASH');
+  const [customers, setCustomers] = useState<any[]>([]);
   const [discountType, setDiscountType] = useState('none'); // 'none', 'percent', 'amount', 'senior'
   const [discountValue, setDiscountValue] = useState('');
   const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
@@ -69,7 +72,17 @@ export default function SalesScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadProducts();
+    loadCustomers();
   }, []);
+
+  // Reload products when search query changes with debounce
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      loadProducts();
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
 
   // Reload products when screen comes into focus
   useFocusEffect(
@@ -83,16 +96,22 @@ export default function SalesScreen({ navigation }: Props) {
     try {
       const dbService = DatabaseService.getInstance();
 
-      // Debug: Check raw products first
-      await dbService.getRawProducts();
-
-      // Then get filtered products
-      const rawProductList = await dbService.getProducts();
-      console.log('SalesScreen: Loaded products:', rawProductList.length);
-      console.log('SalesScreen: First product:', rawProductList[0]);
+      // Use optimized getProducts with search term if available
+      const rawProductList = await dbService.getProducts(true, 50, searchQuery.trim() || undefined);
+      console.log('SalesScreen: Loaded active products:', rawProductList.length);
       setProducts(rawProductList as Product[]);
     } catch (error) {
       console.error('SalesScreen: Error loading products:', error);
+    }
+  };
+
+  const loadCustomers = async () => {
+    try {
+      const dbService = DatabaseService.getInstance();
+      const customerList = await dbService.getCustomers(true); // Only active customers
+      setCustomers(customerList);
+    } catch (error) {
+      console.error('Error loading customers:', error);
     }
   };
 
@@ -212,8 +231,17 @@ export default function SalesScreen({ navigation }: Props) {
     const tendered = parseFloat(amountTendered);
     const totals = calculateTotals();
 
-    if (isNaN(tendered) || tendered < totals.total) {
-      Alert.alert('Error', 'Invalid payment amount');
+    // Skip validation for charge invoices
+    if (paymentMethod !== 'CHARGE_INVOICE') {
+      if (isNaN(tendered) || tendered < totals.total) {
+        Alert.alert('Error', 'Invalid payment amount');
+        return;
+      }
+    }
+
+    // For charge invoices, require customer selection
+    if (paymentMethod === 'CHARGE_INVOICE' && !selectedCustomer && !customerName.trim()) {
+      Alert.alert('Error', 'Please select a customer or enter customer name for charge invoice');
       return;
     }
 
@@ -224,13 +252,14 @@ export default function SalesScreen({ navigation }: Props) {
       const changeAmount = tendered - totals.total;
 
       const transactionData = {
-        customer_name: customerName,
+        customer_id: selectedCustomer?.id,
+        customer_name: customerName || selectedCustomer?.name,
         subtotal: totals.subtotal,
         tax_amount: totals.taxAmount,
         total_amount: totals.total,
-        payment_method: 'CASH',
-        amount_tendered: tendered,
-        change_amount: changeAmount,
+        payment_method: paymentMethod,
+        amount_tendered: paymentMethod === 'CHARGE_INVOICE' ? 0 : tendered,
+        change_amount: paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
         cashier_id: user.id,
         items: cart.map(item => ({
           product_id: item.id,
@@ -295,6 +324,12 @@ export default function SalesScreen({ navigation }: Props) {
     const name = (product.name || '').toLowerCase();
     const code = (product.code || '').toLowerCase();
 
+    // For barcode scanning (exact match for codes)
+    if (query.length >= 8 && /^[0-9]+$/.test(query)) {
+      return code === query;
+    }
+
+    // For text search (contains match for names and codes)
     const matches = name.includes(query) || code.includes(query);
     console.log(`Product ${product.name} matches "${query}":`, matches);
     return matches;
@@ -655,12 +690,13 @@ const styles = StyleSheet.create({
   },
   mainContainer: {
     flex: 1,
-    paddingHorizontal: '4%',
-    paddingTop: '3%',
+    paddingHorizontal: 16,
+    paddingTop: 8,
     paddingBottom: 0,
   },
   searchSection: {
-    marginBottom: '4%',
+    marginBottom: 16,
+    paddingHorizontal: 0,
   },
   searchInput: {
     backgroundColor: 'white',

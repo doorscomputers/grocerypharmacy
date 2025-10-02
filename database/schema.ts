@@ -53,9 +53,10 @@ export interface DatabaseSchema {
     tax_amount: number; // VAT amount
     discount_amount: number;
     total_amount: number;
-    payment_method: 'CASH' | 'CARD' | 'CHECK' | 'ONLINE';
+    payment_method: 'CASH' | 'CARD' | 'CHECK' | 'ONLINE' | 'CHARGE_INVOICE';
     amount_tendered: number;
     change_amount: number;
+    payment_status: 'PAID' | 'UNPAID' | 'PARTIAL'; // For tracking charge invoice payments
     cashier_id: number;
     status: 'COMPLETED' | 'VOID' | 'REFUNDED';
     void_reason?: string;
@@ -148,14 +149,21 @@ export interface DatabaseSchema {
     updated_at: string;
   };
 
-  // Inventory tracking
+  // Inventory tracking with before/after quantities
   inventory_movements: {
     id: number;
     product_id: number;
+    product_code: string;
+    product_name: string;
     movement_type: 'IN' | 'OUT' | 'ADJUSTMENT';
     quantity: number;
-    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT';
+    quantity_before: number; // Stock quantity before the transaction
+    quantity_after: number;  // Stock quantity after the transaction
+    unit_cost: number;       // Cost per unit at time of transaction
+    total_value: number;     // Total value of the movement (quantity * unit_cost)
+    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT';
     reference_id?: number;
+    reference_number?: string; // Human-readable reference (invoice number, purchase order, etc.)
     notes?: string;
     created_by: number;
     created_at: string;
@@ -216,6 +224,187 @@ export interface DatabaseSchema {
     updated_by: number;
     updated_at: string;
   };
+
+  // Suppliers for purchase management
+  suppliers: {
+    id: number;
+    code: string;
+    name: string;
+    contact_person?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    tin?: string;
+    credit_terms?: number; // Days for payment terms
+    credit_limit?: number;
+    is_active: boolean;
+    notes?: string;
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Purchase Orders/Headers
+  purchases: {
+    id: number;
+    purchase_number: string;
+    supplier_id: number;
+    purchase_date: string;
+    expected_delivery_date?: string;
+    reference_number?: string; // Supplier's reference
+    status: 'DRAFT' | 'ORDERED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED';
+    subtotal: number;
+    tax_amount: number;
+    discount_amount: number;
+    total_amount: number;
+    paid_amount: number;
+    balance_amount: number;
+    payment_terms: string; // e.g., "30 days", "COD", "Net 15"
+    notes?: string;
+    created_by: number;
+    received_by?: number;
+    cancelled_by?: number;
+    cancelled_reason?: string;
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Purchase Order Line Items/Details
+  purchase_details: {
+    id: number;
+    purchase_id: number;
+    product_id: number;
+    product_code: string;
+    product_name: string;
+    quantity_ordered: number;
+    quantity_received: number;
+    unit_cost: number;
+    discount_amount: number;
+    tax_amount: number;
+    total_amount: number;
+    notes?: string;
+    created_at: string;
+  };
+
+  // Supplier Payments for Accounts Payable
+  supplier_payments: {
+    id: number;
+    payment_number: string;
+    supplier_id: number;
+    purchase_id?: number; // Optional - payment might be for multiple purchases
+    payment_date: string;
+    payment_method: 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'CREDIT_CARD' | 'ONLINE';
+    reference_number?: string; // Check number, bank reference, etc.
+    amount: number;
+    notes?: string;
+    created_by: number;
+    created_at: string;
+  };
+
+  // Accounts Payable aging and tracking
+  accounts_payable: {
+    id: number;
+    purchase_id: number;
+    supplier_id: number;
+    invoice_number?: string;
+    invoice_date: string;
+    due_date: string;
+    original_amount: number;
+    paid_amount: number;
+    balance_amount: number;
+    status: 'OUTSTANDING' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE';
+    days_outstanding: number;
+    aging_bucket: '0-30' | '31-60' | '61-90' | '90+';
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Customer information for charge invoices
+  customers: {
+    id: number;
+    code: string;
+    name: string;
+    contact_person?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    tin?: string;
+    credit_terms?: number; // Days for payment terms
+    credit_limit?: number;
+    is_active: boolean;
+    notes?: string;
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Customer Payments for charge invoices
+  customer_payments: {
+    id: number;
+    payment_number: string;
+    customer_id?: number;
+    transaction_id: number; // Reference to original charge invoice
+    payment_date: string;
+    payment_method: 'CASH' | 'CARD' | 'CHECK' | 'BANK_TRANSFER' | 'ONLINE';
+    amount_paid: number;
+    reference_number?: string; // Check number, bank ref, etc.
+    notes?: string;
+    received_by: number;
+    created_at: string;
+  };
+
+  // Accounts Receivable aging and tracking
+  accounts_receivable: {
+    id: number;
+    transaction_id: number;
+    customer_id?: number;
+    customer_name?: string;
+    invoice_number: string;
+    invoice_date: string;
+    due_date: string;
+    original_amount: number;
+    paid_amount: number;
+    balance_amount: number;
+    status: 'OUTSTANDING' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE';
+    days_outstanding: number;
+    aging_bucket: '0-30' | '31-60' | '61-90' | '90+';
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Damaged Items Sessions (like physical count sessions)
+  damaged_items_sessions: {
+    id: number;
+    session_id: string; // Unique identifier like "DMG-2024-001"
+    session_name: string;
+    status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+    total_items: number;
+    total_value: number;
+    started_by: number;
+    completed_by?: number;
+    cancelled_by?: number;
+    cancelled_reason?: string;
+    notes?: string;
+    started_at: string;
+    completed_at?: string;
+    created_at: string;
+  };
+
+  // Individual damaged items within a session
+  damaged_items_details: {
+    id: number;
+    session_id: string;
+    product_id: number;
+    product_code: string;
+    product_name: string;
+    current_stock: number;
+    damaged_quantity: number;
+    unit_cost: number;
+    total_value: number;
+    damage_reason: 'EXPIRED' | 'BROKEN' | 'DEFECTIVE' | 'SPOILED' | 'LOST' | 'THEFT' | 'OTHER';
+    damage_description?: string;
+    recorded_by: number;
+    recorded_at: string;
+    created_at: string;
+  };
 }
 
 // Type exports for components
@@ -225,16 +414,40 @@ export type TransactionItem = DatabaseSchema['transaction_items'];
 export type Category = DatabaseSchema['categories'];
 export type User = DatabaseSchema['users'];
 export type InventoryMovement = DatabaseSchema['inventory_movements'];
+export type Supplier = DatabaseSchema['suppliers'];
+export type Purchase = DatabaseSchema['purchases'];
+export type PurchaseDetail = DatabaseSchema['purchase_details'];
+export type SupplierPayment = DatabaseSchema['supplier_payments'];
+export type AccountsPayable = DatabaseSchema['accounts_payable'];
+export type Customer = DatabaseSchema['customers'];
+export type CustomerPayment = DatabaseSchema['customer_payments'];
+export type AccountsReceivable = DatabaseSchema['accounts_receivable'];
+export type DamagedItemsSession = DatabaseSchema['damaged_items_sessions'];
+export type DamagedItemsDetail = DatabaseSchema['damaged_items_details'];
 
 // Database initialization script
 export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
-  // Enable WAL mode and foreign keys
-  await db.execAsync('PRAGMA journal_mode = WAL;');
-  await db.execAsync('PRAGMA foreign_keys = ON;');
+  console.log('Starting database schema initialization...');
 
-  // Create tables
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS stores (
+  try {
+    // Enable foreign keys (skip WAL mode as it can cause issues on some platforms)
+    console.log('Setting PRAGMA foreign_keys = ON...');
+    await db.execAsync('PRAGMA foreign_keys = ON;');
+    console.log('Foreign keys enabled successfully');
+
+    // Test that PRAGMAs work
+    const fkResult = await db.getFirstAsync('PRAGMA foreign_keys;');
+    console.log('Foreign keys status:', fkResult);
+
+  } catch (pragmaError) {
+    console.warn('PRAGMA commands failed, continuing without them:', pragmaError);
+  }
+
+  // Create tables with individual error handling
+  console.log('Creating stores table...');
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS stores (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       address TEXT NOT NULL,
@@ -246,9 +459,16 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  console.log('✅ Stores table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create stores table:', error);
+    throw error;
+  }
 
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS categories (
+  console.log('Creating categories table...');
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       description TEXT,
@@ -256,8 +476,15 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  console.log('✅ Categories table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create categories table:', error);
+    throw error;
+  }
 
-  await db.execAsync(`
+  console.log('Creating products table...');
+  try {
+    await db.execAsync(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT NOT NULL UNIQUE,
@@ -276,8 +503,15 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (category_id) REFERENCES categories (id)
     );
   `);
+  console.log('✅ Products table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create products table:', error);
+    throw error;
+  }
 
-  await db.execAsync(`
+  console.log('Creating users table...');
+  try {
+    await db.execAsync(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
@@ -290,7 +524,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  console.log('✅ Users table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create users table:', error);
+    throw error;
+  }
 
+  console.log('Creating remaining tables...');
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,9 +543,10 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
       discount_amount DECIMAL(10,2) DEFAULT 0,
       total_amount DECIMAL(10,2) NOT NULL,
-      payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE')) DEFAULT 'CASH',
+      payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE', 'CHARGE_INVOICE')) DEFAULT 'CASH',
       amount_tendered DECIMAL(10,2) NOT NULL,
       change_amount DECIMAL(10,2) DEFAULT 0,
+      payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID',
       cashier_id INTEGER NOT NULL,
       status TEXT CHECK (status IN ('COMPLETED', 'VOID', 'REFUNDED')) DEFAULT 'COMPLETED',
       void_reason TEXT,
@@ -403,10 +644,17 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     CREATE TABLE IF NOT EXISTS inventory_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
+      product_code TEXT NOT NULL,
+      product_name TEXT NOT NULL,
       movement_type TEXT CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT')) NOT NULL,
       quantity INTEGER NOT NULL,
-      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT')) NOT NULL,
+      quantity_before INTEGER NOT NULL,
+      quantity_after INTEGER NOT NULL,
+      unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
+      total_value DECIMAL(10,2) NOT NULL DEFAULT 0,
+      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT')) NOT NULL,
       reference_id INTEGER,
+      reference_number TEXT,
       notes TEXT,
       created_by INTEGER NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -482,6 +730,229 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Create suppliers table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      contact_person TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      tin TEXT,
+      credit_terms INTEGER DEFAULT 30,
+      credit_limit DECIMAL(12,2) DEFAULT 0,
+      is_active BOOLEAN DEFAULT 1,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create purchases table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_number TEXT NOT NULL UNIQUE,
+      supplier_id INTEGER NOT NULL,
+      purchase_date DATE NOT NULL,
+      expected_delivery_date DATE,
+      reference_number TEXT,
+      status TEXT CHECK (status IN ('DRAFT', 'ORDERED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED')) DEFAULT 'DRAFT',
+      subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+      tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+      discount_amount DECIMAL(12,2) DEFAULT 0,
+      total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+      paid_amount DECIMAL(12,2) DEFAULT 0,
+      balance_amount DECIMAL(12,2) DEFAULT 0,
+      payment_terms TEXT DEFAULT '30 days',
+      notes TEXT,
+      created_by INTEGER NOT NULL,
+      received_by INTEGER,
+      cancelled_by INTEGER,
+      cancelled_reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
+      FOREIGN KEY (created_by) REFERENCES users (id),
+      FOREIGN KEY (received_by) REFERENCES users (id),
+      FOREIGN KEY (cancelled_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create purchase_details table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS purchase_details (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_code TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity_ordered INTEGER NOT NULL,
+      quantity_received INTEGER DEFAULT 0,
+      unit_cost DECIMAL(10,2) NOT NULL,
+      discount_amount DECIMAL(10,2) DEFAULT 0,
+      tax_amount DECIMAL(10,2) DEFAULT 0,
+      total_amount DECIMAL(10,2) NOT NULL,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products (id)
+    );
+  `);
+
+  // Create supplier_payments table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_number TEXT NOT NULL UNIQUE,
+      supplier_id INTEGER NOT NULL,
+      purchase_id INTEGER,
+      payment_date DATE NOT NULL,
+      payment_method TEXT CHECK (payment_method IN ('CASH', 'CHECK', 'BANK_TRANSFER', 'CREDIT_CARD', 'ONLINE')) DEFAULT 'CASH',
+      reference_number TEXT,
+      amount DECIMAL(12,2) NOT NULL,
+      notes TEXT,
+      created_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
+      FOREIGN KEY (purchase_id) REFERENCES purchases (id),
+      FOREIGN KEY (created_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create accounts_payable table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS accounts_payable (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_id INTEGER NOT NULL UNIQUE,
+      supplier_id INTEGER NOT NULL,
+      invoice_number TEXT,
+      invoice_date DATE NOT NULL,
+      due_date DATE NOT NULL,
+      original_amount DECIMAL(12,2) NOT NULL,
+      paid_amount DECIMAL(12,2) DEFAULT 0,
+      balance_amount DECIMAL(12,2) NOT NULL,
+      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE')) DEFAULT 'OUTSTANDING',
+      days_outstanding INTEGER DEFAULT 0,
+      aging_bucket TEXT CHECK (aging_bucket IN ('0-30', '31-60', '61-90', '90+')) DEFAULT '0-30',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+    );
+  `);
+
+  // Create customers table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      contact_person TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      tin TEXT,
+      credit_terms INTEGER DEFAULT 30,
+      credit_limit DECIMAL(12,2) DEFAULT 0,
+      is_active BOOLEAN DEFAULT 1,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create customer_payments table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS customer_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_number TEXT NOT NULL UNIQUE,
+      customer_id INTEGER,
+      transaction_id INTEGER NOT NULL,
+      payment_date DATE NOT NULL,
+      payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'BANK_TRANSFER', 'ONLINE')) NOT NULL,
+      amount_paid DECIMAL(12,2) NOT NULL,
+      reference_number TEXT,
+      notes TEXT,
+      received_by INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
+      FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
+      FOREIGN KEY (received_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create accounts_receivable table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS accounts_receivable (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL UNIQUE,
+      customer_id INTEGER,
+      customer_name TEXT,
+      invoice_number TEXT NOT NULL,
+      invoice_date DATE NOT NULL,
+      due_date DATE NOT NULL,
+      original_amount DECIMAL(12,2) NOT NULL,
+      paid_amount DECIMAL(12,2) DEFAULT 0,
+      balance_amount DECIMAL(12,2) NOT NULL,
+      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE')) DEFAULT 'OUTSTANDING',
+      days_outstanding INTEGER DEFAULT 0,
+      aging_bucket TEXT CHECK (aging_bucket IN ('0-30', '31-60', '61-90', '90+')) DEFAULT '0-30',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers (id)
+    );
+  `);
+
+  // Create damaged_items_sessions table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS damaged_items_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL UNIQUE,
+      session_name TEXT NOT NULL,
+      status TEXT CHECK (status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')) DEFAULT 'ACTIVE',
+      total_items INTEGER DEFAULT 0,
+      total_value DECIMAL(12,2) DEFAULT 0,
+      started_by INTEGER NOT NULL,
+      completed_by INTEGER,
+      cancelled_by INTEGER,
+      cancelled_reason TEXT,
+      notes TEXT,
+      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (started_by) REFERENCES users (id),
+      FOREIGN KEY (completed_by) REFERENCES users (id),
+      FOREIGN KEY (cancelled_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create damaged_items_details table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS damaged_items_details (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_code TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      current_stock INTEGER NOT NULL,
+      damaged_quantity INTEGER NOT NULL,
+      unit_cost DECIMAL(10,2) NOT NULL,
+      total_value DECIMAL(10,2) NOT NULL,
+      damage_reason TEXT CHECK (damage_reason IN ('EXPIRED', 'BROKEN', 'DEFECTIVE', 'SPOILED', 'LOST', 'THEFT', 'OTHER')) NOT NULL,
+      damage_description TEXT,
+      recorded_by INTEGER NOT NULL,
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES damaged_items_sessions (session_id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products (id),
+      FOREIGN KEY (recorded_by) REFERENCES users (id)
+    );
+  `);
+
   // Create indexes
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (transaction_date);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_invoice ON transactions (invoice_number);');
@@ -494,6 +965,45 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_physical_count_sessions_user ON physical_count_sessions (started_by);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_physical_count_details_session ON physical_count_details (session_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_physical_count_details_user ON physical_count_details (counted_by);');
+
+  // Purchase management indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_suppliers_code ON suppliers (code);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers (name);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases (supplier_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases (purchase_date);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases (status);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchases_number ON purchases (purchase_number);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchase_details_purchase ON purchase_details (purchase_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_purchase_details_product ON purchase_details (product_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments (supplier_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_purchase ON supplier_payments (purchase_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_date ON supplier_payments (payment_date);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_supplier ON accounts_payable (supplier_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_status ON accounts_payable (status);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_due_date ON accounts_payable (due_date);');
+
+  // Customer indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customers_code ON customers (code);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customers_name ON customers (name);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customers_active ON customers (is_active);');
+
+  // Customer payment indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_payments_customer ON customer_payments (customer_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_payments_transaction ON customer_payments (transaction_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_payments_date ON customer_payments (payment_date);');
+
+  // Accounts receivable indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_receivable_customer ON accounts_receivable (customer_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_receivable_status ON accounts_receivable (status);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_receivable_due_date ON accounts_receivable (due_date);');
+
+  // Damaged items indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_sessions_status ON damaged_items_sessions (status);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_sessions_started ON damaged_items_sessions (started_at);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_sessions_user ON damaged_items_sessions (started_by);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_details_session ON damaged_items_details (session_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_details_product ON damaged_items_details (product_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_details_reason ON damaged_items_details (damage_reason);');
 
   // Insert default settings
   await db.execAsync(`
@@ -524,7 +1034,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     'VIEW_DASHBOARD', 'CREATE_SALE', 'VIEW_ALL_SALES', 'VIEW_OWN_SALES',
     'VOID_SALE', 'REFUND_SALE', 'MANAGE_PRODUCTS', 'VIEW_PRODUCTS',
     'MANAGE_INVENTORY', 'VIEW_REPORTS', 'VIEW_SETTINGS', 'PERFORM_Z_READING',
-    'PERFORM_X_READING', 'VIEW_EJOURNAL', 'MANAGE_PURCHASES'
+    'PERFORM_X_READING', 'VIEW_EJOURNAL', 'MANAGE_PURCHASES', 'MANAGE_SUPPLIERS',
+    'CREATE_PURCHASE_ORDER', 'RECEIVE_PURCHASE', 'MANAGE_SUPPLIER_PAYMENTS',
+    'VIEW_ACCOUNTS_PAYABLE', 'PROCESS_PAYMENTS', 'MANAGE_DAMAGED_ITEMS',
+    'CREATE_DAMAGE_SESSION', 'VIEW_DAMAGE_REPORTS', 'MANAGE_CUSTOMERS',
+    'COLLECT_CUSTOMER_PAYMENTS', 'VIEW_ACCOUNTS_RECEIVABLE', 'CREATE_CHARGE_INVOICE'
   ];
 
   for (const permission of managerPermissions) {
@@ -550,7 +1064,20 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     { permission: 'PERFORM_Z_READING', enabled: 0 },
     { permission: 'PERFORM_X_READING', enabled: 0 },
     { permission: 'VIEW_EJOURNAL', enabled: 0 },
-    { permission: 'MANAGE_PURCHASES', enabled: 0 }
+    { permission: 'MANAGE_PURCHASES', enabled: 0 },
+    { permission: 'MANAGE_SUPPLIERS', enabled: 0 },
+    { permission: 'CREATE_PURCHASE_ORDER', enabled: 0 },
+    { permission: 'RECEIVE_PURCHASE', enabled: 0 },
+    { permission: 'MANAGE_SUPPLIER_PAYMENTS', enabled: 0 },
+    { permission: 'VIEW_ACCOUNTS_PAYABLE', enabled: 0 },
+    { permission: 'PROCESS_PAYMENTS', enabled: 0 },
+    { permission: 'MANAGE_DAMAGED_ITEMS', enabled: 0 },
+    { permission: 'CREATE_DAMAGE_SESSION', enabled: 0 },
+    { permission: 'VIEW_DAMAGE_REPORTS', enabled: 0 },
+    { permission: 'MANAGE_CUSTOMERS', enabled: 0 },
+    { permission: 'COLLECT_CUSTOMER_PAYMENTS', enabled: 1 },
+    { permission: 'VIEW_ACCOUNTS_RECEIVABLE', enabled: 0 },
+    { permission: 'CREATE_CHARGE_INVOICE', enabled: 1 }
   ];
 
   for (const { permission, enabled } of cashierPermissions) {
@@ -559,6 +1086,43 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       VALUES ('CASHIER', '${permission}', ${enabled}, 1);
     `);
   }
+
+  // Insert sample suppliers
+  await db.execAsync(`
+    INSERT OR IGNORE INTO suppliers (code, name, contact_person, phone, email, address, credit_terms, credit_limit, notes) VALUES
+      ('SUP001', 'Metro Food Distributors', 'Juan dela Cruz', '+63-917-1234567', 'juan@metrofood.ph', '123 Edsa Ave., Makati City', 30, 100000.00, 'Main food supplier for beverages and snacks'),
+      ('SUP002', 'Fresh Goods Trading', 'Maria Santos', '+63-928-7654321', 'maria@freshgoods.com', '456 Commonwealth Ave., Quezon City', 15, 50000.00, 'Supplier for fresh products and dairy'),
+      ('SUP003', 'Global Supplies Inc.', 'Roberto Lim', '+63-939-1111222', 'rob@globalsupplies.com.ph', '789 Ortigas Ave., Pasig City', 45, 200000.00, 'Office supplies and equipment provider'),
+      ('SUP004', 'PharmaCare Distributors', 'Dr. Grace Tan', '+63-916-3333444', 'grace@pharmacare.ph', '321 Taft Ave., Manila', 30, 75000.00, 'Pharmaceutical and health products'),
+      ('SUP005', 'Local Farm Produce', 'Pedro Farmer', '+63-927-5555666', 'pedro@localfarm.ph', 'Km 15 South Superhighway, Laguna', 7, 25000.00, 'Fresh local vegetables and fruits');
+  `);
+
+  // Insert purchase-related settings
+  await db.execAsync(`
+    INSERT OR IGNORE INTO settings (key, value, description) VALUES
+      ('current_purchase_series', 'PO', 'Current purchase order series prefix'),
+      ('current_purchase_number', '1', 'Current purchase order number'),
+      ('current_payment_series', 'PAY', 'Current payment series prefix'),
+      ('current_payment_number', '1', 'Current payment number'),
+      ('default_payment_terms', '30 days', 'Default payment terms for new purchases');
+  `);
+
+  // Insert damaged items settings
+  await db.execAsync(`
+    INSERT OR IGNORE INTO settings (key, value, description) VALUES
+      ('current_damage_series', 'DMG', 'Current damage session series prefix'),
+      ('current_damage_number', '1', 'Current damage session number');
+  `);
+
+  // Insert customer-related settings
+  await db.execAsync(`
+    INSERT OR IGNORE INTO settings (key, value, description) VALUES
+      ('current_customer_series', 'CUS', 'Current customer code series prefix'),
+      ('current_customer_number', '1', 'Current customer number'),
+      ('current_customer_payment_series', 'CPAY', 'Current customer payment series prefix'),
+      ('current_customer_payment_number', '1', 'Current customer payment number'),
+      ('default_customer_credit_terms', '30', 'Default credit terms for customers in days');
+  `);
 };
 
 export const getNextInvoiceNumber = async (db: SQLite.SQLiteDatabase): Promise<string> => {
@@ -581,5 +1145,121 @@ export const updateInvoiceNumber = async (db: SQLite.SQLiteDatabase, invoiceNumb
   await db.runAsync(
     'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
     [numericPart, 'current_invoice_number']
+  );
+};
+
+export const getNextPurchaseNumber = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const result = await db.getFirstAsync<{value: string, series: string}>(
+    `SELECT
+       (SELECT value FROM settings WHERE key = 'current_purchase_number') as value,
+       (SELECT value FROM settings WHERE key = 'current_purchase_series') as series`
+  );
+
+  if (!result) {
+    throw new Error('Purchase settings not found');
+  }
+
+  const nextNumber = (parseInt(result.value) + 1).toString().padStart(6, '0');
+  return `${result.series}${nextNumber}`;
+};
+
+export const updatePurchaseNumber = async (db: SQLite.SQLiteDatabase, purchaseNumber: string) => {
+  const numericPart = purchaseNumber.replace(/^\D+/, '');
+  await db.runAsync(
+    'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [numericPart, 'current_purchase_number']
+  );
+};
+
+export const getNextPaymentNumber = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const result = await db.getFirstAsync<{value: string, series: string}>(
+    `SELECT
+       (SELECT value FROM settings WHERE key = 'current_payment_number') as value,
+       (SELECT value FROM settings WHERE key = 'current_payment_series') as series`
+  );
+
+  if (!result) {
+    throw new Error('Payment settings not found');
+  }
+
+  const nextNumber = (parseInt(result.value) + 1).toString().padStart(6, '0');
+  return `${result.series}${nextNumber}`;
+};
+
+export const updatePaymentNumber = async (db: SQLite.SQLiteDatabase, paymentNumber: string) => {
+  const numericPart = paymentNumber.replace(/^\D+/, '');
+  await db.runAsync(
+    'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [numericPart, 'current_payment_number']
+  );
+};
+
+export const getNextDamageSessionId = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const result = await db.getFirstAsync<{value: string, series: string}>(
+    `SELECT
+       (SELECT value FROM settings WHERE key = 'current_damage_number') as value,
+       (SELECT value FROM settings WHERE key = 'current_damage_series') as series`
+  );
+
+  if (!result) {
+    throw new Error('Damage session settings not found');
+  }
+
+  const nextNumber = (parseInt(result.value) + 1).toString().padStart(3, '0');
+  const year = new Date().getFullYear();
+  return `${result.series}-${year}-${nextNumber}`;
+};
+
+export const updateDamageSessionNumber = async (db: SQLite.SQLiteDatabase, sessionId: string) => {
+  const numericPart = sessionId.split('-').pop() || '1';
+  await db.runAsync(
+    'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [numericPart, 'current_damage_number']
+  );
+};
+
+export const getNextCustomerCode = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const result = await db.getFirstAsync<{value: string, series: string}>(
+    `SELECT
+       (SELECT value FROM settings WHERE key = 'current_customer_number') as value,
+       (SELECT value FROM settings WHERE key = 'current_customer_series') as series`
+  );
+
+  if (!result) {
+    throw new Error('Customer settings not found');
+  }
+
+  const nextNumber = (parseInt(result.value) + 1).toString().padStart(3, '0');
+  return `${result.series}${nextNumber}`;
+};
+
+export const updateCustomerNumber = async (db: SQLite.SQLiteDatabase, customerCode: string) => {
+  const numericPart = customerCode.replace(/^\D+/, '');
+  await db.runAsync(
+    'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [numericPart, 'current_customer_number']
+  );
+};
+
+export const getNextCustomerPaymentNumber = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const result = await db.getFirstAsync<{value: string, series: string}>(
+    `SELECT
+       (SELECT value FROM settings WHERE key = 'current_customer_payment_number') as value,
+       (SELECT value FROM settings WHERE key = 'current_customer_payment_series') as series`
+  );
+
+  if (!result) {
+    throw new Error('Customer payment settings not found');
+  }
+
+  const nextNumber = (parseInt(result.value) + 1).toString().padStart(6, '0');
+  return `${result.series}${nextNumber}`;
+};
+
+export const updateCustomerPaymentNumber = async (db: SQLite.SQLiteDatabase, paymentNumber: string) => {
+  const numericPart = paymentNumber.replace(/^\D+/, '');
+  await db.runAsync(
+    'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [numericPart, 'current_customer_payment_number']
   );
 };
