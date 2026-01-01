@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -18,14 +18,14 @@ import {
   Chip,
   List,
   IconButton,
-  TextInput,
   Portal,
   Dialog,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type PhysicalCountReportScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -73,8 +73,10 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
   const [reportData, setReportData] = useState<GroupedReport[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
   const [showPreview, setShowPreview] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -82,21 +84,23 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadReportData();
+  }, [dateRange]);
+
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
   }, []);
 
-  const loadReportData = async (filterStartDate?: string, filterEndDate?: string) => {
+  const loadReportData = async () => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
-      // Debug logging
-      const actualStartDate = filterStartDate || startDate || undefined;
-      const actualEndDate = filterEndDate || endDate || undefined;
+      // Format dates for database query
+      const actualStartDate = dateRange.startDate.toISOString().split('T')[0];
+      const actualEndDate = dateRange.endDate.toISOString().split('T')[0];
       console.log('🔍 PhysicalCountReport Debug:');
-      console.log('  Filter Start Date:', filterStartDate);
-      console.log('  Filter End Date:', filterEndDate);
-      console.log('  State Start Date:', startDate);
-      console.log('  State End Date:', endDate);
       console.log('  Actual Start Date:', actualStartDate);
       console.log('  Actual End Date:', actualEndDate);
 
@@ -212,46 +216,20 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     return new Date(dateString).toLocaleString();
   };
 
-  const formatDateForFilter = (date: Date) => {
-    return date.toISOString().split('T')[0]; // Returns YYYY-MM-DD format
-  };
-
-  const handleApplyFilter = () => {
-    console.log('Applying date filters:', { startDate, endDate });
-    loadReportData(startDate, endDate);
-  };
-
-  const handleClearFilter = () => {
-    setStartDate('');
-    setEndDate('');
-    loadReportData('', '');
-  };
-
-  const setQuickFilter = (days: number) => {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
-    setStartDate(formatDateForFilter(startDate));
-    setEndDate(formatDateForFilter(endDate));
-    loadReportData(formatDateForFilter(startDate), formatDateForFilter(endDate));
-  };
-
   const toggleSessionExpansion = (sessionId: string) => {
     setExpandedSession(expandedSession === sessionId ? null : sessionId);
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    // Maintain current date filters when refreshing
-    await loadReportData(startDate || undefined, endDate || undefined);
+    await loadReportData();
     setRefreshing(false);
   };
 
   const createTestData = async () => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       console.log('Starting test data creation...');
       const sessionId = await dbService.createTestPhysicalCountData();
 
@@ -470,97 +448,16 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
               Generate Test Data
             </Button>
           </View>
-          {(startDate || endDate) && (
-            <View style={styles.activeFilterIndicator}>
-              <Text style={styles.activeFilterText}>
-                🔍 Active Filters: {startDate || 'Any'} to {endDate || 'Any'}
-              </Text>
-            </View>
-          )}
         </Card.Content>
       </Card>
 
       {/* Date Filter Card */}
       <Card style={styles.filterCard}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Filter by Date Range</Title>
-
-          {/* Quick Filter Buttons */}
-          <View style={styles.quickFilterContainer}>
-            <Button
-              mode="outlined"
-              onPress={() => setQuickFilter(7)}
-              style={styles.quickFilterButton}
-              compact
-            >
-              Last 7 Days
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={() => setQuickFilter(30)}
-              style={styles.quickFilterButton}
-              compact
-            >
-              Last 30 Days
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={() => setQuickFilter(90)}
-              style={styles.quickFilterButton}
-              compact
-            >
-              Last 90 Days
-            </Button>
-          </View>
-
-          {/* Date Inputs */}
-          <View style={styles.dateInputContainer}>
-            <TextInput
-              label="Start Date (YYYY-MM-DD)"
-              value={startDate}
-              onChangeText={setStartDate}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="2025-01-01"
-              keyboardType="default"
-              autoCapitalize="none"
-              autoCorrect={false}
-              selectTextOnFocus={true}
-              clearButtonMode="while-editing"
-            />
-            <TextInput
-              label="End Date (YYYY-MM-DD)"
-              value={endDate}
-              onChangeText={setEndDate}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="2025-12-31"
-              keyboardType="default"
-              autoCapitalize="none"
-              autoCorrect={false}
-              selectTextOnFocus={true}
-              clearButtonMode="while-editing"
-            />
-          </View>
-
-          {/* Filter Action Buttons */}
-          <View style={styles.filterActions}>
-            <Button
-              mode="contained"
-              onPress={handleApplyFilter}
-              style={styles.filterButton}
-              loading={loading}
-            >
-              Apply Filter
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={handleClearFilter}
-              style={styles.filterButton}
-            >
-              Clear Filter
-            </Button>
-          </View>
+          <DateRangeFilter
+            onDateChange={handleDateChange}
+            selectedPreset="this_month"
+          />
         </Card.Content>
       </Card>
     </View>
@@ -654,56 +551,11 @@ const styles = StyleSheet.create({
   refreshButton: {
     minWidth: 120,
   },
-  activeFilterIndicator: {
-    marginTop: 12,
-    padding: 8,
-    backgroundColor: '#e3f2fd',
-    borderRadius: 6,
-    borderLeftWidth: 4,
-    borderLeftColor: '#2196F3',
-  },
-  activeFilterText: {
-    fontSize: 12,
-    color: '#1976D2',
-    fontWeight: '500',
-    textAlign: 'center',
-  },
   filterCard: {
     margin: 16,
     marginTop: 8,
     marginBottom: 8,
     elevation: 2,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-    color: '#333',
-  },
-  quickFilterContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  quickFilterButton: {
-    flex: 1,
-    minWidth: 100,
-  },
-  dateInputContainer: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-  dateInput: {
-    flex: 1,
-  },
-  filterActions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  filterButton: {
-    flex: 1,
   },
   sessionCard: {
     marginHorizontal: 16,

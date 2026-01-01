@@ -1,5 +1,5 @@
 import { User } from '../database/schema';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 
 export type Permission =
   | 'VIEW_DASHBOARD'
@@ -18,7 +18,13 @@ export type Permission =
   | 'PERFORM_Z_READING'
   | 'PERFORM_X_READING'
   | 'VIEW_EJOURNAL'
-  | 'MANAGE_PURCHASES';
+  | 'MANAGE_PURCHASES'
+  | 'MANAGE_SUPPLIERS'
+  | 'CREATE_PURCHASE_ORDER'
+  | 'MANAGE_SUPPLIER_PAYMENTS'
+  | 'MANAGE_DAMAGED_ITEMS'
+  | 'MANAGE_CUSTOMERS'
+  | 'COLLECT_CUSTOMER_PAYMENTS';
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER';
 
@@ -41,6 +47,12 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'PERFORM_X_READING',
     'VIEW_EJOURNAL',
     'MANAGE_PURCHASES',
+    'MANAGE_SUPPLIERS',
+    'CREATE_PURCHASE_ORDER',
+    'MANAGE_SUPPLIER_PAYMENTS',
+    'MANAGE_DAMAGED_ITEMS',
+    'MANAGE_CUSTOMERS',
+    'COLLECT_CUSTOMER_PAYMENTS',
   ],
   MANAGER: [
     'VIEW_DASHBOARD',
@@ -58,6 +70,12 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'PERFORM_X_READING',
     'VIEW_EJOURNAL',
     'MANAGE_PURCHASES',
+    'MANAGE_SUPPLIERS',
+    'CREATE_PURCHASE_ORDER',
+    'MANAGE_SUPPLIER_PAYMENTS',
+    'MANAGE_DAMAGED_ITEMS',
+    'MANAGE_CUSTOMERS',
+    'COLLECT_CUSTOMER_PAYMENTS',
     // Manager cannot: MANAGE_USERS, MANAGE_SETTINGS
   ],
   CASHIER: [
@@ -74,12 +92,15 @@ export class PermissionService {
 
   static async loadDynamicPermissions(): Promise<void> {
     try {
-      const dbService = DatabaseService.getInstance();
-      const managerPerms = await dbService.getEnabledPermissionsForRole('MANAGER');
-      const cashierPerms = await dbService.getEnabledPermissionsForRole('CASHIER');
+      const dbService = getDatabase();
+      // Check if the method exists (may not be in mock service)
+      if (dbService.getEnabledPermissionsForRole) {
+        const managerPerms = await dbService.getEnabledPermissionsForRole('MANAGER');
+        const cashierPerms = await dbService.getEnabledPermissionsForRole('CASHIER');
 
-      this.dynamicPermissions.set('MANAGER', managerPerms);
-      this.dynamicPermissions.set('CASHIER', cashierPerms);
+        this.dynamicPermissions.set('MANAGER', managerPerms);
+        this.dynamicPermissions.set('CASHIER', cashierPerms);
+      }
     } catch (error) {
       console.error('Failed to load dynamic permissions:', error);
       // Fall back to static permissions if dynamic loading fails
@@ -87,15 +108,27 @@ export class PermissionService {
   }
 
   static hasPermission(user: User | null, permission: Permission): boolean {
-    if (!user || !user.is_active) {
+    // Check if user exists and is active (handle both boolean and number types)
+    if (!user) {
+      console.log('[Permission] No user provided');
+      return false;
+    }
+
+    // Handle is_active as both boolean true and number 1
+    const isActive = user.is_active === true || user.is_active === 1 || (user as any).is_active === 1;
+    if (!isActive) {
+      console.log('[Permission] User not active:', user.is_active);
       return false;
     }
 
     const userRole = user.role as UserRole;
+    console.log('[Permission] Checking', permission, 'for role', userRole);
 
-    // Admin always has all permissions
+    // Admin always has all permissions from ROLE_PERMISSIONS
     if (userRole === 'ADMIN') {
-      return ROLE_PERMISSIONS[userRole].includes(permission);
+      const hasIt = ROLE_PERMISSIONS[userRole].includes(permission);
+      console.log('[Permission] Admin has', permission, ':', hasIt);
+      return hasIt;
     }
 
     // Use dynamic permissions for Manager and Cashier
@@ -106,7 +139,7 @@ export class PermissionService {
 
     // Fallback to static permissions
     const rolePermissions = ROLE_PERMISSIONS[userRole];
-    return rolePermissions.includes(permission);
+    return rolePermissions ? rolePermissions.includes(permission) : false;
   }
 
   static hasAnyPermission(user: User | null, permissions: Permission[]): boolean {
@@ -171,6 +204,10 @@ export class PermissionService {
 
   static async refreshDynamicPermissions(): Promise<void> {
     await this.loadDynamicPermissions();
+  }
+
+  static clearPermissions(): void {
+    this.dynamicPermissions.clear();
   }
 
   static getAvailablePermissions(): { permission: Permission; label: string; description: string }[] {

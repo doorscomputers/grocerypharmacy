@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -10,7 +10,6 @@ import {
   Title,
   Paragraph,
   Button,
-  TextInput,
   useTheme,
   Chip,
   DataTable,
@@ -19,7 +18,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type InventoryMovementsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -39,8 +39,10 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
   const [filterType, setFilterType] = useState<MovementType | ''>('');
   const [filterReference, setFilterReference] = useState<ReferenceType | ''>('');
 
@@ -48,50 +50,41 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadData();
+  }, [dateRange]);
+
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
   }, []);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
+
+      // Format dates for database query
+      const dateFrom = dateRange.startDate.toISOString().split('T')[0];
+      const dateTo = dateRange.endDate.toISOString().split('T')[0];
+
+      const options: any = {
+        date_from: dateFrom,
+        date_to: dateTo,
+        limit: 100
+      };
+
+      if (filterType) options.movement_type = filterType;
+      if (filterReference) options.reference_type = filterReference;
 
       const [movementsData, summaryData] = await Promise.all([
-        dbService.getInventoryMovements({
-          limit: 100
-        }),
-        dbService.getInventoryMovementsSummary()
+        dbService.getInventoryMovements(options),
+        dbService.getInventoryMovementsSummary(dateFrom, dateTo)
       ]);
 
       setMovements(movementsData);
       setSummary(summaryData);
     } catch (error) {
       console.error('Error loading inventory movements:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadFilteredData = async () => {
-    try {
-      setLoading(true);
-      const dbService = DatabaseService.getInstance();
-
-      const options: any = {};
-
-      if (filterType) options.movement_type = filterType;
-      if (filterReference) options.reference_type = filterReference;
-      if (dateFrom) options.date_from = dateFrom;
-      if (dateTo) options.date_to = dateTo;
-
-      const [movementsData, summaryData] = await Promise.all([
-        dbService.getInventoryMovements(options),
-        dbService.getInventoryMovementsSummary(dateFrom || undefined, dateTo || undefined)
-      ]);
-
-      setMovements(movementsData);
-      setSummary(summaryData);
-    } catch (error) {
-      console.error('Error loading filtered data:', error);
     } finally {
       setLoading(false);
     }
@@ -206,33 +199,10 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
       {/* Date Filter */}
       <Card style={styles.filterCard}>
         <Card.Content>
-          <Title style={styles.filterTitle}>Filters</Title>
-          <View style={styles.dateFilterRow}>
-            <TextInput
-              label="From Date"
-              value={dateFrom}
-              onChangeText={setDateFrom}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="YYYY-MM-DD"
-            />
-            <TextInput
-              label="To Date"
-              value={dateTo}
-              onChangeText={setDateTo}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="YYYY-MM-DD"
-            />
-          </View>
-          <Button
-            mode="contained"
-            onPress={loadFilteredData}
-            style={styles.filterButton}
-            loading={loading}
-          >
-            Apply Filter
-          </Button>
+          <DateRangeFilter
+            onDateChange={handleDateChange}
+            selectedPreset="this_month"
+          />
         </Card.Content>
       </Card>
 
@@ -569,22 +539,6 @@ const styles = StyleSheet.create({
   filterCard: {
     marginBottom: 16,
     elevation: 4,
-  },
-  filterTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
-  },
-  dateFilterRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 12,
-  },
-  dateInput: {
-    flex: 1,
-  },
-  filterButton: {
-    marginTop: 8,
   },
   summaryCard: {
     marginBottom: 16,

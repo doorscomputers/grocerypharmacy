@@ -6,6 +6,7 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
+// Note: FlatList is still used for the main list, only dialogs use .map()
 import {
   Card,
   Title,
@@ -25,7 +26,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Product, Supplier } from '../database/schema';
 
 type PurchaseOrderScreenNavigationProp = StackNavigationProp<
@@ -73,6 +74,12 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const [quantity, setQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
 
+  // Quick Add Supplier
+  const [quickAddSupplierVisible, setQuickAddSupplierVisible] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [newSupplierPhone, setNewSupplierPhone] = useState('');
+  const [newSupplierAddress, setNewSupplierAddress] = useState('');
+
   const theme = useTheme();
 
   useEffect(() => {
@@ -82,11 +89,11 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const [purchaseOrdersData, suppliersData, productsData] = await Promise.all([
         dbService.getPurchaseOrders(20),
         dbService.getSuppliers(true),
-        dbService.getProducts(true, 100)
+        dbService.getProducts(true)
       ]);
 
       setPurchaseOrders(purchaseOrdersData);
@@ -120,6 +127,49 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     setNotes('');
     setPurchaseItems([]);
     setCreateDialogVisible(true);
+  };
+
+  const handleQuickAddSupplier = async () => {
+    if (!newSupplierName.trim()) {
+      Alert.alert('Error', 'Supplier name is required');
+      return;
+    }
+
+    try {
+      const dbService = getDatabase();
+
+      // Generate a simple code from name
+      const code = newSupplierName.trim().substring(0, 3).toUpperCase() + Date.now().toString().slice(-4);
+
+      const newSupplier = await dbService.createSupplier({
+        code,
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || undefined,
+        address: newSupplierAddress.trim() || undefined,
+        is_active: true,
+      });
+
+      // Reload suppliers and auto-select the new one
+      const suppliersData = await dbService.getSuppliers(true);
+      setSuppliers(suppliersData);
+
+      // Find and select the newly created supplier
+      const createdSupplier = suppliersData.find((s: Supplier) => s.code === code);
+      if (createdSupplier) {
+        setSelectedSupplier(createdSupplier);
+      }
+
+      // Reset and close
+      setNewSupplierName('');
+      setNewSupplierPhone('');
+      setNewSupplierAddress('');
+      setQuickAddSupplierVisible(false);
+
+      Alert.alert('Success', `Supplier "${newSupplierName}" added successfully`);
+    } catch (error) {
+      console.error('Error creating supplier:', error);
+      Alert.alert('Error', 'Failed to create supplier');
+    }
   };
 
   const addProductToPurchase = () => {
@@ -196,7 +246,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const purchaseData = {
         supplier_id: selectedSupplier.id,
@@ -234,7 +284,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const openReceiveDialog = async (purchase: any) => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const purchaseDetails = await dbService.getPurchaseOrderById(purchase.id);
       setSelectedPurchase(purchaseDetails);
       setReceiveDialogVisible(true);
@@ -251,7 +301,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       // For simplicity, receive all ordered quantities
       const items = selectedPurchase.items.map((item: any) => ({
@@ -381,33 +431,47 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
           <Dialog.Title>Create Purchase Order</Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView style={styles.dialogContent}>
-              {/* Supplier Selection */}
-              <Menu
-                visible={supplierMenuVisible}
-                onDismiss={() => setSupplierMenuVisible(false)}
-                anchor={
-                  <Button
-                    mode="outlined"
-                    onPress={() => setSupplierMenuVisible(true)}
-                    style={styles.dialogInput}
-                    icon="chevron-down"
-                    contentStyle={{ justifyContent: 'flex-start' }}
-                  >
-                    {selectedSupplier ? selectedSupplier.name : 'Select Supplier'}
-                  </Button>
-                }
-              >
-                {suppliers.map(supplier => (
-                  <Menu.Item
-                    key={supplier.id}
-                    onPress={() => {
-                      setSelectedSupplier(supplier);
-                      setSupplierMenuVisible(false);
-                    }}
-                    title={supplier.name}
-                  />
-                ))}
-              </Menu>
+              {/* Supplier Selection with Quick Add */}
+              <View style={styles.supplierRow}>
+                <Menu
+                  visible={supplierMenuVisible}
+                  onDismiss={() => setSupplierMenuVisible(false)}
+                  anchor={
+                    <Button
+                      mode="outlined"
+                      onPress={() => setSupplierMenuVisible(true)}
+                      style={styles.supplierDropdown}
+                      icon="chevron-down"
+                      contentStyle={{ justifyContent: 'flex-start' }}
+                    >
+                      {selectedSupplier ? selectedSupplier.name : 'Select Supplier'}
+                    </Button>
+                  }
+                  contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                  style={{ backgroundColor: '#ffffff' }}
+                >
+                  {suppliers.map(supplier => (
+                    <Menu.Item
+                      key={supplier.id}
+                      onPress={() => {
+                        setSelectedSupplier(supplier);
+                        setSupplierMenuVisible(false);
+                      }}
+                      title={supplier.name}
+                      style={{ backgroundColor: '#ffffff' }}
+                      titleStyle={{ color: '#333333' }}
+                    />
+                  ))}
+                </Menu>
+                <IconButton
+                  icon="plus"
+                  mode="contained"
+                  iconColor="#fff"
+                  containerColor="#4CAF50"
+                  size={20}
+                  onPress={() => setQuickAddSupplierVisible(true)}
+                />
+              </View>
 
               <TextInput
                 label="Reference Number"
@@ -425,6 +489,51 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
                 style={styles.dialogInput}
                 placeholder="YYYY-MM-DD"
               />
+              <View style={styles.quickDateRow}>
+                <Chip
+                  compact
+                  onPress={() => {
+                    const today = new Date();
+                    setExpectedDeliveryDate(today.toISOString().split('T')[0]);
+                  }}
+                  style={styles.quickDateChip}
+                >
+                  Today
+                </Chip>
+                <Chip
+                  compact
+                  onPress={() => {
+                    const tomorrow = new Date();
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    setExpectedDeliveryDate(tomorrow.toISOString().split('T')[0]);
+                  }}
+                  style={styles.quickDateChip}
+                >
+                  Tomorrow
+                </Chip>
+                <Chip
+                  compact
+                  onPress={() => {
+                    const nextWeek = new Date();
+                    nextWeek.setDate(nextWeek.getDate() + 7);
+                    setExpectedDeliveryDate(nextWeek.toISOString().split('T')[0]);
+                  }}
+                  style={styles.quickDateChip}
+                >
+                  +7 Days
+                </Chip>
+                <Chip
+                  compact
+                  onPress={() => {
+                    const nextMonth = new Date();
+                    nextMonth.setDate(nextMonth.getDate() + 30);
+                    setExpectedDeliveryDate(nextMonth.toISOString().split('T')[0]);
+                  }}
+                  style={styles.quickDateChip}
+                >
+                  +30 Days
+                </Chip>
+              </View>
 
               <TextInput
                 label="Payment Terms"
@@ -512,11 +621,10 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
                 right={<TextInput.Icon icon="magnify" />}
               />
 
-              <FlatList
-                data={filteredProducts.slice(0, 10)}
-                keyExtractor={(item) => item.id.toString()}
-                renderItem={({ item }) => (
+              <View style={styles.productList}>
+                {filteredProducts.map((item) => (
                   <List.Item
+                    key={item.id.toString()}
                     title={item.name}
                     description={`${item.code} • Stock: ${item.stock_quantity} • Cost: ₱${item.cost.toFixed(2)}`}
                     onPress={() => {
@@ -525,15 +633,16 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
                     }}
                     style={selectedProduct?.id === item.id ? styles.selectedProduct : undefined}
                   />
-                )}
-                style={styles.productList}
-              />
+                ))}
+              </View>
 
               {selectedProduct && (
-                <>
-                  <Paragraph style={styles.selectedProductName}>
-                    Selected: {selectedProduct.name}
-                  </Paragraph>
+                <View style={styles.selectedProductSection}>
+                  <View style={styles.selectedProductHeader}>
+                    <Paragraph style={styles.selectedProductName}>
+                      Selected: {selectedProduct.name}
+                    </Paragraph>
+                  </View>
 
                   <TextInput
                     label="Quantity"
@@ -552,7 +661,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
                     style={styles.dialogInput}
                     keyboardType="numeric"
                   />
-                </>
+                </View>
               )}
             </ScrollView>
           </Dialog.ScrollArea>
@@ -601,6 +710,56 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
             <Button onPress={() => setReceiveDialogVisible(false)}>Cancel</Button>
             <Button onPress={receivePurchaseOrder} loading={loading}>
               Receive All Pending
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* Quick Add Supplier Dialog */}
+      <Portal>
+        <Dialog
+          visible={quickAddSupplierVisible}
+          onDismiss={() => setQuickAddSupplierVisible(false)}
+          style={{ maxWidth: 400, alignSelf: 'center', width: '90%' }}
+        >
+          <Dialog.Title>Quick Add Supplier</Dialog.Title>
+          <Dialog.Content>
+            <TextInput
+              label="Supplier Name *"
+              value={newSupplierName}
+              onChangeText={setNewSupplierName}
+              mode="outlined"
+              style={{ marginBottom: 12 }}
+              autoFocus
+            />
+            <TextInput
+              label="Phone Number"
+              value={newSupplierPhone}
+              onChangeText={setNewSupplierPhone}
+              mode="outlined"
+              style={{ marginBottom: 12 }}
+              keyboardType="phone-pad"
+            />
+            <TextInput
+              label="Address"
+              value={newSupplierAddress}
+              onChangeText={setNewSupplierAddress}
+              mode="outlined"
+              multiline
+              numberOfLines={2}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => {
+              setNewSupplierName('');
+              setNewSupplierPhone('');
+              setNewSupplierAddress('');
+              setQuickAddSupplierVisible(false);
+            }}>
+              Cancel
+            </Button>
+            <Button mode="contained" onPress={handleQuickAddSupplier}>
+              Add Supplier
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -742,20 +901,53 @@ const styles = StyleSheet.create({
   },
   productList: {
     maxHeight: 200,
-    marginBottom: 16,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
   selectedProduct: {
     backgroundColor: '#E3F2FD',
   },
+  selectedProductSection: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+  },
+  selectedProductHeader: {
+    backgroundColor: '#1976D2',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 12,
+  },
   selectedProductName: {
     fontWeight: 'bold',
     textAlign: 'center',
-    marginBottom: 16,
-    color: '#1976D2',
+    color: '#FFFFFF',
+    fontSize: 14,
   },
   receiveTitle: {
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: 16,
+  },
+  supplierRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 8,
+  },
+  supplierDropdown: {
+    flex: 1,
+  },
+  quickDateRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+    marginTop: -8,
+  },
+  quickDateChip: {
+    marginRight: 4,
   },
 });

@@ -1,8 +1,8 @@
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 
 export const initializeSampleData = async () => {
   try {
-    const dbService = DatabaseService.getInstance();
+    const dbService = getDatabase();
 
     // Sample products
     const sampleProducts = [
@@ -150,7 +150,7 @@ export const initializeSampleData = async () => {
 
 export const clearAllData = async () => {
   try {
-    const dbService = DatabaseService.getInstance();
+    const dbService = getDatabase();
     const db = dbService.getDatabase();
 
     // Clear all tables (be careful with this in production!)

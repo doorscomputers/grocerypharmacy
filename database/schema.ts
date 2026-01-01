@@ -23,10 +23,15 @@ export interface DatabaseSchema {
     price: number;
     cost: number;
     category_id?: number;
-    tax_rate: number; // VAT rate (typically 12% in PH)
-    is_vat_inclusive: boolean;
+    brand_id?: number;
+    unit_id?: number;
+    size_id?: number;
+    vat_type: 'vatable' | 'vat_exempt' | 'zero_rated'; // BIR VAT classification
+    tax_rate: number; // VAT rate (12% for vatable, 0% for exempt/zero-rated)
+    is_vat_inclusive: boolean; // Only applicable for vatable items
     stock_quantity: number;
-    unit: string;
+    reorder_level: number;
+    unit: string; // Legacy field for backward compatibility
     is_active: boolean;
     created_at: string;
     updated_at: string;
@@ -39,6 +44,39 @@ export interface DatabaseSchema {
     description?: string;
     is_active: boolean;
     created_at: string;
+    updated_at: string;
+  };
+
+  // Product brands
+  brands: {
+    id: number;
+    name: string;
+    description?: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Product units of measure
+  units: {
+    id: number;
+    name: string;
+    abbreviation: string;
+    description?: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  };
+
+  // Product sizes
+  sizes: {
+    id: number;
+    name: string;
+    description?: string;
+    sort_order: number;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
   };
 
   // Sales transactions (BIR compliant)
@@ -161,7 +199,7 @@ export interface DatabaseSchema {
     quantity_after: number;  // Stock quantity after the transaction
     unit_cost: number;       // Cost per unit at time of transaction
     total_value: number;     // Total value of the movement (quantity * unit_cost)
-    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT';
+    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID';
     reference_id?: number;
     reference_number?: string; // Human-readable reference (invoice number, purchase order, etc.)
     notes?: string;
@@ -405,6 +443,103 @@ export interface DatabaseSchema {
     recorded_at: string;
     created_at: string;
   };
+
+  // End of Day records for Z-Reading
+  end_of_day_records: {
+    id: number;
+    date: string;
+    beginning_cash: number;
+    gross_sales: number;
+    discounts: number;
+    sales_returns: number;
+    net_sales: number;
+    cash_sales: number;
+    credit_sales: number;
+    gcash_sales: number;
+    card_sales: number;
+    other_sales: number;
+    void_amount: number;
+    void_count: number;
+    transaction_count: number;
+    customer_payments_received: number;
+    supplier_payments_made: number;
+    expected_cash: number;
+    actual_cash: number;
+    cash_variance: number;
+    denomination_breakdown: string; // JSON string
+    next_day_beginning_cash: number;
+    created_by: number;
+    status: 'COMPLETED' | 'CANCELLED';
+    created_at: string;
+  };
+
+  // Cashier Shifts - tracks when cashier starts/ends their shift
+  shifts: {
+    id: number;
+    user_id: number;
+    start_time: string;
+    end_time?: string;
+    beginning_cash: number;
+    ending_cash?: number;
+    status: 'OPEN' | 'CLOSED';
+    z_reading_id?: number;
+    created_at: string;
+  };
+
+  // Sales Returns
+  sales_returns: {
+    id: number;
+    return_number: string;
+    original_transaction_id: number;
+    original_invoice_number: string;
+    customer_id?: number;
+    customer_name?: string;
+    return_date: string;
+    total_amount: number;
+    refund_method: 'CASH' | 'CREDIT' | 'EXCHANGE';
+    reason: string;
+    notes?: string;
+    processed_by: number;
+    status: 'COMPLETED' | 'CANCELLED';
+    created_at: string;
+  };
+
+  // Sales Return Items
+  sales_return_items: {
+    id: number;
+    sales_return_id: number;
+    product_id: number;
+    product_code: string;
+    product_name: string;
+    quantity: number;
+    unit_price: number;
+    total_amount: number;
+    created_at: string;
+  };
+
+  // Cash Movements for cash drawer management
+  cash_movements: {
+    id: number;
+    movement_type: 'OPENING_FUND' | 'CASH_IN' | 'CASH_OUT' | 'PETTY_CASH' | 'CASH_REFUND';
+    amount: number;
+    description: string;
+    reference_number?: string;
+    approved_by?: string;
+    cashier_id: number;
+    created_at: string;
+  };
+
+  // Customer Audit Trail
+  customer_audit: {
+    id: number;
+    customer_id: number;
+    action: 'CREATE' | 'UPDATE' | 'DELETE';
+    field_name: string;
+    old_value?: string;
+    new_value?: string;
+    changed_by: number;
+    changed_at: string;
+  };
 }
 
 // Type exports for components
@@ -412,6 +547,9 @@ export type Product = DatabaseSchema['products'];
 export type Transaction = DatabaseSchema['transactions'];
 export type TransactionItem = DatabaseSchema['transaction_items'];
 export type Category = DatabaseSchema['categories'];
+export type Brand = DatabaseSchema['brands'];
+export type Unit = DatabaseSchema['units'];
+export type Size = DatabaseSchema['sizes'];
 export type User = DatabaseSchema['users'];
 export type InventoryMovement = DatabaseSchema['inventory_movements'];
 export type Supplier = DatabaseSchema['suppliers'];
@@ -424,6 +562,12 @@ export type CustomerPayment = DatabaseSchema['customer_payments'];
 export type AccountsReceivable = DatabaseSchema['accounts_receivable'];
 export type DamagedItemsSession = DatabaseSchema['damaged_items_sessions'];
 export type DamagedItemsDetail = DatabaseSchema['damaged_items_details'];
+export type EndOfDayRecord = DatabaseSchema['end_of_day_records'];
+export type Shift = DatabaseSchema['shifts'];
+export type SalesReturn = DatabaseSchema['sales_returns'];
+export type SalesReturnItem = DatabaseSchema['sales_return_items'];
+export type CashMovement = DatabaseSchema['cash_movements'];
+export type CustomerAudit = DatabaseSchema['customer_audit'];
 
 // Database initialization script
 export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
@@ -473,12 +617,69 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       name TEXT NOT NULL UNIQUE,
       description TEXT,
       is_active BOOLEAN DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
   console.log('✅ Categories table created successfully');
   } catch (error) {
     console.error('❌ Failed to create categories table:', error);
+    throw error;
+  }
+
+  console.log('Creating brands table...');
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS brands (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      is_active BOOLEAN DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log('✅ Brands table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create brands table:', error);
+    throw error;
+  }
+
+  console.log('Creating units table...');
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS units (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      abbreviation TEXT NOT NULL,
+      description TEXT,
+      is_active BOOLEAN DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log('✅ Units table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create units table:', error);
+    throw error;
+  }
+
+  console.log('Creating sizes table...');
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sizes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      sort_order INTEGER DEFAULT 0,
+      is_active BOOLEAN DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log('✅ Sizes table created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create sizes table:', error);
     throw error;
   }
 
@@ -493,14 +694,22 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       price DECIMAL(10,2) NOT NULL,
       cost DECIMAL(10,2) NOT NULL DEFAULT 0,
       category_id INTEGER,
+      brand_id INTEGER,
+      unit_id INTEGER,
+      size_id INTEGER,
+      vat_type TEXT CHECK (vat_type IN ('vatable', 'vat_exempt', 'zero_rated')) DEFAULT 'vatable',
       tax_rate DECIMAL(5,2) DEFAULT 12.00,
       is_vat_inclusive BOOLEAN DEFAULT 1,
       stock_quantity INTEGER DEFAULT 0,
+      reorder_level INTEGER DEFAULT 0,
       unit TEXT DEFAULT 'pcs',
       is_active BOOLEAN DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (category_id) REFERENCES categories (id)
+      FOREIGN KEY (category_id) REFERENCES categories (id),
+      FOREIGN KEY (brand_id) REFERENCES brands (id),
+      FOREIGN KEY (unit_id) REFERENCES units (id),
+      FOREIGN KEY (size_id) REFERENCES sizes (id)
     );
   `);
   console.log('✅ Products table created successfully');
@@ -508,6 +717,24 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     console.error('❌ Failed to create products table:', error);
     throw error;
   }
+
+  // Add new columns to products if they don't exist (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN brand_id INTEGER REFERENCES brands(id);`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN unit_id INTEGER REFERENCES units(id);`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN size_id INTEGER REFERENCES sizes(id);`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN reorder_level INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  // Add vat_type column for BIR compliance - default to 'vatable'
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN vat_type TEXT DEFAULT 'vatable';`);
+  } catch (e) { /* Column may already exist */ }
 
   console.log('Creating users table...');
   try {
@@ -536,6 +763,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       transaction_number TEXT NOT NULL UNIQUE,
       invoice_number TEXT NOT NULL UNIQUE,
+      customer_id INTEGER,
       customer_name TEXT,
       customer_tin TEXT,
       customer_address TEXT,
@@ -555,10 +783,114 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
       FOREIGN KEY (cashier_id) REFERENCES users (id),
       FOREIGN KEY (void_by) REFERENCES users (id)
     );
   `);
+
+  // Add customer_id column to transactions if it doesn't exist (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE transactions ADD COLUMN customer_id INTEGER REFERENCES customers(id);`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Add payment_status column to transactions if it doesn't exist (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE transactions ADD COLUMN payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID';`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Migration: Fix payment_method CHECK constraint to include CHARGE_INVOICE
+  // SQLite doesn't support modifying CHECK constraints, so we need to recreate the table
+  console.log('Checking if payment_method constraint needs update...');
+  try {
+    // Test if CHARGE_INVOICE is allowed by trying a temporary insert
+    const testResult = await db.getFirstAsync<{count: number}>(
+      `SELECT COUNT(*) as count FROM transactions WHERE payment_method = 'CHARGE_INVOICE'`
+    );
+    // If the query succeeds, the constraint either allows it or table is empty
+    // Try an actual constraint test by checking the table info
+    const tableInfo = await db.getAllAsync<{sql: string}>(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'`
+    );
+
+    if (tableInfo.length > 0 && tableInfo[0].sql) {
+      const createSql = tableInfo[0].sql;
+      // Check if the constraint includes CHARGE_INVOICE
+      if (!createSql.includes('CHARGE_INVOICE')) {
+        console.log('Migrating transactions table to add CHARGE_INVOICE support...');
+
+        // Temporarily disable foreign keys for safe migration
+        await db.execAsync('PRAGMA foreign_keys = OFF;');
+
+        // Create new table with correct constraint
+        await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS transactions_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_number TEXT NOT NULL UNIQUE,
+            invoice_number TEXT NOT NULL UNIQUE,
+            customer_id INTEGER,
+            customer_name TEXT,
+            customer_tin TEXT,
+            customer_address TEXT,
+            subtotal DECIMAL(10,2) NOT NULL,
+            tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+            discount_amount DECIMAL(10,2) DEFAULT 0,
+            total_amount DECIMAL(10,2) NOT NULL,
+            payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE', 'CHARGE_INVOICE')) DEFAULT 'CASH',
+            amount_tendered DECIMAL(10,2) NOT NULL,
+            change_amount DECIMAL(10,2) DEFAULT 0,
+            payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID',
+            cashier_id INTEGER NOT NULL,
+            status TEXT CHECK (status IN ('COMPLETED', 'VOID', 'REFUNDED')) DEFAULT 'COMPLETED',
+            void_reason TEXT,
+            void_by INTEGER,
+            void_date DATETIME,
+            transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (customer_id) REFERENCES customers (id),
+            FOREIGN KEY (cashier_id) REFERENCES users (id),
+            FOREIGN KEY (void_by) REFERENCES users (id)
+          );
+        `);
+
+        // Copy data from old table - handle missing columns gracefully
+        await db.execAsync(`
+          INSERT INTO transactions_new
+            (id, transaction_number, invoice_number, customer_id, customer_name, customer_tin,
+             customer_address, subtotal, tax_amount, discount_amount, total_amount, payment_method,
+             amount_tendered, change_amount, payment_status, cashier_id, status, void_reason,
+             void_by, void_date, transaction_date, created_at, updated_at)
+          SELECT
+            id, transaction_number, invoice_number,
+            COALESCE(customer_id, NULL),
+            customer_name, customer_tin, customer_address,
+            subtotal, tax_amount, discount_amount, total_amount, payment_method,
+            amount_tendered, change_amount,
+            COALESCE(payment_status, 'PAID'),
+            cashier_id, status, void_reason, void_by, void_date,
+            transaction_date, created_at, updated_at
+          FROM transactions;
+        `);
+
+        // Drop old table
+        await db.execAsync(`DROP TABLE transactions;`);
+
+        // Rename new table
+        await db.execAsync(`ALTER TABLE transactions_new RENAME TO transactions;`);
+
+        // Re-enable foreign keys
+        await db.execAsync('PRAGMA foreign_keys = ON;');
+
+        console.log('✅ Transactions table migrated successfully with CHARGE_INVOICE support');
+      } else {
+        console.log('✅ Transactions table already supports CHARGE_INVOICE');
+      }
+    }
+  } catch (e) {
+    console.warn('Migration check/update for payment_method constraint:', e);
+    // If migration fails, it might be because the table is new or already correct
+  }
 
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS transaction_items (
@@ -640,19 +972,22 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Drop and recreate inventory_movements table to ensure correct schema
+  console.log('Recreating inventory_movements table with correct schema...');
+  await db.execAsync(`DROP TABLE IF EXISTS inventory_movements;`);
   await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS inventory_movements (
+    CREATE TABLE inventory_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
-      product_code TEXT NOT NULL,
-      product_name TEXT NOT NULL,
+      product_code TEXT NOT NULL DEFAULT '',
+      product_name TEXT NOT NULL DEFAULT '',
       movement_type TEXT CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT')) NOT NULL,
       quantity INTEGER NOT NULL,
-      quantity_before INTEGER NOT NULL,
-      quantity_after INTEGER NOT NULL,
+      quantity_before INTEGER NOT NULL DEFAULT 0,
+      quantity_after INTEGER NOT NULL DEFAULT 0,
       unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
       total_value DECIMAL(10,2) NOT NULL DEFAULT 0,
-      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT')) NOT NULL,
+      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT', 'SALES_RETURN', 'PURCHASE_RETURN', 'EXCHANGE', 'VOID')) NOT NULL,
       reference_id INTEGER,
       reference_number TEXT,
       notes TEXT,
@@ -662,6 +997,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (created_by) REFERENCES users (id)
     );
   `);
+  console.log('inventory_movements table recreated successfully');
 
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -953,9 +1289,130 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Create end_of_day_records table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS end_of_day_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date DATE NOT NULL,
+      beginning_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+      gross_sales DECIMAL(12,2) NOT NULL DEFAULT 0,
+      discounts DECIMAL(12,2) DEFAULT 0,
+      sales_returns DECIMAL(12,2) DEFAULT 0,
+      net_sales DECIMAL(12,2) NOT NULL DEFAULT 0,
+      cash_sales DECIMAL(12,2) DEFAULT 0,
+      credit_sales DECIMAL(12,2) DEFAULT 0,
+      gcash_sales DECIMAL(12,2) DEFAULT 0,
+      card_sales DECIMAL(12,2) DEFAULT 0,
+      other_sales DECIMAL(12,2) DEFAULT 0,
+      void_amount DECIMAL(12,2) DEFAULT 0,
+      void_count INTEGER DEFAULT 0,
+      transaction_count INTEGER DEFAULT 0,
+      customer_payments_received DECIMAL(12,2) DEFAULT 0,
+      supplier_payments_made DECIMAL(12,2) DEFAULT 0,
+      expected_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+      actual_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+      cash_variance DECIMAL(12,2) DEFAULT 0,
+      denomination_breakdown TEXT,
+      next_day_beginning_cash DECIMAL(12,2) DEFAULT 0,
+      created_by INTEGER NOT NULL,
+      status TEXT CHECK (status IN ('COMPLETED', 'CANCELLED')) DEFAULT 'COMPLETED',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (created_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create shifts table for tracking cashier shifts
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      start_time DATETIME NOT NULL,
+      end_time DATETIME,
+      beginning_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+      ending_cash DECIMAL(12,2),
+      status TEXT CHECK (status IN ('OPEN', 'CLOSED')) DEFAULT 'OPEN',
+      z_reading_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users (id),
+      FOREIGN KEY (z_reading_id) REFERENCES end_of_day_records (id)
+    );
+  `);
+
+  // Create sales_returns table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS sales_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_number TEXT NOT NULL UNIQUE,
+      original_transaction_id INTEGER NOT NULL,
+      original_invoice_number TEXT NOT NULL,
+      customer_id INTEGER,
+      customer_name TEXT,
+      return_date DATE NOT NULL,
+      total_amount DECIMAL(12,2) NOT NULL,
+      refund_method TEXT CHECK (refund_method IN ('CASH', 'CREDIT', 'EXCHANGE')) DEFAULT 'CASH',
+      reason TEXT NOT NULL,
+      notes TEXT,
+      processed_by INTEGER NOT NULL,
+      status TEXT CHECK (status IN ('COMPLETED', 'CANCELLED')) DEFAULT 'COMPLETED',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (original_transaction_id) REFERENCES transactions (id),
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
+      FOREIGN KEY (processed_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create sales_return_items table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS sales_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sales_return_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_code TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_price DECIMAL(10,2) NOT NULL,
+      total_amount DECIMAL(10,2) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sales_return_id) REFERENCES sales_returns (id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products (id)
+    );
+  `);
+
+  // Create cash_movements table for cash drawer management
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      movement_type TEXT CHECK (movement_type IN ('OPENING_FUND', 'CASH_IN', 'CASH_OUT', 'PETTY_CASH', 'CASH_REFUND')) NOT NULL,
+      amount DECIMAL(12,2) NOT NULL,
+      description TEXT NOT NULL,
+      reference_number TEXT,
+      approved_by TEXT,
+      cashier_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (cashier_id) REFERENCES users (id)
+    );
+  `);
+
+  // Create customer_audit table for tracking customer changes
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS customer_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      action TEXT CHECK (action IN ('CREATE', 'UPDATE', 'DELETE')) NOT NULL,
+      field_name TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      changed_by INTEGER NOT NULL,
+      changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
+      FOREIGN KEY (changed_by) REFERENCES users (id)
+    );
+  `);
+
   // Create indexes
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (transaction_date);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_invoice ON transactions (invoice_number);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_customer ON transactions (customer_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transaction_items_transaction ON transaction_items (transaction_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_ejournal_timestamp ON ejournal (timestamp);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_products_code ON products (code);');
@@ -1005,6 +1462,25 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_details_product ON damaged_items_details (product_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_damaged_items_details_reason ON damaged_items_details (damage_reason);');
 
+  // End of day indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_end_of_day_records_date ON end_of_day_records (date);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_end_of_day_records_created_by ON end_of_day_records (created_by);');
+
+  // Sales returns indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sales_returns_date ON sales_returns (return_date);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sales_returns_transaction ON sales_returns (original_transaction_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sales_return_items_return ON sales_return_items (sales_return_id);');
+
+  // Cash movements indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_cash_movements_type ON cash_movements (movement_type);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_cash_movements_cashier ON cash_movements (cashier_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_cash_movements_date ON cash_movements (created_at);');
+
+  // Customer audit indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_customer ON customer_audit (customer_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_changed_by ON customer_audit (changed_by);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_date ON customer_audit (changed_at);');
+
   // Insert default settings
   await db.execAsync(`
     INSERT OR IGNORE INTO settings (key, value, description) VALUES
@@ -1019,6 +1495,73 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       ('z_counter', '0', 'Z-Reading counter (cumulative)'),
       ('current_invoice_series', 'INV', 'Current invoice series prefix'),
       ('current_invoice_number', '1', 'Current invoice number');
+  `);
+
+  // Insert default categories
+  await db.execAsync(`
+    INSERT OR IGNORE INTO categories (name, description) VALUES
+      ('Beverages', 'Drinks, juices, sodas, and other beverages'),
+      ('Food', 'Snacks, canned goods, and prepared foods'),
+      ('Personal Care', 'Hygiene products, toiletries, and cosmetics'),
+      ('Household', 'Cleaning supplies and household items'),
+      ('Electronics', 'Electronic devices and accessories'),
+      ('General Merchandise', 'Other general products');
+  `);
+
+  // Insert default brands
+  await db.execAsync(`
+    INSERT OR IGNORE INTO brands (name, description) VALUES
+      ('Generic', 'Unbranded or generic products'),
+      ('Coca-Cola', 'Coca-Cola Company products'),
+      ('Pepsi', 'PepsiCo products'),
+      ('Nestle', 'Nestle products'),
+      ('Unilever', 'Unilever products'),
+      ('P&G', 'Procter & Gamble products'),
+      ('San Miguel', 'San Miguel Corporation products'),
+      ('Universal Robina', 'URC products'),
+      ('Monde Nissin', 'Monde Nissin products'),
+      ('Other', 'Other brands');
+  `);
+
+  // Insert default units of measure
+  await db.execAsync(`
+    INSERT OR IGNORE INTO units (name, abbreviation, description) VALUES
+      ('Piece', 'pc', 'Individual piece or item'),
+      ('Pack', 'pk', 'Package or pack'),
+      ('Box', 'bx', 'Box or carton'),
+      ('Kilogram', 'kg', 'Weight in kilograms'),
+      ('Gram', 'g', 'Weight in grams'),
+      ('Liter', 'L', 'Volume in liters'),
+      ('Milliliter', 'mL', 'Volume in milliliters'),
+      ('Dozen', 'dz', '12 pieces'),
+      ('Ream', 'rm', '500 sheets of paper'),
+      ('Case', 'cs', 'Case or crate'),
+      ('Bottle', 'btl', 'Bottle'),
+      ('Can', 'can', 'Can or tin'),
+      ('Sachet', 'sac', 'Small packet or sachet'),
+      ('Bag', 'bag', 'Bag or pouch');
+  `);
+
+  // Insert default sizes
+  await db.execAsync(`
+    INSERT OR IGNORE INTO sizes (name, description, sort_order) VALUES
+      ('N/A', 'Not applicable', 0),
+      ('Extra Small', 'XS size', 1),
+      ('Small', 'S size', 2),
+      ('Medium', 'M size', 3),
+      ('Large', 'L size', 4),
+      ('Extra Large', 'XL size', 5),
+      ('XXL', '2XL size', 6),
+      ('250ml', '250 milliliters', 10),
+      ('330ml', '330 milliliters', 11),
+      ('500ml', '500 milliliters or half liter', 12),
+      ('1L', '1 liter', 13),
+      ('1.5L', '1.5 liters', 14),
+      ('2L', '2 liters', 15),
+      ('100g', '100 grams', 20),
+      ('250g', '250 grams', 21),
+      ('500g', '500 grams or half kilo', 22),
+      ('1kg', '1 kilogram', 23);
   `);
 
   // Insert default users
@@ -1041,11 +1584,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     'COLLECT_CUSTOMER_PAYMENTS', 'VIEW_ACCOUNTS_RECEIVABLE', 'CREATE_CHARGE_INVOICE'
   ];
 
+  // Use parameterized queries to prevent SQL injection
   for (const permission of managerPermissions) {
-    await db.execAsync(`
-      INSERT OR IGNORE INTO role_permissions (role, permission, is_enabled, updated_by)
-      VALUES ('MANAGER', '${permission}', 1, 1);
-    `);
+    await db.runAsync(
+      `INSERT OR IGNORE INTO role_permissions (role, permission, is_enabled, updated_by)
+       VALUES (?, ?, ?, ?)`,
+      ['MANAGER', permission, 1, 1]
+    );
   }
 
   // Insert default role permissions for CASHIER
@@ -1080,11 +1625,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     { permission: 'CREATE_CHARGE_INVOICE', enabled: 1 }
   ];
 
+  // Use parameterized queries to prevent SQL injection
   for (const { permission, enabled } of cashierPermissions) {
-    await db.execAsync(`
-      INSERT OR IGNORE INTO role_permissions (role, permission, is_enabled, updated_by)
-      VALUES ('CASHIER', '${permission}', ${enabled}, 1);
-    `);
+    await db.runAsync(
+      `INSERT OR IGNORE INTO role_permissions (role, permission, is_enabled, updated_by)
+       VALUES (?, ?, ?, ?)`,
+      ['CASHIER', permission, enabled, 1]
+    );
   }
 
   // Insert sample suppliers

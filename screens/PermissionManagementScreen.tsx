@@ -20,7 +20,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService, Permission } from '../utils/permissions';
@@ -56,7 +56,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
   const loadPermissions = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const managerPerms = await dbService.getRolePermissions('MANAGER');
       const cashierPerms = await dbService.getRolePermissions('CASHIER');
@@ -77,7 +77,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
     currentValue: boolean
   ) => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       await dbService.updateRolePermission(role, permission, !currentValue, user?.id || 1);
 
       // Update local state
@@ -111,7 +111,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
           style: 'destructive',
           onPress: async () => {
             try {
-              const dbService = DatabaseService.getInstance();
+              const dbService = getDatabase();
               await dbService.resetRolePermissions(role, user?.id || 1);
               await loadPermissions();
               await refreshPermissions();

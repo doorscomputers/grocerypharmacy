@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -24,8 +24,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Supplier } from '../database/schema';
+import { StableTextInput } from '../components/StableTextInput';
 
 type SupplierManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -64,7 +65,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
   const loadSuppliers = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const supplierList = await dbService.getSuppliers(true);
       setSuppliers(supplierList);
     } catch (error) {
@@ -120,10 +121,53 @@ export default function SupplierManagementScreen({ navigation }: Props) {
       return;
     }
 
+    // Check for duplicate supplier code
+    const duplicateCode = suppliers.find(
+      (s) => s.code.toLowerCase() === supplierCode.trim().toLowerCase() &&
+      (!editingSupplier || s.id !== editingSupplier.id)
+    );
+
+    if (duplicateCode) {
+      Alert.alert('Error', `Supplier code "${supplierCode}" already exists. Please use a unique code.`);
+      return;
+    }
+
+    // Check for duplicate supplier name
+    const duplicateName = suppliers.find(
+      (s) => s.name.toLowerCase() === supplierName.trim().toLowerCase() &&
+      (!editingSupplier || s.id !== editingSupplier.id)
+    );
+
+    if (duplicateName) {
+      Alert.alert('Error', `Supplier "${supplierName}" already exists. Please use a unique name.`);
+      return;
+    }
+
+    // Validate email format if provided
+    if (email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        Alert.alert('Error', 'Please enter a valid email address');
+        return;
+      }
+    }
+
+    // Validate credit terms and limit
+    const parsedCreditTerms = parseInt(creditTerms);
+    const parsedCreditLimit = parseFloat(creditLimit);
+    if (isNaN(parsedCreditTerms) || parsedCreditTerms < 1 || parsedCreditTerms > 365) {
+      Alert.alert('Error', 'Credit terms must be between 1 and 365 days');
+      return;
+    }
+    if (isNaN(parsedCreditLimit) || parsedCreditLimit < 0) {
+      Alert.alert('Error', 'Credit limit cannot be negative');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const supplierData = {
         code: supplierCode.trim(),
@@ -133,8 +177,8 @@ export default function SupplierManagementScreen({ navigation }: Props) {
         email: email.trim() || undefined,
         address: address.trim() || undefined,
         tin: tin.trim() || undefined,
-        credit_terms: parseInt(creditTerms) || 30,
-        credit_limit: parseFloat(creditLimit) || 0,
+        credit_terms: parsedCreditTerms,
+        credit_limit: parsedCreditLimit,
         notes: notes.trim() || undefined,
       };
 
@@ -162,7 +206,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
   const toggleSupplierStatus = async (supplier: Supplier) => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       await dbService.updateSupplier(supplier.id, {
         is_active: !supplier.is_active
       });
@@ -322,7 +366,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
           </Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView style={styles.dialogContent}>
-              <TextInput
+              <StableTextInput
                 label="Supplier Code *"
                 value={supplierCode}
                 onChangeText={setSupplierCode}
@@ -331,7 +375,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 disabled={!!editingSupplier}
               />
 
-              <TextInput
+              <StableTextInput
                 label="Supplier Name *"
                 value={supplierName}
                 onChangeText={setSupplierName}
@@ -339,7 +383,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 style={styles.dialogInput}
               />
 
-              <TextInput
+              <StableTextInput
                 label="Contact Person"
                 value={contactPerson}
                 onChangeText={setContactPerson}
@@ -347,7 +391,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 style={styles.dialogInput}
               />
 
-              <TextInput
+              <StableTextInput
                 label="Phone Number"
                 value={phone}
                 onChangeText={setPhone}
@@ -356,7 +400,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 keyboardType="phone-pad"
               />
 
-              <TextInput
+              <StableTextInput
                 label="Email Address"
                 value={email}
                 onChangeText={setEmail}
@@ -365,7 +409,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 keyboardType="email-address"
               />
 
-              <TextInput
+              <StableTextInput
                 label="Address"
                 value={address}
                 onChangeText={setAddress}
@@ -375,7 +419,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 numberOfLines={3}
               />
 
-              <TextInput
+              <StableTextInput
                 label="TIN Number"
                 value={tin}
                 onChangeText={setTin}
@@ -383,7 +427,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 style={styles.dialogInput}
               />
 
-              <TextInput
+              <StableTextInput
                 label="Credit Terms (days)"
                 value={creditTerms}
                 onChangeText={setCreditTerms}
@@ -392,7 +436,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 keyboardType="numeric"
               />
 
-              <TextInput
+              <StableTextInput
                 label="Credit Limit"
                 value={creditLimit}
                 onChangeText={setCreditLimit}
@@ -401,7 +445,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
                 keyboardType="numeric"
               />
 
-              <TextInput
+              <StableTextInput
                 label="Notes"
                 value={notes}
                 onChangeText={setNotes}

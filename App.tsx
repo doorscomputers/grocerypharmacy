@@ -12,6 +12,9 @@ let initializeSampleData: any = null;
 if (Platform.OS !== 'web') {
   DatabaseService = require('./database/DatabaseService').DatabaseService;
   initializeSampleData = require('./utils/SampleData').initializeSampleData;
+} else {
+  // Use mock database service for web testing
+  DatabaseService = require('./database/WebMockDatabaseService').WebMockDatabaseService;
 }
 import { AuthProvider } from './contexts/AuthContext';
 
@@ -38,6 +41,25 @@ import DamagedItemsHistoryScreen from './screens/DamagedItemsHistoryScreen';
 import InventoryMovementsScreen from './screens/InventoryMovementsScreen';
 import CustomerManagementScreen from './screens/CustomerManagementScreen';
 import CustomerPaymentsScreen from './screens/CustomerPaymentsScreen';
+import PrinterSettingsScreen from './screens/PrinterSettingsScreen';
+import BarcodeScannerScreen from './screens/BarcodeScannerScreen';
+import CategoriesScreen from './screens/CategoriesScreen';
+import BrandsScreen from './screens/BrandsScreen';
+import UnitsScreen from './screens/UnitsScreen';
+import SizesScreen from './screens/SizesScreen';
+import MasterDataScreen from './screens/MasterDataScreen';
+import ReportsHubScreen from './screens/ReportsHubScreen';
+import SalesReturnsScreen from './screens/SalesReturnsScreen';
+import PurchaseReturnsScreen from './screens/PurchaseReturnsScreen';
+import EndOfDayScreen from './screens/EndOfDayScreen';
+import CashCountScreen from './screens/CashCountScreen';
+import PurchaseReportScreen from './screens/PurchaseReportScreen';
+import SalesReturnsReportScreen from './screens/SalesReturnsReportScreen';
+import PurchaseReturnsReportScreen from './screens/PurchaseReturnsReportScreen';
+import AccountsReceivableReportScreen from './screens/AccountsReceivableReportScreen';
+import AccountsPayableReportScreen from './screens/AccountsPayableReportScreen';
+import SalesReportScreen from './screens/SalesReportScreen';
+import DeliveredItemsReportScreen from './screens/DeliveredItemsReportScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -62,6 +84,25 @@ export type RootStackParamList = {
   InventoryMovements: undefined;
   CustomerManagement: undefined;
   CustomerPayments: undefined;
+  PrinterSettings: undefined;
+  BarcodeScanner: { onScan?: (barcode: string) => void } | undefined;
+  Categories: undefined;
+  Brands: undefined;
+  Units: undefined;
+  Sizes: undefined;
+  MasterData: undefined;
+  ReportsHub: undefined;
+  SalesReturns: undefined;
+  PurchaseReturns: undefined;
+  EndOfDay: undefined;
+  CashCount: undefined;
+  PurchaseReport: undefined;
+  SalesReturnsReport: undefined;
+  PurchaseReturnsReport: undefined;
+  AccountsReceivableReport: undefined;
+  AccountsPayableReport: undefined;
+  SalesReport: undefined;
+  DeliveredItemsReport: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -96,10 +137,21 @@ export default function App() {
     try {
       console.log('Starting app initialization...');
 
-      // Check if running on web platform
-      if (Platform.OS === 'web' || !DatabaseService) {
-        console.warn('Web platform detected - SQLite functionality may be limited');
-        setInitializationError('Web platform detected: This app is designed for mobile devices. Some features may not work properly in web browsers due to SQLite limitations.');
+      // Check if running on web platform - use mock database
+      if (Platform.OS === 'web') {
+        console.warn('Web platform detected - Using mock database for testing');
+        if (DatabaseService) {
+          const dbService = DatabaseService.getInstance();
+          await dbService.initialize();
+          console.log('[Web] Mock database initialized successfully');
+        }
+        setIsDbInitialized(true);
+        return;
+      }
+
+      // Check if DatabaseService is available
+      if (!DatabaseService) {
+        setInitializationError('Database service not available');
         setIsDbInitialized(true);
         return;
       }
@@ -318,6 +370,101 @@ export default function App() {
               name="CustomerPayments"
               component={CustomerPaymentsScreen}
               options={{ title: 'Customer Payments' }}
+            />
+            <Stack.Screen
+              name="PrinterSettings"
+              component={PrinterSettingsScreen}
+              options={{ title: 'Printer Settings' }}
+            />
+            <Stack.Screen
+              name="BarcodeScanner"
+              component={BarcodeScannerScreen}
+              options={{ title: 'Scan Barcode' }}
+            />
+            <Stack.Screen
+              name="Categories"
+              component={CategoriesScreen}
+              options={{ title: 'Product Categories' }}
+            />
+            <Stack.Screen
+              name="Brands"
+              component={BrandsScreen}
+              options={{ title: 'Product Brands' }}
+            />
+            <Stack.Screen
+              name="Units"
+              component={UnitsScreen}
+              options={{ title: 'Units of Measure' }}
+            />
+            <Stack.Screen
+              name="Sizes"
+              component={SizesScreen}
+              options={{ title: 'Product Sizes' }}
+            />
+            <Stack.Screen
+              name="MasterData"
+              component={MasterDataScreen}
+              options={{ title: 'Master Data' }}
+            />
+            <Stack.Screen
+              name="ReportsHub"
+              component={ReportsHubScreen}
+              options={{ title: 'Reports Hub' }}
+            />
+            <Stack.Screen
+              name="SalesReturns"
+              component={SalesReturnsScreen}
+              options={{ title: 'Sales Returns' }}
+            />
+            <Stack.Screen
+              name="PurchaseReturns"
+              component={PurchaseReturnsScreen}
+              options={{ title: 'Purchase Returns' }}
+            />
+            <Stack.Screen
+              name="EndOfDay"
+              component={EndOfDayScreen}
+              options={{ title: 'End of Day' }}
+            />
+            <Stack.Screen
+              name="CashCount"
+              component={CashCountScreen}
+              options={{ title: 'Cash Count', headerShown: false }}
+            />
+            <Stack.Screen
+              name="PurchaseReport"
+              component={PurchaseReportScreen}
+              options={{ title: 'Purchase Report' }}
+            />
+            <Stack.Screen
+              name="SalesReturnsReport"
+              component={SalesReturnsReportScreen}
+              options={{ title: 'Sales Returns Report' }}
+            />
+            <Stack.Screen
+              name="PurchaseReturnsReport"
+              component={PurchaseReturnsReportScreen}
+              options={{ title: 'Purchase Returns Report' }}
+            />
+            <Stack.Screen
+              name="AccountsReceivableReport"
+              component={AccountsReceivableReportScreen}
+              options={{ title: 'Accounts Receivable' }}
+            />
+            <Stack.Screen
+              name="AccountsPayableReport"
+              component={AccountsPayableReportScreen}
+              options={{ title: 'Accounts Payable' }}
+            />
+            <Stack.Screen
+              name="SalesReport"
+              component={SalesReportScreen}
+              options={{ title: 'Sales Report' }}
+            />
+            <Stack.Screen
+              name="DeliveredItemsReport"
+              component={DeliveredItemsReportScreen}
+              options={{ title: 'Delivered Items Report' }}
             />
           </Stack.Navigator>
         </NavigationContainer>

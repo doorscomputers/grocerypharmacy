@@ -24,8 +24,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
+import { useAuth } from '../contexts/AuthContext';
 
 type PurchaseScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -57,6 +58,7 @@ interface PurchaseOrder {
 }
 
 export default function PurchaseScreen({ navigation }: Props) {
+  const { user } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [purchaseItems, setPurchaseItems] = useState<PurchaseItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -76,7 +78,7 @@ export default function PurchaseScreen({ navigation }: Props) {
 
   const loadProducts = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const rawProductList = await dbService.getProducts(true); // Only active products for purchasing
       setProducts(rawProductList as Product[]);
     } catch (error) {
@@ -184,47 +186,151 @@ export default function PurchaseScreen({ navigation }: Props) {
     setLoading(true);
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
+      const userId = user?.id || 1;
+      const totalAmount = calculateTotalAmount();
 
       await db.withTransactionAsync(async () => {
-        // Create purchase record (you would extend DatabaseService for this)
-        const purchaseData = {
-          supplier_name: supplierName,
-          reference_number: referenceNumber,
-          purchase_date: new Date().toISOString(),
-          total_amount: calculateTotalAmount(),
-          status: 'RECEIVED' as const,
-          items: purchaseItems,
-        };
+        // Step 1: Look up or create supplier
+        let supplierId: number;
+        const existingSupplier = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM suppliers WHERE name = ?',
+          [supplierName.trim()]
+        );
 
-        // Update product quantities and costs
-        for (const item of purchaseItems) {
-          // Update stock quantity
-          await db.runAsync(
-            'UPDATE products SET stock_quantity = stock_quantity + ?, cost = ? WHERE id = ?',
-            [item.quantity, item.unit_cost, item.product_id]
+        if (existingSupplier) {
+          supplierId = existingSupplier.id;
+        } else {
+          // Create new supplier with minimal info
+          const supplierCode = `SUP${Date.now()}`;
+          const result = await db.runAsync(
+            `INSERT INTO suppliers (code, name, is_active, created_by)
+             VALUES (?, ?, 1, ?)`,
+            [supplierCode, supplierName.trim(), userId]
           );
+          supplierId = result.lastInsertRowId;
+        }
 
-          // Record inventory movement
+        // Step 2: Generate unique purchase number
+        const purchaseNumber = `PUR${Date.now()}`;
+        const purchaseDate = new Date().toISOString().split('T')[0];
+        const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        // Step 3: Insert into purchases table
+        const purchaseResult = await db.runAsync(
+          `INSERT INTO purchases (
+            purchase_number, supplier_id, purchase_date, reference_number, status,
+            subtotal, tax_amount, discount_amount, total_amount,
+            paid_amount, balance_amount, payment_terms, created_by, received_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            purchaseNumber,
+            supplierId,
+            purchaseDate,
+            referenceNumber,
+            'RECEIVED',
+            totalAmount,   // subtotal
+            0,             // tax_amount
+            0,             // discount_amount
+            totalAmount,   // total_amount
+            0,             // paid_amount
+            totalAmount,   // balance_amount
+            '30 days',     // payment_terms
+            userId,        // created_by
+            userId         // received_by
+          ]
+        );
+        const purchaseId = purchaseResult.lastInsertRowId;
+
+        // Step 4: Insert purchase_details for each item
+        for (const item of purchaseItems) {
           await db.runAsync(
-            `INSERT INTO inventory_movements (
-              product_id, movement_type, quantity, reference_type, reference_id,
-              notes, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO purchase_details (
+              purchase_id, product_id, product_code, product_name,
+              quantity_ordered, quantity_received, unit_cost, total_amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+              purchaseId,
               item.product_id,
-              'IN',
+              item.product_code,
+              item.product_name,
               item.quantity,
-              'PURCHASE',
-              Date.now(), // Would use actual purchase ID
-              `Purchase from ${supplierName} - ${referenceNumber}`,
-              1 // Would get from user context
+              item.quantity,
+              item.unit_cost,
+              item.total_cost
             ]
           );
         }
 
-        // Add eJournal entry
+        // Step 5: Create accounts_payable record
+        await db.runAsync(
+          `INSERT INTO accounts_payable (
+            purchase_id, supplier_id, invoice_number, invoice_date, due_date,
+            original_amount, paid_amount, balance_amount, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            purchaseId,
+            supplierId,
+            referenceNumber,
+            purchaseDate,
+            dueDate,
+            totalAmount,
+            0,
+            totalAmount,
+            'OUTSTANDING'
+          ]
+        );
+
+        // Step 6: Update product quantities and record inventory movements
+        for (const item of purchaseItems) {
+          const currentProduct = await db.getFirstAsync<{ stock_quantity: number }>(
+            'SELECT stock_quantity FROM products WHERE id = ?',
+            [item.product_id]
+          );
+          const quantityBefore = currentProduct?.stock_quantity || 0;
+          const quantityAfter = quantityBefore + item.quantity;
+          const totalValue = item.quantity * item.unit_cost;
+
+          // Update stock quantity and cost
+          await db.runAsync(
+            'UPDATE products SET stock_quantity = ?, cost = ? WHERE id = ?',
+            [quantityAfter, item.unit_cost, item.product_id]
+          );
+
+          // Record inventory movement with actual purchase ID
+          await db.runAsync(
+            `INSERT INTO inventory_movements (
+              product_id, product_code, product_name, movement_type, quantity,
+              quantity_before, quantity_after, unit_cost, total_value,
+              reference_type, reference_id, reference_number, notes, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              item.product_id,
+              item.product_code,
+              item.product_name,
+              'IN',
+              item.quantity,
+              quantityBefore,
+              quantityAfter,
+              item.unit_cost,
+              totalValue,
+              'PURCHASE',
+              purchaseId,
+              referenceNumber,
+              `Purchase from ${supplierName} - ${referenceNumber}`,
+              userId
+            ]
+          );
+        }
+
+        // Step 7: Update supplier balance
+        await db.runAsync(
+          'UPDATE suppliers SET balance = balance + ? WHERE id = ?',
+          [totalAmount, supplierId]
+        );
+
+        // Step 8: Add eJournal entry
         await db.runAsync(
           `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
            VALUES (?, ?, ?, ?, ?)`,
@@ -232,8 +338,8 @@ export default function PurchaseScreen({ navigation }: Props) {
             'SYSTEM',
             referenceNumber,
             `Purchase received from ${supplierName}`,
-            calculateTotalAmount(),
-            1
+            totalAmount,
+            userId
           ]
         );
       });

@@ -21,9 +21,12 @@ export const RoleGuard: React.FC<RoleGuardProps> = ({
   fallback,
   showFallback = true,
 }) => {
-  const { hasPermission, hasAnyPermission, hasAllPermissions } = useAuth();
+  const { hasPermission, hasAnyPermission, hasAllPermissions, user } = useAuth();
 
   let hasAccess = false;
+
+  // Debug logging
+  console.log('[RoleGuard] Checking permission:', permission, 'User:', user?.username, 'Role:', user?.role);
 
   if (permission) {
     hasAccess = hasPermission(permission);
@@ -37,6 +40,8 @@ export const RoleGuard: React.FC<RoleGuardProps> = ({
     // No permissions specified, assume access granted
     hasAccess = true;
   }
+
+  console.log('[RoleGuard] Result for', permission, ':', hasAccess);
 
   if (hasAccess) {
     return <>{children}</>;

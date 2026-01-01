@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -10,7 +10,6 @@ import {
   Title,
   Paragraph,
   Button,
-  TextInput,
   useTheme,
   Chip,
   Divider,
@@ -19,7 +18,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type DamagedItemsHistoryScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -37,45 +37,47 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
   const [damageSessions, setDamageSessions] = useState<any[]>([]);
   const [damageReports, setDamageReports] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
 
   const theme = useTheme();
 
   useEffect(() => {
     loadData();
+  }, [dateRange]);
+
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
   }, []);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
+
+      // Format dates for database query
+      const dateFrom = dateRange.startDate.toISOString().split('T')[0];
+      const dateTo = dateRange.endDate.toISOString().split('T')[0];
 
       const [sessionsData, reportsData] = await Promise.all([
         dbService.getDamageSessions(50),
-        dbService.getDamageReports()
+        dbService.getDamageReports(dateFrom, dateTo)
       ]);
 
-      setDamageSessions(sessionsData);
+      // Filter sessions by date range
+      const filteredSessions = sessionsData.filter((session: any) => {
+        const sessionDate = new Date(session.started_at);
+        return sessionDate >= dateRange.startDate && sessionDate <= dateRange.endDate;
+      });
+
+      setDamageSessions(filteredSessions);
       setDamageReports(reportsData);
     } catch (error) {
       console.error('Error loading damage history:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadReportsWithDateFilter = async () => {
-    try {
-      setLoading(true);
-      const dbService = DatabaseService.getInstance();
-      const reportsData = await dbService.getDamageReports(
-        dateFrom || undefined,
-        dateTo || undefined
-      );
-      setDamageReports(reportsData);
-    } catch (error) {
-      console.error('Error loading filtered reports:', error);
     } finally {
       setLoading(false);
     }
@@ -157,33 +159,10 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
       {/* Date Filter */}
       <Card style={styles.filterCard}>
         <Card.Content>
-          <Title style={styles.filterTitle}>Date Filter</Title>
-          <View style={styles.dateFilterRow}>
-            <TextInput
-              label="From Date"
-              value={dateFrom}
-              onChangeText={setDateFrom}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="YYYY-MM-DD"
-            />
-            <TextInput
-              label="To Date"
-              value={dateTo}
-              onChangeText={setDateTo}
-              mode="outlined"
-              style={styles.dateInput}
-              placeholder="YYYY-MM-DD"
-            />
-          </View>
-          <Button
-            mode="contained"
-            onPress={loadReportsWithDateFilter}
-            style={styles.filterButton}
-            loading={loading}
-          >
-            Apply Filter
-          </Button>
+          <DateRangeFilter
+            onDateChange={handleDateChange}
+            selectedPreset="this_month"
+          />
         </Card.Content>
       </Card>
 
@@ -448,22 +427,6 @@ const styles = StyleSheet.create({
   filterCard: {
     marginBottom: 16,
     elevation: 4,
-  },
-  filterTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
-  },
-  dateFilterRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 12,
-  },
-  dateInput: {
-    flex: 1,
-  },
-  filterButton: {
-    marginTop: 8,
   },
   summaryCard: {
     marginBottom: 16,

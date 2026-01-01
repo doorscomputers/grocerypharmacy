@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User } from '../database/schema';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { PermissionService, Permission } from '../utils/permissions';
 
 interface AuthContextType {
@@ -42,8 +42,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const checkStoredSession = async () => {
     try {
-      // In a production app, you'd check stored tokens/session
-      // For now, we'll just check if there's a valid session
+      // Check for stored session (placeholder for future implementation)
+      // For now, just ensure fresh login is required
       console.log('Checking stored session...');
     } catch (error) {
       console.error('Error checking stored session:', error);
@@ -52,7 +52,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const login = async (username: string, password: string): Promise<boolean> => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const authenticatedUser = await dbService.authenticateUser(username, password);
 
       if (authenticatedUser) {
@@ -87,7 +87,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const logout = async () => {
     try {
       if (user) {
-        const dbService = DatabaseService.getInstance();
+        const dbService = getDatabase();
 
         // Log the logout in eJournal
         await dbService.createEJournalEntry({
@@ -98,11 +98,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         });
       }
 
+      // Clear permission cache to prevent stale permissions on next login
+      PermissionService.clearPermissions();
+
       setUser(null);
       setIsAuthenticated(false);
     } catch (error) {
       console.error('Logout error:', error);
       // Still proceed with logout even if logging fails
+      PermissionService.clearPermissions();
       setUser(null);
       setIsAuthenticated(false);
     }

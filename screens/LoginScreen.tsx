@@ -4,6 +4,8 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
+  Text,
 } from 'react-native';
 import {
   TextInput,
@@ -112,16 +114,20 @@ export default function LoginScreen({ navigation }: Props) {
                 {error}
               </HelperText>
 
-              <Button
-                mode="contained"
+              <Pressable
                 onPress={handleLogin}
-                loading={loading}
                 disabled={loading}
-                style={styles.button}
-                contentStyle={styles.buttonContent}
+                role="button"
+                style={({ pressed }) => [
+                  styles.signInButton,
+                  loading && styles.signInButtonDisabled,
+                  pressed && styles.signInButtonPressed
+                ]}
               >
-                Sign In
-              </Button>
+                <Text style={styles.signInButtonText}>
+                  {loading ? 'Signing In...' : 'Sign In'}
+                </Text>
+              </Pressable>
 
               <View style={styles.demoInfo}>
                 <Paragraph style={styles.demoText}>
@@ -198,6 +204,32 @@ const styles = StyleSheet.create({
   button: {
     marginTop: 16,
     marginBottom: 16,
+  },
+  signInButton: {
+    backgroundColor: '#2196F3',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 28,
+    marginTop: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+  },
+  signInButtonDisabled: {
+    backgroundColor: '#90CAF9',
+  },
+  signInButtonPressed: {
+    backgroundColor: '#1976D2',
+    opacity: 0.9,
+  },
+  signInButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    pointerEvents: 'none',
   },
   buttonContent: {
     paddingVertical: 8,

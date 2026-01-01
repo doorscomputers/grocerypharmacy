@@ -22,7 +22,7 @@ import { ScreenGuard } from '../components/RoleGuard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { DatabaseBackupService } from '../utils/DatabaseBackupService';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -70,7 +70,7 @@ export default function SettingsScreen({ navigation }: Props) {
 
   const loadSettings = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const settingsData: Settings = {
         company_name: await dbService.getSetting('company_name') || 'Your Company Name',
         company_address: await dbService.getSetting('company_address') || 'Your Company Address',
@@ -100,14 +100,59 @@ export default function SettingsScreen({ navigation }: Props) {
       return;
     }
 
+    // Validate VAT rate
+    if (currentSetting.key === 'vat_rate') {
+      const vatRate = parseFloat(tempValue);
+      if (isNaN(vatRate) || vatRate < 0 || vatRate > 100) {
+        Alert.alert('Error', 'VAT rate must be a number between 0 and 100');
+        return;
+      }
+      // Warn if not standard Philippine VAT rate
+      if (vatRate !== 12) {
+        Alert.alert(
+          'Non-Standard VAT Rate',
+          `You entered ${vatRate}%. The standard Philippine VAT rate is 12%. Are you sure you want to continue?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Continue', onPress: () => saveSetting(vatRate.toFixed(2)) }
+          ]
+        );
+        return;
+      }
+    }
+
+    // Validate TIN format (Philippine format: XXX-XXX-XXX-XXX)
+    if (currentSetting.key === 'company_tin') {
+      const tinRegex = /^\d{3}-\d{3}-\d{3}-\d{3}$/;
+      if (!tinRegex.test(tempValue.trim())) {
+        Alert.alert('Error', 'TIN must be in format: 000-000-000-000');
+        return;
+      }
+    }
+
+    // Validate POS Serial format (e.g., POS000000)
+    if (currentSetting.key === 'pos_serial') {
+      const posSerialRegex = /^[A-Za-z]{2,5}\d{4,8}$/;
+      if (!posSerialRegex.test(tempValue.trim())) {
+        Alert.alert('Error', 'POS Serial must be in format: POS000000 (letters followed by numbers)');
+        return;
+      }
+    }
+
+    await saveSetting(tempValue);
+  };
+
+  const saveSetting = async (value: string) => {
+    if (!currentSetting) return;
+
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
-      await dbService.updateSetting(currentSetting.key, tempValue);
+      const dbService = getDatabase();
+      await dbService.updateSetting(currentSetting.key, value);
 
       setSettings(prev => ({
         ...prev,
-        [currentSetting.key]: tempValue
+        [currentSetting.key]: value
       }));
 
       setDialogVisible(false);
@@ -238,7 +283,7 @@ export default function SettingsScreen({ navigation }: Props) {
   const performClearPhysicalInventory = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       await dbService.clearPhysicalInventoryData();
       Alert.alert('Success', 'Physical inventory data cleared and stock quantities reset to zero successfully.');
     } catch (error) {
@@ -427,6 +472,88 @@ export default function SettingsScreen({ navigation }: Props) {
                   style={styles.listItem}
                 />
               ))}
+            </Card.Content>
+          </Card>
+
+          {/* Master Data Management */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Title style={styles.cardTitle}>Master Data</Title>
+              <Paragraph style={styles.cardSubtitle}>
+                Manage product categories, brands, units, and sizes
+              </Paragraph>
+
+              <List.Item
+                title="Categories"
+                description="Manage product categories"
+                left={props => <List.Icon {...props} icon="folder" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('Categories')}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Brands"
+                description="Manage product brands"
+                left={props => <List.Icon {...props} icon="tag" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('Brands')}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Units of Measure"
+                description="Manage units (pcs, kg, L, box, etc.)"
+                left={props => <List.Icon {...props} icon="scale" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('Units')}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Sizes"
+                description="Manage product sizes (S, M, L, 500ml, etc.)"
+                left={props => <List.Icon {...props} icon="resize" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('Sizes')}
+                style={styles.listItem}
+              />
+            </Card.Content>
+          </Card>
+
+          {/* Hardware Settings */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Title style={styles.cardTitle}>Hardware Settings</Title>
+              <Paragraph style={styles.cardSubtitle}>
+                Configure printers, scanners, and other devices
+              </Paragraph>
+
+              <List.Item
+                title="Printer Settings"
+                description="Connect and configure thermal receipt printer"
+                left={props => <List.Icon {...props} icon="printer" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('PrinterSettings')}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Barcode Scanner"
+                description="Use camera to scan product barcodes"
+                left={props => <List.Icon {...props} icon="barcode-scan" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('BarcodeScanner')}
+                style={styles.listItem}
+              />
             </Card.Content>
           </Card>
 

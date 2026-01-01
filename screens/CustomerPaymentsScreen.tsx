@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -23,9 +23,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Picker } from '@react-native-picker/picker';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type CustomerPaymentsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -40,10 +41,17 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
   const [activeTab, setActiveTab] = useState<'receivables' | 'payments'>('receivables');
   const [receivables, setReceivables] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
+  const [filteredPayments, setFilteredPayments] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<number | null>(null);
+
+  // Date filter
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
 
   // Payment modal state
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
@@ -60,10 +68,36 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
     loadData();
   }, []);
 
+  // Filter payments when date range or search query changes
+  useEffect(() => {
+    let filtered = payments.filter(payment => {
+      const paymentDate = new Date(payment.payment_date);
+      return paymentDate >= dateRange.startDate && paymentDate <= dateRange.endDate;
+    });
+
+    // Also apply search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(payment =>
+        payment.customer_name?.toLowerCase().includes(query) ||
+        payment.payment_number?.toLowerCase().includes(query) ||
+        payment.invoice_number?.toLowerCase().includes(query)
+      );
+    }
+
+    setFilteredPayments(filtered);
+  }, [payments, dateRange, searchQuery]);
+
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
+  }, []);
+
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const [receivablesData, paymentsData, customersData] = await Promise.all([
         dbService.getAccountsReceivable(),
@@ -84,7 +118,7 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
   const loadFilteredData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const [receivablesData, paymentsData] = await Promise.all([
         dbService.getAccountsReceivable(selectedCustomer || undefined),
@@ -123,7 +157,7 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
 
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       await dbService.processCustomerPayment({
         customer_id: selectedReceivable.customer_id,
@@ -174,16 +208,6 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
       receivable.customer_name?.toLowerCase().includes(query) ||
       receivable.invoice_number?.toLowerCase().includes(query) ||
       receivable.customer_code?.toLowerCase().includes(query)
-    );
-  });
-
-  const filteredPayments = payments.filter(payment => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      payment.customer_name?.toLowerCase().includes(query) ||
-      payment.payment_number?.toLowerCase().includes(query) ||
-      payment.invoice_number?.toLowerCase().includes(query)
     );
   });
 
@@ -308,6 +332,15 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
       case 'payments':
         return (
           <View style={styles.tabContent}>
+            {/* Date Filter */}
+            <Card style={styles.dateFilterCard}>
+              <Card.Content>
+                <DateRangeFilter
+                  onDateChange={handleDateChange}
+                  selectedPreset="this_month"
+                />
+              </Card.Content>
+            </Card>
             <Searchbar
               placeholder="Search payments..."
               onChangeText={setSearchQuery}
@@ -325,7 +358,7 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
               ListEmptyComponent={
                 <View style={styles.emptyContainer}>
                   <Paragraph style={styles.emptyText}>
-                    No payments found.
+                    No payments found for the selected date range.
                   </Paragraph>
                 </View>
               }
@@ -523,6 +556,12 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
+  },
+  dateFilterCard: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+    elevation: 2,
   },
   searchBar: {
     margin: 16,

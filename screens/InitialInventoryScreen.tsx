@@ -24,7 +24,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
 
 type InitialInventoryScreenNavigationProp = StackNavigationProp<
@@ -67,7 +67,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
 
   const loadProducts = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const rawProductList = await dbService.getProducts();
       const productList = rawProductList as Product[];
       setProducts(productList);
@@ -93,7 +93,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
 
   const checkSetupStatus = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const setupStatus = await dbService.getSetting('initial_inventory_setup');
       setSetupComplete(setupStatus === 'completed');
     } catch (error) {
@@ -173,7 +173,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
     setLoading(true);
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
       await db.withTransactionAsync(async () => {

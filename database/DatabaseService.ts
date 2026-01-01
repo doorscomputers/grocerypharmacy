@@ -1,4 +1,5 @@
-import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
+import { verifyPassword } from '../utils/passwordHash';
 import {
   initializeDatabase,
   getNextInvoiceNumber,
@@ -15,12 +16,25 @@ import {
   SupplierPayment,
   AccountsPayable,
   DamagedItemsSession,
-  DamagedItemsDetail
+  DamagedItemsDetail,
+  Category,
+  Brand,
+  Unit,
+  Size
 } from './schema';
+
+// Conditionally import SQLite only on native platforms
+let SQLite: any = null;
+if (Platform.OS !== 'web') {
+  SQLite = require('expo-sqlite');
+}
+
+// Re-export WebMockDatabaseService for web platform
+export { WebMockDatabaseService } from './WebMockDatabaseService';
 
 export class DatabaseService {
   private static instance: DatabaseService;
-  private db: SQLite.SQLiteDatabase | null = null;
+  private db: any = null;
 
   private constructor() {}
 
@@ -189,7 +203,7 @@ export class DatabaseService {
     product_id: number;
     movement_type: 'IN' | 'OUT' | 'ADJUSTMENT';
     quantity: number;
-    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT';
+    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID';
     reference_id?: number;
     reference_number?: string;
     notes?: string;
@@ -304,6 +318,7 @@ export class DatabaseService {
     price: number;
     cost: number;
     category_id?: number;
+    vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
     tax_rate?: number;
     is_vat_inclusive?: boolean;
     stock_quantity?: number;
@@ -312,9 +327,14 @@ export class DatabaseService {
   }) {
     const db = this.getDatabase();
     try {
+      // Determine tax_rate based on vat_type
+      const vatType = product.vat_type || 'vatable';
+      const taxRate = vatType === 'vatable' ? (product.tax_rate || 12.00) : 0;
+      const isVatInclusive = vatType === 'vatable' ? (product.is_vat_inclusive !== false ? 1 : 0) : 0;
+
       const result = await db.runAsync(
-        `INSERT OR REPLACE INTO products (code, name, description, price, cost, category_id, tax_rate, is_vat_inclusive, stock_quantity, unit, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO products (code, name, description, price, cost, category_id, vat_type, tax_rate, is_vat_inclusive, stock_quantity, unit, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           product.code,
           product.name,
@@ -322,8 +342,9 @@ export class DatabaseService {
           product.price,
           product.cost,
           product.category_id || null,
-          product.tax_rate || 12.00,
-          product.is_vat_inclusive !== false ? 1 : 0,
+          vatType,
+          taxRate,
+          isVatInclusive,
           product.stock_quantity || 0,
           product.unit || 'pcs',
           product.is_active !== false ? 1 : 0
@@ -363,7 +384,7 @@ export class DatabaseService {
 
       // Use simple query for better performance with large datasets
       const products = await db.getAllAsync<any>(
-        `SELECT id, code, name, description, price, cost, category_id, tax_rate,
+        `SELECT id, code, name, description, price, cost, category_id, vat_type, tax_rate,
                 is_vat_inclusive, stock_quantity, unit, is_active, created_at, updated_at
          FROM products
          ${whereClause}
@@ -403,7 +424,7 @@ export class DatabaseService {
       const offset = (page - 1) * pageSize;
 
       const products = await db.getAllAsync<any>(
-        `SELECT id, code, name, description, price, cost, category_id, tax_rate,
+        `SELECT id, code, name, description, price, cost, category_id, vat_type, tax_rate,
                 is_vat_inclusive, stock_quantity, unit, is_active, created_at, updated_at
          FROM products
          ${whereClause}
@@ -509,13 +530,14 @@ export class DatabaseService {
       // Create transaction
       const transactionResult = await db.runAsync(
         `INSERT INTO transactions (
-          transaction_number, invoice_number, customer_name, customer_tin, customer_address,
+          transaction_number, invoice_number, customer_id, customer_name, customer_tin, customer_address,
           subtotal, tax_amount, discount_amount, total_amount, payment_method,
           amount_tendered, change_amount, payment_status, cashier_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           transactionNumber,
           invoiceNumber,
+          transaction.customer_id || null,
           transaction.customer_name || '',
           transaction.customer_tin || '',
           transaction.customer_address || '',
@@ -797,16 +819,24 @@ export class DatabaseService {
       // First, check if any users exist
       const allUsers = await db.getAllAsync<any>('SELECT username, is_active FROM users');
       console.log('  Total users in database:', allUsers.length);
-      console.log('  Users:', allUsers);
 
+      // Get user with password_hash for verification
       const user = await db.getFirstAsync<any>(
-        'SELECT id, username, full_name, role, is_active FROM users WHERE username = ? AND is_active = 1',
+        'SELECT id, username, full_name, role, is_active, password_hash FROM users WHERE username = ? AND is_active = 1',
         [username]
       );
 
       if (user) {
-        console.log('  User found:', user);
-        return user;
+        // Verify password
+        if (verifyPassword(password, user.password_hash || '')) {
+          console.log('  Authentication successful');
+          // Return user without password_hash
+          const { password_hash, ...userWithoutPassword } = user;
+          return userWithoutPassword;
+        } else {
+          console.log('  Password verification failed');
+          return null;
+        }
       }
 
     } catch (error) {
@@ -833,13 +863,14 @@ export class DatabaseService {
         console.log('  Users table created/verified, retrying authentication...');
 
         const retryUser = await db.getFirstAsync<any>(
-          'SELECT id, username, full_name, role, is_active FROM users WHERE username = ? AND is_active = 1',
+          'SELECT id, username, full_name, role, is_active, password_hash FROM users WHERE username = ? AND is_active = 1',
           [username]
         );
 
-        if (retryUser) {
-          console.log('  Authentication successful after table creation:', retryUser);
-          return retryUser;
+        if (retryUser && verifyPassword(password, retryUser.password_hash || '')) {
+          console.log('  Authentication successful after table creation');
+          const { password_hash, ...userWithoutPassword } = retryUser;
+          return userWithoutPassword;
         }
 
       } catch (createError) {
@@ -847,7 +878,7 @@ export class DatabaseService {
       }
     }
 
-    console.log('  Authentication failed - no user found');
+    console.log('  Authentication failed - no user found or invalid password');
     return null;
   }
 
@@ -1002,9 +1033,11 @@ export class DatabaseService {
 
   public async updateSetting(key: string, value: string): Promise<void> {
     const db = this.getDatabase();
+    // Use INSERT OR REPLACE to handle both new and existing settings
     await db.runAsync(
-      'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
-      [value, key]
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      [key, value]
     );
   }
 
@@ -1020,6 +1053,20 @@ export class DatabaseService {
        WHERE DATE(t.transaction_date) = ?
        ORDER BY t.created_at DESC`,
       [today]
+    );
+  }
+
+  // Get transactions since a specific time (for shift-based filtering)
+  public async getTransactionsSinceTime(startTime: string) {
+    const db = this.getDatabase();
+
+    return await db.getAllAsync(
+      `SELECT t.*, u.full_name as cashier_name
+       FROM transactions t
+       JOIN users u ON t.cashier_id = u.id
+       WHERE t.transaction_date >= ?
+       ORDER BY t.created_at DESC`,
+      [startTime]
     );
   }
 
@@ -1305,6 +1352,7 @@ export class DatabaseService {
     price?: number;
     cost?: number;
     category_id?: number;
+    vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
     tax_rate?: number;
     is_vat_inclusive?: boolean;
     stock_quantity?: number;
@@ -1339,11 +1387,26 @@ export class DatabaseService {
       setParts.push('category_id = ?');
       values.push(updates.category_id);
     }
-    if (updates.tax_rate !== undefined) {
+    if (updates.vat_type !== undefined) {
+      setParts.push('vat_type = ?');
+      values.push(updates.vat_type);
+      // Auto-set tax_rate based on vat_type
+      if (updates.vat_type !== 'vatable') {
+        setParts.push('tax_rate = ?');
+        values.push(0);
+        setParts.push('is_vat_inclusive = ?');
+        values.push(0);
+      } else if (updates.tax_rate === undefined) {
+        // Set default 12% for vatable items
+        setParts.push('tax_rate = ?');
+        values.push(12.00);
+      }
+    }
+    if (updates.tax_rate !== undefined && updates.vat_type === undefined) {
       setParts.push('tax_rate = ?');
       values.push(updates.tax_rate);
     }
-    if (updates.is_vat_inclusive !== undefined) {
+    if (updates.is_vat_inclusive !== undefined && updates.vat_type !== 'vat_exempt' && updates.vat_type !== 'zero_rated') {
       setParts.push('is_vat_inclusive = ?');
       values.push(updates.is_vat_inclusive ? 1 : 0);
     }
@@ -2012,7 +2075,8 @@ export class DatabaseService {
               'UPDATE accounts_payable SET status = ? WHERE purchase_id = ?',
               ['PAID', paymentData.purchase_id]
             );
-          } else if (purchase && purchase.balance_amount < purchase.balance_amount + paymentData.amount) {
+          } else if (purchase && purchase.balance_amount > 0) {
+            // Balance is still positive, so it's partially paid
             await db.runAsync(
               'UPDATE accounts_payable SET status = ? WHERE purchase_id = ?',
               ['PARTIALLY_PAID', paymentData.purchase_id]
@@ -2082,17 +2146,26 @@ export class DatabaseService {
   // ACCOUNTS PAYABLE METHODS
   // ========================================
 
-  public async getAccountsPayable(status?: string): Promise<any[]> {
+  public async getAccountsPayable(supplierIdOrStatus?: number | string): Promise<any[]> {
     const db = this.getDatabase();
 
     try {
-      let whereClause = '';
+      const whereClauses: string[] = [];
       const params: any[] = [];
 
-      if (status) {
-        whereClause = 'WHERE ap.status = ?';
-        params.push(status);
+      if (supplierIdOrStatus !== undefined) {
+        if (typeof supplierIdOrStatus === 'number') {
+          // Filter by supplier ID
+          whereClauses.push('ap.supplier_id = ?');
+          params.push(supplierIdOrStatus);
+        } else {
+          // Filter by status string
+          whereClauses.push('ap.status = ?');
+          params.push(supplierIdOrStatus);
+        }
       }
+
+      const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
       const query = `
         SELECT
@@ -3082,6 +3155,2034 @@ export class DatabaseService {
         agingData: [],
         summaryData: []
       };
+    }
+  }
+
+  // ========================================
+  // CATEGORY MANAGEMENT METHODS
+  // ========================================
+
+  public async getCategories(activeOnly: boolean = true): Promise<Category[]> {
+    const db = this.getDatabase();
+    try {
+      const whereClause = activeOnly ? 'WHERE is_active = 1' : '';
+      const categories = await db.getAllAsync<Category>(
+        `SELECT * FROM categories ${whereClause} ORDER BY name ASC`
+      );
+      return categories;
+    } catch (error) {
+      console.error('Error getting categories:', error);
+      return [];
+    }
+  }
+
+  public async getCategoryById(id: number): Promise<Category | null> {
+    const db = this.getDatabase();
+    try {
+      const category = await db.getFirstAsync<Category>(
+        'SELECT * FROM categories WHERE id = ?',
+        [id]
+      );
+      return category || null;
+    } catch (error) {
+      console.error(`Error getting category ${id}:`, error);
+      return null;
+    }
+  }
+
+  public async createCategory(categoryData: {
+    name: string;
+    description?: string;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        'INSERT INTO categories (name, description) VALUES (?, ?)',
+        [categoryData.name, categoryData.description || null]
+      );
+      console.log(`Category created: ${categoryData.name} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error(`Error creating category ${categoryData.name}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateCategory(id: number, updates: Partial<Category>): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      if ('name' in updates && updates.name !== undefined) {
+        setParts.push('name = ?');
+        values.push(updates.name);
+      }
+      if ('description' in updates) {
+        setParts.push('description = ?');
+        values.push(updates.description);
+      }
+      if ('is_active' in updates) {
+        setParts.push('is_active = ?');
+        values.push(updates.is_active ? 1 : 0);
+      }
+
+      if (setParts.length > 0) {
+        values.push(id);
+        const result = await db.runAsync(
+          `UPDATE categories SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+        return result.changes > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error updating category ${id}:`, error);
+      throw error;
+    }
+  }
+
+  public async deleteCategory(id: number, softDelete: boolean = true): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Check if category is in use
+      const usageCount = await db.getFirstAsync<{count: number}>(
+        'SELECT COUNT(*) as count FROM products WHERE category_id = ?',
+        [id]
+      );
+
+      if (usageCount && usageCount.count > 0) {
+        throw new Error(`Cannot delete category: ${usageCount.count} products are using this category`);
+      }
+
+      if (softDelete) {
+        const result = await db.runAsync(
+          'UPDATE categories SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [id]
+        );
+        return result.changes > 0;
+      } else {
+        const result = await db.runAsync('DELETE FROM categories WHERE id = ?', [id]);
+        return result.changes > 0;
+      }
+    } catch (error) {
+      console.error(`Error deleting category ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // BRAND MANAGEMENT METHODS
+  // ========================================
+
+  public async getBrands(activeOnly: boolean = true): Promise<Brand[]> {
+    const db = this.getDatabase();
+    try {
+      const whereClause = activeOnly ? 'WHERE is_active = 1' : '';
+      const brands = await db.getAllAsync<Brand>(
+        `SELECT * FROM brands ${whereClause} ORDER BY name ASC`
+      );
+      return brands;
+    } catch (error) {
+      console.error('Error getting brands:', error);
+      return [];
+    }
+  }
+
+  public async getBrandById(id: number): Promise<Brand | null> {
+    const db = this.getDatabase();
+    try {
+      const brand = await db.getFirstAsync<Brand>(
+        'SELECT * FROM brands WHERE id = ?',
+        [id]
+      );
+      return brand || null;
+    } catch (error) {
+      console.error(`Error getting brand ${id}:`, error);
+      return null;
+    }
+  }
+
+  public async createBrand(brandData: {
+    name: string;
+    description?: string;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        'INSERT INTO brands (name, description) VALUES (?, ?)',
+        [brandData.name, brandData.description || null]
+      );
+      console.log(`Brand created: ${brandData.name} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error(`Error creating brand ${brandData.name}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateBrand(id: number, updates: Partial<Brand>): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      if (updates.name !== undefined) {
+        setParts.push('name = ?');
+        values.push(updates.name);
+      }
+      if (updates.description !== undefined) {
+        setParts.push('description = ?');
+        values.push(updates.description);
+      }
+      if (updates.is_active !== undefined) {
+        setParts.push('is_active = ?');
+        values.push(updates.is_active ? 1 : 0);
+      }
+
+      if (setParts.length > 0) {
+        setParts.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(id);
+        const result = await db.runAsync(
+          `UPDATE brands SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+        return result.changes > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error updating brand ${id}:`, error);
+      throw error;
+    }
+  }
+
+  public async deleteBrand(id: number, softDelete: boolean = true): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Check if brand is in use
+      const usageCount = await db.getFirstAsync<{count: number}>(
+        'SELECT COUNT(*) as count FROM products WHERE brand_id = ?',
+        [id]
+      );
+
+      if (usageCount && usageCount.count > 0) {
+        throw new Error(`Cannot delete brand: ${usageCount.count} products are using this brand`);
+      }
+
+      if (softDelete) {
+        const result = await db.runAsync(
+          'UPDATE brands SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [id]
+        );
+        return result.changes > 0;
+      } else {
+        const result = await db.runAsync('DELETE FROM brands WHERE id = ?', [id]);
+        return result.changes > 0;
+      }
+    } catch (error) {
+      console.error(`Error deleting brand ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // UNIT OF MEASURE MANAGEMENT METHODS
+  // ========================================
+
+  public async getUnits(activeOnly: boolean = true): Promise<Unit[]> {
+    const db = this.getDatabase();
+    try {
+      const whereClause = activeOnly ? 'WHERE is_active = 1' : '';
+      const units = await db.getAllAsync<Unit>(
+        `SELECT * FROM units ${whereClause} ORDER BY name ASC`
+      );
+      return units;
+    } catch (error) {
+      console.error('Error getting units:', error);
+      return [];
+    }
+  }
+
+  public async getUnitById(id: number): Promise<Unit | null> {
+    const db = this.getDatabase();
+    try {
+      const unit = await db.getFirstAsync<Unit>(
+        'SELECT * FROM units WHERE id = ?',
+        [id]
+      );
+      return unit || null;
+    } catch (error) {
+      console.error(`Error getting unit ${id}:`, error);
+      return null;
+    }
+  }
+
+  public async createUnit(unitData: {
+    name: string;
+    abbreviation: string;
+    description?: string;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        'INSERT INTO units (name, abbreviation, description) VALUES (?, ?, ?)',
+        [unitData.name, unitData.abbreviation, unitData.description || null]
+      );
+      console.log(`Unit created: ${unitData.name} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error(`Error creating unit ${unitData.name}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateUnit(id: number, updates: Partial<Unit>): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      if (updates.name !== undefined) {
+        setParts.push('name = ?');
+        values.push(updates.name);
+      }
+      if (updates.abbreviation !== undefined) {
+        setParts.push('abbreviation = ?');
+        values.push(updates.abbreviation);
+      }
+      if (updates.description !== undefined) {
+        setParts.push('description = ?');
+        values.push(updates.description);
+      }
+      if (updates.is_active !== undefined) {
+        setParts.push('is_active = ?');
+        values.push(updates.is_active ? 1 : 0);
+      }
+
+      if (setParts.length > 0) {
+        setParts.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(id);
+        const result = await db.runAsync(
+          `UPDATE units SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+        return result.changes > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error updating unit ${id}:`, error);
+      throw error;
+    }
+  }
+
+  public async deleteUnit(id: number, softDelete: boolean = true): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Check if unit is in use
+      const usageCount = await db.getFirstAsync<{count: number}>(
+        'SELECT COUNT(*) as count FROM products WHERE unit_id = ?',
+        [id]
+      );
+
+      if (usageCount && usageCount.count > 0) {
+        throw new Error(`Cannot delete unit: ${usageCount.count} products are using this unit`);
+      }
+
+      if (softDelete) {
+        const result = await db.runAsync(
+          'UPDATE units SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [id]
+        );
+        return result.changes > 0;
+      } else {
+        const result = await db.runAsync('DELETE FROM units WHERE id = ?', [id]);
+        return result.changes > 0;
+      }
+    } catch (error) {
+      console.error(`Error deleting unit ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // SIZE MANAGEMENT METHODS
+  // ========================================
+
+  public async getSizes(activeOnly: boolean = true): Promise<Size[]> {
+    const db = this.getDatabase();
+    try {
+      const whereClause = activeOnly ? 'WHERE is_active = 1' : '';
+      const sizes = await db.getAllAsync<Size>(
+        `SELECT * FROM sizes ${whereClause} ORDER BY sort_order ASC, name ASC`
+      );
+      return sizes;
+    } catch (error) {
+      console.error('Error getting sizes:', error);
+      return [];
+    }
+  }
+
+  public async getSizeById(id: number): Promise<Size | null> {
+    const db = this.getDatabase();
+    try {
+      const size = await db.getFirstAsync<Size>(
+        'SELECT * FROM sizes WHERE id = ?',
+        [id]
+      );
+      return size || null;
+    } catch (error) {
+      console.error(`Error getting size ${id}:`, error);
+      return null;
+    }
+  }
+
+  public async createSize(sizeData: {
+    name: string;
+    description?: string;
+    sort_order?: number;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        'INSERT INTO sizes (name, description, sort_order) VALUES (?, ?, ?)',
+        [sizeData.name, sizeData.description || null, sizeData.sort_order || 0]
+      );
+      console.log(`Size created: ${sizeData.name} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error(`Error creating size ${sizeData.name}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateSize(id: number, updates: Partial<Size>): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      if (updates.name !== undefined) {
+        setParts.push('name = ?');
+        values.push(updates.name);
+      }
+      if (updates.description !== undefined) {
+        setParts.push('description = ?');
+        values.push(updates.description);
+      }
+      if (updates.sort_order !== undefined) {
+        setParts.push('sort_order = ?');
+        values.push(updates.sort_order);
+      }
+      if (updates.is_active !== undefined) {
+        setParts.push('is_active = ?');
+        values.push(updates.is_active ? 1 : 0);
+      }
+
+      if (setParts.length > 0) {
+        setParts.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(id);
+        const result = await db.runAsync(
+          `UPDATE sizes SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+        return result.changes > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error updating size ${id}:`, error);
+      throw error;
+    }
+  }
+
+  public async deleteSize(id: number, softDelete: boolean = true): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Check if size is in use
+      const usageCount = await db.getFirstAsync<{count: number}>(
+        'SELECT COUNT(*) as count FROM products WHERE size_id = ?',
+        [id]
+      );
+
+      if (usageCount && usageCount.count > 0) {
+        throw new Error(`Cannot delete size: ${usageCount.count} products are using this size`);
+      }
+
+      if (softDelete) {
+        const result = await db.runAsync(
+          'UPDATE sizes SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [id]
+        );
+        return result.changes > 0;
+      } else {
+        const result = await db.runAsync('DELETE FROM sizes WHERE id = ?', [id]);
+        return result.changes > 0;
+      }
+    } catch (error) {
+      console.error(`Error deleting size ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // ENHANCED PRODUCT METHODS WITH MASTER DATA
+  // ========================================
+
+  public async getProductsWithDetails(activeOnly: boolean = true, limit?: number, searchTerm?: string) {
+    const db = this.getDatabase();
+    try {
+      let whereClause = activeOnly ? 'WHERE p.is_active = 1' : 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (searchTerm && searchTerm.trim() !== '') {
+        whereClause += ' AND (p.name LIKE ? OR p.code LIKE ?)';
+        const searchPattern = `%${searchTerm.trim()}%`;
+        params.push(searchPattern, searchPattern);
+      }
+
+      const limitClause = limit ? `LIMIT ${limit}` : 'LIMIT 100';
+
+      const products = await db.getAllAsync<any>(
+        `SELECT
+          p.*,
+          c.name as category_name,
+          b.name as brand_name,
+          u.name as unit_name,
+          u.abbreviation as unit_abbreviation,
+          s.name as size_name
+         FROM products p
+         LEFT JOIN categories c ON p.category_id = c.id
+         LEFT JOIN brands b ON p.brand_id = b.id
+         LEFT JOIN units u ON p.unit_id = u.id
+         LEFT JOIN sizes s ON p.size_id = s.id
+         ${whereClause}
+         ORDER BY p.name
+         ${limitClause}`,
+        params
+      );
+
+      return products;
+    } catch (error) {
+      console.error('Error getting products with details:', error);
+      return [];
+    }
+  }
+
+  public async createProductWithDetails(productData: {
+    code: string;
+    name: string;
+    description?: string;
+    price: number;
+    cost: number;
+    category_id?: number;
+    brand_id?: number;
+    unit_id?: number;
+    size_id?: number;
+    vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
+    tax_rate?: number;
+    is_vat_inclusive?: boolean;
+    stock_quantity?: number;
+    reorder_level?: number;
+    unit?: string;
+    is_active?: boolean;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      // Determine tax_rate based on vat_type
+      const vatType = productData.vat_type || 'vatable';
+      const taxRate = vatType === 'vatable' ? (productData.tax_rate || 12.00) : 0;
+      const isVatInclusive = vatType === 'vatable' ? (productData.is_vat_inclusive !== false ? 1 : 0) : 0;
+
+      const result = await db.runAsync(
+        `INSERT INTO products (
+          code, name, description, price, cost, category_id, brand_id, unit_id, size_id,
+          vat_type, tax_rate, is_vat_inclusive, stock_quantity, reorder_level, unit, is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          productData.code,
+          productData.name,
+          productData.description || '',
+          productData.price,
+          productData.cost,
+          productData.category_id || null,
+          productData.brand_id || null,
+          productData.unit_id || null,
+          productData.size_id || null,
+          vatType,
+          taxRate,
+          isVatInclusive,
+          productData.stock_quantity || 0,
+          productData.reorder_level || 0,
+          productData.unit || 'pcs',
+          productData.is_active !== false ? 1 : 0
+        ]
+      );
+      console.log(`Product created: ${productData.name} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error(`Error creating product ${productData.name}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateProductWithDetails(productId: number, updates: {
+    code?: string;
+    name?: string;
+    description?: string;
+    price?: number;
+    cost?: number;
+    category_id?: number | null;
+    brand_id?: number | null;
+    unit_id?: number | null;
+    size_id?: number | null;
+    vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
+    tax_rate?: number;
+    is_vat_inclusive?: boolean;
+    stock_quantity?: number;
+    reorder_level?: number;
+    unit?: string;
+    is_active?: boolean;
+  }): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      if (updates.code !== undefined) {
+        setParts.push('code = ?');
+        values.push(updates.code);
+      }
+      if (updates.name !== undefined) {
+        setParts.push('name = ?');
+        values.push(updates.name);
+      }
+      if (updates.description !== undefined) {
+        setParts.push('description = ?');
+        values.push(updates.description);
+      }
+      if (updates.price !== undefined) {
+        setParts.push('price = ?');
+        values.push(updates.price);
+      }
+      if (updates.cost !== undefined) {
+        setParts.push('cost = ?');
+        values.push(updates.cost);
+      }
+      if (updates.category_id !== undefined) {
+        setParts.push('category_id = ?');
+        values.push(updates.category_id);
+      }
+      if (updates.brand_id !== undefined) {
+        setParts.push('brand_id = ?');
+        values.push(updates.brand_id);
+      }
+      if (updates.unit_id !== undefined) {
+        setParts.push('unit_id = ?');
+        values.push(updates.unit_id);
+      }
+      if (updates.size_id !== undefined) {
+        setParts.push('size_id = ?');
+        values.push(updates.size_id);
+      }
+      if (updates.vat_type !== undefined) {
+        setParts.push('vat_type = ?');
+        values.push(updates.vat_type);
+        // Auto-set tax_rate based on vat_type
+        if (updates.vat_type !== 'vatable') {
+          setParts.push('tax_rate = ?');
+          values.push(0);
+          setParts.push('is_vat_inclusive = ?');
+          values.push(0);
+        } else if (updates.tax_rate === undefined) {
+          setParts.push('tax_rate = ?');
+          values.push(12.00);
+        }
+      }
+      if (updates.tax_rate !== undefined && updates.vat_type === undefined) {
+        setParts.push('tax_rate = ?');
+        values.push(updates.tax_rate);
+      }
+      if (updates.is_vat_inclusive !== undefined && updates.vat_type !== 'vat_exempt' && updates.vat_type !== 'zero_rated') {
+        setParts.push('is_vat_inclusive = ?');
+        values.push(updates.is_vat_inclusive ? 1 : 0);
+      }
+      if (updates.stock_quantity !== undefined) {
+        setParts.push('stock_quantity = ?');
+        values.push(updates.stock_quantity);
+      }
+      if (updates.reorder_level !== undefined) {
+        setParts.push('reorder_level = ?');
+        values.push(updates.reorder_level);
+      }
+      if (updates.unit !== undefined) {
+        setParts.push('unit = ?');
+        values.push(updates.unit);
+      }
+      if (updates.is_active !== undefined) {
+        setParts.push('is_active = ?');
+        values.push(updates.is_active ? 1 : 0);
+      }
+
+      if (setParts.length > 0) {
+        setParts.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(productId);
+        const result = await db.runAsync(
+          `UPDATE products SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+        return result.changes > 0;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error updating product ${productId}:`, error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // END OF DAY METHODS
+  // ========================================
+
+  public async getEndOfDayRecords(limit: number = 30): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const records = await db.getAllAsync<any>(
+        `SELECT eod.*, u.full_name as cashier_name
+         FROM end_of_day_records eod
+         LEFT JOIN users u ON eod.created_by = u.id
+         ORDER BY eod.date DESC, eod.id DESC
+         LIMIT ?`,
+        [limit]
+      );
+      return records;
+    } catch (error) {
+      console.error('Error getting end of day records:', error);
+      return [];
+    }
+  }
+
+  public async saveEndOfDay(eodData: {
+    date: string;
+    beginning_cash: number;
+    gross_sales: number;
+    discounts: number;
+    sales_returns: number;
+    net_sales: number;
+    cash_sales: number;
+    credit_sales: number;
+    gcash_sales: number;
+    card_sales: number;
+    other_sales: number;
+    void_amount: number;
+    void_count: number;
+    transaction_count: number;
+    customer_payments_received: number;
+    supplier_payments_made: number;
+    expected_cash: number;
+    actual_cash: number;
+    cash_variance: number;
+    denomination_breakdown: any;
+    next_day_beginning_cash: number;
+    created_by: number;
+    status?: string;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        `INSERT INTO end_of_day_records (
+          date, beginning_cash, gross_sales, discounts, sales_returns, net_sales,
+          cash_sales, credit_sales, gcash_sales, card_sales, other_sales,
+          void_amount, void_count, transaction_count, customer_payments_received,
+          supplier_payments_made, expected_cash, actual_cash, cash_variance,
+          denomination_breakdown, next_day_beginning_cash, created_by, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          eodData.date,
+          eodData.beginning_cash,
+          eodData.gross_sales,
+          eodData.discounts,
+          eodData.sales_returns,
+          eodData.net_sales,
+          eodData.cash_sales,
+          eodData.credit_sales,
+          eodData.gcash_sales,
+          eodData.card_sales,
+          eodData.other_sales,
+          eodData.void_amount,
+          eodData.void_count,
+          eodData.transaction_count,
+          eodData.customer_payments_received,
+          eodData.supplier_payments_made,
+          eodData.expected_cash,
+          eodData.actual_cash,
+          eodData.cash_variance,
+          JSON.stringify(eodData.denomination_breakdown),
+          eodData.next_day_beginning_cash,
+          eodData.created_by,
+          eodData.status || 'COMPLETED'
+        ]
+      );
+      console.log(`End of Day saved for ${eodData.date} (ID: ${result.lastInsertRowId})`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error('Error saving end of day:', error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // SALES RETURNS METHODS
+  // ========================================
+
+  public async getSalesReturns(limit: number = 100): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const returns = await db.getAllAsync<any>(
+        `SELECT sr.*, u.full_name as processed_by_name
+         FROM sales_returns sr
+         LEFT JOIN users u ON sr.processed_by = u.id
+         ORDER BY sr.return_date DESC, sr.id DESC
+         LIMIT ?`,
+        [limit]
+      );
+      return returns;
+    } catch (error) {
+      console.error('Error getting sales returns:', error);
+      return [];
+    }
+  }
+
+  public async createSalesReturn(returnData: {
+    return_number: string;
+    original_transaction_id: number;
+    original_invoice_number: string;
+    customer_id?: number;
+    customer_name?: string;
+    return_date: string;
+    total_amount: number;
+    refund_method: 'CASH' | 'CREDIT' | 'EXCHANGE';
+    reason: string;
+    notes?: string;
+    processed_by: number;
+    items: Array<{
+      product_id: number;
+      product_code: string;
+      product_name: string;
+      quantity: number;
+      unit_price: number;
+      total_amount: number;
+    }>;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      // Insert sales return header
+      const result = await db.runAsync(
+        `INSERT INTO sales_returns (
+          return_number, original_transaction_id, original_invoice_number,
+          customer_id, customer_name, return_date, total_amount, refund_method,
+          reason, notes, processed_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          returnData.return_number,
+          returnData.original_transaction_id,
+          returnData.original_invoice_number,
+          returnData.customer_id || null,
+          returnData.customer_name || null,
+          returnData.return_date,
+          returnData.total_amount,
+          returnData.refund_method,
+          returnData.reason,
+          returnData.notes || null,
+          returnData.processed_by
+        ]
+      );
+
+      const returnId = result.lastInsertRowId as number;
+
+      // Insert return items
+      for (const item of returnData.items) {
+        await db.runAsync(
+          `INSERT INTO sales_return_items (
+            sales_return_id, product_id, product_code, product_name,
+            quantity, unit_price, total_amount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            returnId,
+            item.product_id,
+            item.product_code,
+            item.product_name,
+            item.quantity,
+            item.unit_price,
+            item.total_amount
+          ]
+        );
+
+        // Return stock to inventory (add back returned quantity)
+        await db.runAsync(
+          'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
+          [item.quantity, item.product_id]
+        );
+      }
+
+      // CRITICAL: Create inventory movements for each returned item
+      for (const item of returnData.items) {
+        await this.recordInventoryMovement({
+          product_id: item.product_id,
+          movement_type: 'IN',
+          quantity: item.quantity,
+          reference_type: 'SALES_RETURN',
+          reference_id: returnId,
+          reference_number: returnData.return_number,
+          notes: `Sales return: ${returnData.reason}`,
+          created_by: returnData.processed_by
+        });
+      }
+
+      // Handle CREDIT refund - update customer balance
+      if (returnData.refund_method === 'CREDIT' && returnData.customer_id) {
+        await db.runAsync(
+          'UPDATE customers SET balance = COALESCE(balance, 0) - ? WHERE id = ?',
+          [returnData.total_amount, returnData.customer_id]
+        );
+
+        // Update accounts_receivable if exists
+        await db.runAsync(
+          `UPDATE accounts_receivable
+           SET balance = CASE WHEN balance - ? < 0 THEN 0 ELSE balance - ? END,
+               status = CASE WHEN balance - ? <= 0 THEN 'PAID' ELSE 'PARTIAL' END
+           WHERE customer_id = ? AND balance > 0
+           ORDER BY created_at ASC LIMIT 1`,
+          [returnData.total_amount, returnData.total_amount, returnData.total_amount, returnData.customer_id]
+        );
+      }
+
+      // Create eJournal entry
+      await db.runAsync(
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        ['RETURN', returnData.return_number,
+         `Sales return - ${returnData.refund_method} - ${returnData.items.length} items`,
+         -returnData.total_amount, returnData.processed_by]
+      );
+
+      console.log(`Sales return created: ${returnData.return_number} (ID: ${returnId})`);
+      return returnId;
+    } catch (error) {
+      console.error('Error creating sales return:', error);
+      throw error;
+    }
+  }
+
+  // Get transaction for return lookup
+  public async getTransactionForReturn(transactionNumber: string): Promise<any | null> {
+    const db = this.getDatabase();
+    try {
+      const transaction = await db.getFirstAsync<any>(
+        `SELECT t.*, c.name as customer_full_name
+         FROM transactions t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         WHERE t.transaction_number = ? AND t.status = 'COMPLETED'`,
+        [transactionNumber]
+      );
+
+      if (transaction) {
+        // Get transaction items
+        const items = await db.getAllAsync<any>(
+          `SELECT ti.*, p.stock_quantity as current_stock
+           FROM transaction_items ti
+           LEFT JOIN products p ON ti.product_id = p.id
+           WHERE ti.transaction_id = ?`,
+          [transaction.id]
+        );
+        transaction.items = items;
+      }
+
+      return transaction || null;
+    } catch (error) {
+      console.error('Error getting transaction for return:', error);
+      return null;
+    }
+  }
+
+  // Process a complete sales return with all tracking
+  public async processSalesReturn(returnData: {
+    original_transaction_id?: number;
+    original_transaction_number?: string;
+    customer_id?: number;
+    customer_name?: string;
+    items: Array<{
+      product_id: number;
+      product_name: string;
+      quantity: number;
+      unit_price: number;
+      reason: string;
+    }>;
+    refund_method: 'CASH' | 'CREDIT' | 'STORE_CREDIT' | 'EXCHANGE';
+    notes?: string;
+    created_by: number;
+  }): Promise<{ returnId: number; returnNumber: string }> {
+    const db = this.getDatabase();
+
+    // Generate return number
+    const countResult = await db.getFirstAsync<{ count: number }>(
+      'SELECT COUNT(*) as count FROM sales_returns'
+    );
+    const returnNumber = `RTN-${String((countResult?.count || 0) + 1).padStart(6, '0')}`;
+
+    // Calculate total
+    const totalAmount = returnData.items.reduce(
+      (sum, item) => sum + (item.quantity * item.unit_price), 0
+    );
+
+    // Create return record
+    const result = await db.runAsync(
+      `INSERT INTO sales_returns (
+        return_number, original_transaction_id, original_invoice_number,
+        customer_id, customer_name, return_date, total_amount, refund_method,
+        reason, notes, processed_by, status
+      ) VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'COMPLETED')`,
+      [
+        returnNumber,
+        returnData.original_transaction_id || null,
+        returnData.original_transaction_number || null,
+        returnData.customer_id || null,
+        returnData.customer_name || 'Walk-in',
+        totalAmount,
+        returnData.refund_method,
+        returnData.items.map(i => i.reason).join('; '),
+        returnData.notes || null,
+        returnData.created_by
+      ]
+    );
+
+    const returnId = result.lastInsertRowId as number;
+
+    // Process each item
+    for (const item of returnData.items) {
+      // Insert return item
+      await db.runAsync(
+        `INSERT INTO sales_return_items (
+          sales_return_id, product_id, product_code, product_name,
+          quantity, unit_price, total_amount
+        ) VALUES (?, ?, '', ?, ?, ?, ?)`,
+        [returnId, item.product_id, item.product_name,
+         item.quantity, item.unit_price, item.quantity * item.unit_price]
+      );
+
+      // Update stock (add back)
+      await db.runAsync(
+        'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
+        [item.quantity, item.product_id]
+      );
+
+      // Create inventory movement
+      await this.recordInventoryMovement({
+        product_id: item.product_id,
+        movement_type: 'IN',
+        quantity: item.quantity,
+        reference_type: 'SALES_RETURN',
+        reference_id: returnId,
+        reference_number: returnNumber,
+        notes: `Sales return: ${item.reason}`,
+        created_by: returnData.created_by
+      });
+    }
+
+    // Handle CREDIT refund
+    if (returnData.refund_method === 'CREDIT' && returnData.customer_id) {
+      await db.runAsync(
+        'UPDATE customers SET balance = COALESCE(balance, 0) - ? WHERE id = ?',
+        [totalAmount, returnData.customer_id]
+      );
+    }
+
+    // Create eJournal entry
+    await db.runAsync(
+      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
+       VALUES ('RETURN', ?, ?, ?, ?)`,
+      [returnNumber, `Sales return - ${returnData.refund_method}`, -totalAmount, returnData.created_by]
+    );
+
+    console.log(`Sales return processed: ${returnNumber}, Total: ${totalAmount}`);
+    return { returnId, returnNumber };
+  }
+
+  // ========================================
+  // PURCHASE RETURNS METHODS
+  // ========================================
+
+  public async getPurchaseReturns(supplierId?: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      let query = `SELECT pr.*, s.name as supplier_name, u.full_name as processed_by_name
+                   FROM purchase_returns pr
+                   LEFT JOIN suppliers s ON pr.supplier_id = s.id
+                   LEFT JOIN users u ON pr.processed_by = u.id`;
+
+      if (supplierId) {
+        query += ` WHERE pr.supplier_id = ?`;
+      }
+      query += ` ORDER BY pr.return_date DESC`;
+
+      const returns = supplierId
+        ? await db.getAllAsync<any>(query, [supplierId])
+        : await db.getAllAsync<any>(query);
+
+      return returns;
+    } catch (error) {
+      console.error('Error getting purchase returns:', error);
+      return [];
+    }
+  }
+
+  public async getPurchaseForReturn(purchaseId: string): Promise<any | null> {
+    const db = this.getDatabase();
+    try {
+      const purchase = await db.getFirstAsync<any>(
+        `SELECT p.*, s.name as supplier_name
+         FROM purchases p
+         LEFT JOIN suppliers s ON p.supplier_id = s.id
+         WHERE p.purchase_number = ? OR p.id = ?`,
+        [purchaseId, purchaseId]
+      );
+
+      if (purchase) {
+        const items = await db.getAllAsync<any>(
+          `SELECT pd.*, pr.name as product_name, pr.stock_quantity as current_stock
+           FROM purchase_details pd
+           LEFT JOIN products pr ON pd.product_id = pr.id
+           WHERE pd.purchase_id = ?`,
+          [purchase.id]
+        );
+        purchase.items = items;
+      }
+
+      return purchase || null;
+    } catch (error) {
+      console.error('Error getting purchase for return:', error);
+      return null;
+    }
+  }
+
+  public async processPurchaseReturn(returnData: {
+    original_purchase_id?: string;
+    supplier_id: number;
+    supplier_name: string;
+    items: Array<{
+      product_id: number;
+      product_name: string;
+      quantity: number;
+      unit_cost: number;
+      reason: string;
+    }>;
+    refund_method: 'CASH' | 'CREDIT' | 'REPLACEMENT';
+    notes?: string;
+    created_by: number;
+  }): Promise<{ returnId: number; returnNumber: string }> {
+    const db = this.getDatabase();
+
+    // Generate return number
+    const countResult = await db.getFirstAsync<{ count: number }>(
+      'SELECT COUNT(*) as count FROM purchase_returns'
+    );
+    const returnNumber = `PR-${String((countResult?.count || 0) + 1).padStart(6, '0')}`;
+
+    // Calculate total
+    const totalAmount = returnData.items.reduce(
+      (sum, item) => sum + (item.quantity * item.unit_cost), 0
+    );
+
+    // Create return record
+    const result = await db.runAsync(
+      `INSERT INTO purchase_returns (
+        return_number, original_purchase_id, supplier_id, supplier_name,
+        return_date, total_amount, refund_method, reason, notes, processed_by, status
+      ) VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'COMPLETED')`,
+      [
+        returnNumber,
+        returnData.original_purchase_id || null,
+        returnData.supplier_id,
+        returnData.supplier_name,
+        totalAmount,
+        returnData.refund_method,
+        returnData.items.map(i => i.reason).join('; '),
+        returnData.notes || null,
+        returnData.created_by
+      ]
+    );
+
+    const returnId = result.lastInsertRowId as number;
+
+    // Process each item
+    for (const item of returnData.items) {
+      // Insert return item
+      await db.runAsync(
+        `INSERT INTO purchase_return_items (
+          purchase_return_id, product_id, product_name,
+          quantity, unit_cost, total_cost, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [returnId, item.product_id, item.product_name,
+         item.quantity, item.unit_cost, item.quantity * item.unit_cost, item.reason]
+      );
+
+      // DECREASE stock (return to supplier)
+      await db.runAsync(
+        'UPDATE products SET stock_quantity = CASE WHEN stock_quantity - ? < 0 THEN 0 ELSE stock_quantity - ? END WHERE id = ?',
+        [item.quantity, item.quantity, item.product_id]
+      );
+
+      // Create inventory movement
+      await this.recordInventoryMovement({
+        product_id: item.product_id,
+        movement_type: 'OUT',
+        quantity: item.quantity,
+        reference_type: 'PURCHASE_RETURN',
+        reference_id: returnId,
+        reference_number: returnNumber,
+        notes: `Return to supplier: ${item.reason}`,
+        created_by: returnData.created_by
+      });
+    }
+
+    // Handle CREDIT refund - reduce AP
+    if (returnData.refund_method === 'CREDIT') {
+      await db.runAsync(
+        `UPDATE accounts_payable
+         SET balance = CASE WHEN balance - ? < 0 THEN 0 ELSE balance - ? END,
+             status = CASE WHEN balance - ? <= 0 THEN 'PAID' ELSE 'PARTIALLY_PAID' END
+         WHERE supplier_id = ? AND balance > 0
+         ORDER BY created_at ASC LIMIT 1`,
+        [totalAmount, totalAmount, totalAmount, returnData.supplier_id]
+      );
+    }
+
+    // Create eJournal entry
+    await db.runAsync(
+      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
+       VALUES ('PURCHASE_RETURN', ?, ?, ?, ?)`,
+      [returnNumber, `Purchase return to ${returnData.supplier_name}`, -totalAmount, returnData.created_by]
+    );
+
+    console.log(`Purchase return processed: ${returnNumber}, Total: ${totalAmount}`);
+    return { returnId, returnNumber };
+  }
+
+  // ========================================
+  // CASH MOVEMENT MANAGEMENT METHODS
+  // ========================================
+
+  public async createCashMovement(movementData: {
+    movement_type: 'OPENING_FUND' | 'CASH_IN' | 'CASH_OUT' | 'PETTY_CASH' | 'CASH_REFUND';
+    amount: number;
+    description: string;
+    reference_number?: string;
+    approved_by?: string;
+    cashier_id: number;
+  }): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.runAsync(
+        `INSERT INTO cash_movements (movement_type, amount, description, reference_number, approved_by, cashier_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          movementData.movement_type,
+          movementData.amount,
+          movementData.description,
+          movementData.reference_number || null,
+          movementData.approved_by || null,
+          movementData.cashier_id
+        ]
+      );
+
+      // Add eJournal entry
+      await db.runAsync(
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          'SYSTEM',
+          movementData.reference_number || `CASH-${result.lastInsertRowId}`,
+          `Cash ${movementData.movement_type}: ${movementData.description}`,
+          movementData.movement_type === 'PETTY_CASH' || movementData.movement_type === 'CASH_OUT' || movementData.movement_type === 'CASH_REFUND'
+            ? -movementData.amount
+            : movementData.amount,
+          movementData.cashier_id
+        ]
+      );
+
+      console.log(`Cash movement recorded: ${movementData.movement_type} - ₱${movementData.amount}`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error('Error creating cash movement:', error);
+      throw error;
+    }
+  }
+
+  public async getCashMovements(date?: string, cashierId?: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      let whereClause = '1=1';
+      const params: any[] = [];
+
+      if (date) {
+        whereClause += ' AND DATE(cm.created_at) = ?';
+        params.push(date);
+      }
+      if (cashierId) {
+        whereClause += ' AND cm.cashier_id = ?';
+        params.push(cashierId);
+      }
+
+      const movements = await db.getAllAsync<any>(
+        `SELECT cm.*, u.full_name as cashier_name
+         FROM cash_movements cm
+         LEFT JOIN users u ON cm.cashier_id = u.id
+         WHERE ${whereClause}
+         ORDER BY cm.created_at DESC`,
+        params
+      );
+
+      return movements;
+    } catch (error) {
+      console.error('Error getting cash movements:', error);
+      return [];
+    }
+  }
+
+  public async getCashDrawerBalance(date?: string, shiftStartTime?: string): Promise<{
+    opening_fund: number;
+    cash_in: number;
+    cash_out: number;
+    petty_cash: number;
+    cash_refunds: number;
+    net_balance: number;
+  }> {
+    const db = this.getDatabase();
+    try {
+      // If shiftStartTime provided, filter by shift; otherwise filter by date
+      let dateFilter: string;
+      if (shiftStartTime) {
+        dateFilter = `AND created_at >= '${shiftStartTime}'`;
+      } else if (date) {
+        dateFilter = `AND DATE(created_at) = '${date}'`;
+      } else {
+        dateFilter = `AND DATE(created_at) = DATE('now')`;
+      }
+
+      const result = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(CASE WHEN movement_type = 'OPENING_FUND' THEN amount ELSE 0 END), 0) as opening_fund,
+          COALESCE(SUM(CASE WHEN movement_type = 'CASH_IN' THEN amount ELSE 0 END), 0) as cash_in,
+          COALESCE(SUM(CASE WHEN movement_type = 'CASH_OUT' THEN amount ELSE 0 END), 0) as cash_out,
+          COALESCE(SUM(CASE WHEN movement_type = 'PETTY_CASH' THEN amount ELSE 0 END), 0) as petty_cash,
+          COALESCE(SUM(CASE WHEN movement_type = 'CASH_REFUND' THEN amount ELSE 0 END), 0) as cash_refunds
+        FROM cash_movements
+        WHERE 1=1 ${dateFilter}
+      `);
+
+      const balance = result || {
+        opening_fund: 0,
+        cash_in: 0,
+        cash_out: 0,
+        petty_cash: 0,
+        cash_refunds: 0
+      };
+
+      balance.net_balance = balance.opening_fund + balance.cash_in - balance.cash_out - balance.petty_cash - balance.cash_refunds;
+      return balance;
+    } catch (error) {
+      console.error('Error getting cash drawer balance:', error);
+      return {
+        opening_fund: 0,
+        cash_in: 0,
+        cash_out: 0,
+        petty_cash: 0,
+        cash_refunds: 0,
+        net_balance: 0
+      };
+    }
+  }
+
+  // ========================================
+  // VOID TRANSACTION WITH INVENTORY RESTORATION
+  // ========================================
+
+  public async voidTransaction(voidData: {
+    transaction_id: number;
+    void_reason: string;
+    void_by: number;
+  }): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      let success = false;
+
+      await db.withTransactionAsync(async () => {
+        // Get transaction details
+        const transaction = await db.getFirstAsync<any>(
+          'SELECT * FROM transactions WHERE id = ? AND status = ?',
+          [voidData.transaction_id, 'COMPLETED']
+        );
+
+        if (!transaction) {
+          throw new Error('Transaction not found or already voided');
+        }
+
+        // Get transaction items
+        const items = await db.getAllAsync<any>(
+          'SELECT * FROM transaction_items WHERE transaction_id = ?',
+          [voidData.transaction_id]
+        );
+
+        // Restore inventory for each item
+        for (const item of items) {
+          await this.recordInventoryMovement({
+            product_id: item.product_id,
+            movement_type: 'IN',
+            quantity: item.quantity,
+            reference_type: 'VOID',
+            reference_id: voidData.transaction_id,
+            reference_number: `VOID-${transaction.invoice_number}`,
+            notes: `Void: ${voidData.void_reason}`,
+            created_by: voidData.void_by
+          });
+        }
+
+        // If this was a credit transaction, reverse AR entry
+        if (transaction.payment_method === 'CHARGE_INVOICE') {
+          await db.runAsync(
+            `UPDATE accounts_receivable
+             SET status = 'VOID', balance_amount = 0, updated_at = CURRENT_TIMESTAMP
+             WHERE transaction_id = ?`,
+            [voidData.transaction_id]
+          );
+        }
+
+        // Update transaction status
+        await db.runAsync(
+          `UPDATE transactions
+           SET status = 'VOID', void_reason = ?, void_by = ?, void_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [voidData.void_reason, voidData.void_by, voidData.transaction_id]
+        );
+
+        // Add eJournal entry
+        await db.runAsync(
+          `INSERT INTO ejournal (transaction_id, entry_type, reference_number, description, amount, cashier_id)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            voidData.transaction_id,
+            'VOID',
+            transaction.invoice_number,
+            `Transaction voided: ${voidData.void_reason}`,
+            -transaction.total_amount,
+            voidData.void_by
+          ]
+        );
+
+        success = true;
+      });
+
+      console.log(`Transaction ${voidData.transaction_id} voided successfully`);
+      return success;
+    } catch (error) {
+      console.error('Error voiding transaction:', error);
+      throw error;
+    }
+  }
+
+  public async getTransactionById(transactionId: number): Promise<any> {
+    const db = this.getDatabase();
+    try {
+      const transaction = await db.getFirstAsync<any>(
+        `SELECT t.*, c.name as customer_full_name, u.full_name as cashier_name
+         FROM transactions t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         LEFT JOIN users u ON t.cashier_id = u.id
+         WHERE t.id = ?`,
+        [transactionId]
+      );
+
+      if (transaction) {
+        const items = await db.getAllAsync<any>(
+          `SELECT ti.*, p.stock_quantity as current_stock
+           FROM transaction_items ti
+           LEFT JOIN products p ON ti.product_id = p.id
+           WHERE ti.transaction_id = ?`,
+          [transactionId]
+        );
+        transaction.items = items;
+      }
+
+      return transaction || null;
+    } catch (error) {
+      console.error('Error getting transaction by ID:', error);
+      return null;
+    }
+  }
+
+  public async searchTransactionByInvoice(invoiceNumber: string): Promise<any> {
+    const db = this.getDatabase();
+    try {
+      const transaction = await db.getFirstAsync<any>(
+        `SELECT t.*, c.name as customer_full_name, u.full_name as cashier_name
+         FROM transactions t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         LEFT JOIN users u ON t.cashier_id = u.id
+         WHERE t.invoice_number LIKE ? OR t.transaction_number LIKE ?`,
+        [`%${invoiceNumber}%`, `%${invoiceNumber}%`]
+      );
+
+      if (transaction) {
+        const items = await db.getAllAsync<any>(
+          `SELECT ti.*, p.stock_quantity as current_stock
+           FROM transaction_items ti
+           LEFT JOIN products p ON ti.product_id = p.id
+           WHERE ti.transaction_id = ?`,
+          [transaction.id]
+        );
+        transaction.items = items;
+      }
+
+      return transaction || null;
+    } catch (error) {
+      console.error('Error searching transaction by invoice:', error);
+      return null;
+    }
+  }
+
+  // ========================================
+  // CUSTOMER WITH AUDIT TRAIL METHODS
+  // ========================================
+
+  public async createCustomerWithAudit(customerData: {
+    name: string;
+    contact_person?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    tin?: string;
+    credit_terms?: number;
+    credit_limit?: number;
+    notes?: string;
+  }, createdBy: number): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const { getNextCustomerCode, updateCustomerNumber } = await import('./schema');
+      const customerCode = await getNextCustomerCode(db);
+
+      const result = await db.runAsync(
+        `INSERT INTO customers (
+          code, name, contact_person, phone, email, address, tin,
+          credit_terms, credit_limit, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          customerCode,
+          customerData.name,
+          customerData.contact_person || null,
+          customerData.phone || null,
+          customerData.email || null,
+          customerData.address || null,
+          customerData.tin || null,
+          customerData.credit_terms || 30,
+          customerData.credit_limit || 0,
+          customerData.notes || null
+        ]
+      );
+
+      const customerId = result.lastInsertRowId as number;
+      await updateCustomerNumber(db, customerCode);
+
+      // Create audit trail for CREATE action
+      await db.runAsync(
+        `INSERT INTO customer_audit (customer_id, action, field_name, old_value, new_value, changed_by)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [customerId, 'CREATE', 'ALL', null, JSON.stringify(customerData), createdBy]
+      );
+
+      console.log(`Customer created with audit: ${customerData.name} (ID: ${customerId})`);
+      return customerId;
+    } catch (error) {
+      console.error('Error creating customer with audit:', error);
+      throw error;
+    }
+  }
+
+  public async updateCustomerWithAudit(
+    customerId: number,
+    updates: {
+      name?: string;
+      contact_person?: string;
+      phone?: string;
+      email?: string;
+      address?: string;
+      tin?: string;
+      credit_terms?: number;
+      credit_limit?: number;
+      is_active?: boolean;
+      notes?: string;
+    },
+    updatedBy: number
+  ): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Get existing customer data for audit trail
+      const existingCustomer = await db.getFirstAsync<any>(
+        'SELECT * FROM customers WHERE id = ?',
+        [customerId]
+      );
+
+      if (!existingCustomer) {
+        throw new Error('Customer not found');
+      }
+
+      const setParts: string[] = [];
+      const values: any[] = [];
+
+      // Track changes for audit
+      for (const [key, newValue] of Object.entries(updates)) {
+        if (newValue !== undefined && existingCustomer[key] !== newValue) {
+          setParts.push(`${key} = ?`);
+          values.push(newValue);
+
+          // Record audit entry for each changed field
+          await db.runAsync(
+            `INSERT INTO customer_audit (customer_id, action, field_name, old_value, new_value, changed_by)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              customerId,
+              'UPDATE',
+              key,
+              String(existingCustomer[key] ?? ''),
+              String(newValue ?? ''),
+              updatedBy
+            ]
+          );
+        }
+      }
+
+      if (setParts.length > 0) {
+        setParts.push('updated_at = CURRENT_TIMESTAMP');
+        values.push(customerId);
+
+        await db.runAsync(
+          `UPDATE customers SET ${setParts.join(', ')} WHERE id = ?`,
+          values
+        );
+      }
+
+      console.log(`Customer ${customerId} updated with audit trail`);
+      return setParts.length > 0;
+    } catch (error) {
+      console.error('Error updating customer with audit:', error);
+      throw error;
+    }
+  }
+
+  public async getCustomerAuditTrail(customerId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const auditRecords = await db.getAllAsync<any>(
+        `SELECT ca.*, u.full_name as changed_by_name
+         FROM customer_audit ca
+         LEFT JOIN users u ON ca.changed_by = u.id
+         WHERE ca.customer_id = ?
+         ORDER BY ca.changed_at DESC`,
+        [customerId]
+      );
+      return auditRecords;
+    } catch (error) {
+      console.error('Error getting customer audit trail:', error);
+      return [];
+    }
+  }
+
+  public async searchCustomers(searchTerm: string, limit: number = 20): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const customers = await db.getAllAsync<any>(
+        `SELECT c.*,
+          (SELECT COALESCE(SUM(balance_amount), 0) FROM accounts_receivable WHERE customer_id = c.id AND status != 'PAID') as outstanding_balance
+         FROM customers c
+         WHERE c.is_active = 1 AND (c.name LIKE ? OR c.code LIKE ? OR c.phone LIKE ?)
+         ORDER BY c.name ASC
+         LIMIT ?`,
+        [`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`, limit]
+      );
+      return customers;
+    } catch (error) {
+      console.error('Error searching customers:', error);
+      return [];
+    }
+  }
+
+  public async getCustomerWithBalance(customerId: number): Promise<any> {
+    const db = this.getDatabase();
+    try {
+      const customer = await db.getFirstAsync<any>(
+        `SELECT c.*,
+          (SELECT COALESCE(SUM(balance_amount), 0) FROM accounts_receivable WHERE customer_id = c.id AND status != 'PAID') as outstanding_balance
+         FROM customers c
+         WHERE c.id = ?`,
+        [customerId]
+      );
+      return customer || null;
+    } catch (error) {
+      console.error('Error getting customer with balance:', error);
+      return null;
+    }
+  }
+
+  // ========================================
+  // SHIFT MANAGEMENT METHODS
+  // ========================================
+
+  public async startShift(userId: number, beginningCash: number): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      // Check if there's already an open shift for this user
+      const existingShift = await this.getCurrentShift(userId);
+      if (existingShift) {
+        throw new Error('User already has an open shift. Please close the current shift first.');
+      }
+
+      const now = new Date().toISOString();
+      const result = await db.runAsync(
+        `INSERT INTO shifts (user_id, start_time, beginning_cash, status, created_at)
+         VALUES (?, ?, ?, 'OPEN', ?)`,
+        [userId, now, beginningCash, now]
+      );
+
+      // Update the beginning_cash setting
+      await this.updateSetting('beginning_cash', String(beginningCash));
+
+      console.log(`Shift started: ID ${result.lastInsertRowId} for user ${userId}`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error('Error starting shift:', error);
+      throw error;
+    }
+  }
+
+  public async endShift(shiftId: number, endingCash: number, zReadingId?: number): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      const now = new Date().toISOString();
+      await db.runAsync(
+        `UPDATE shifts
+         SET end_time = ?, ending_cash = ?, status = 'CLOSED', z_reading_id = ?
+         WHERE id = ?`,
+        [now, endingCash, zReadingId || null, shiftId]
+      );
+
+      // Update the beginning_cash setting for next shift
+      await this.updateSetting('beginning_cash', String(endingCash));
+
+      console.log(`Shift ${shiftId} closed with ending cash: ${endingCash}`);
+    } catch (error) {
+      console.error('Error ending shift:', error);
+      throw error;
+    }
+  }
+
+  public async getCurrentShift(userId: number): Promise<{
+    id: number;
+    user_id: number;
+    start_time: string;
+    beginning_cash: number;
+    status: string;
+  } | null> {
+    const db = this.getDatabase();
+    try {
+      const shift = await db.getFirstAsync<any>(
+        `SELECT id, user_id, start_time, beginning_cash, status
+         FROM shifts
+         WHERE user_id = ? AND status = 'OPEN'
+         ORDER BY start_time DESC
+         LIMIT 1`,
+        [userId]
+      );
+      return shift || null;
+    } catch (error) {
+      console.error('Error getting current shift:', error);
+      return null;
+    }
+  }
+
+  public async getLastClosedShift(userId: number): Promise<{
+    id: number;
+    ending_cash: number;
+    end_time: string;
+  } | null> {
+    const db = this.getDatabase();
+    try {
+      const shift = await db.getFirstAsync<any>(
+        `SELECT id, ending_cash, end_time
+         FROM shifts
+         WHERE user_id = ? AND status = 'CLOSED'
+         ORDER BY end_time DESC
+         LIMIT 1`,
+        [userId]
+      );
+      return shift || null;
+    } catch (error) {
+      console.error('Error getting last closed shift:', error);
+      return null;
+    }
+  }
+
+  // ========================================
+  // X-READING (MID-DAY INQUIRY) METHODS
+  // ========================================
+
+  public async getXReadingData(date?: string, shiftStartTime?: string): Promise<{
+    date: string;
+    time: string;
+    day_closed: boolean;
+    transaction_count: number;
+    gross_sales: number;
+    vat_sales: number;
+    vat_amount: number;
+    vat_exempt_sales: number;
+    zero_rated_sales: number;
+    discount_amount: number;
+    void_amount: number;
+    void_count: number;
+    refund_amount: number;
+    net_sales: number;
+    cash_sales: number;
+    card_sales: number;
+    check_sales: number;
+    credit_sales: number;
+    gcash_sales: number;
+    maya_sales: number;
+    beginning_cash: number;
+    cash_fund: number;
+    petty_cash: number;
+    expected_cash: number;
+  }> {
+    const db = this.getDatabase();
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const currentTime = new Date().toLocaleTimeString('en-PH', { hour12: false });
+
+    // If shiftStartTime provided, filter by shift; otherwise filter by date
+    const useShiftFilter = !!shiftStartTime;
+    const dateFilter = useShiftFilter
+      ? `transaction_date >= '${shiftStartTime}'`
+      : `DATE(transaction_date) = '${targetDate}'`;
+
+    try {
+      // Check if Z-Reading was already completed today (day is closed)
+      const todayEod = await db.getFirstAsync<any>(`
+        SELECT id, next_day_beginning_cash FROM end_of_day_records
+        WHERE DATE(date) = ?
+      `, [targetDate]);
+
+      const dayIsClosed = !!todayEod;
+
+      // Get beginning cash - use shift's beginning_cash if filtering by shift
+      let beginningCash = 0;
+
+      if (shiftStartTime) {
+        // Get beginning cash from the current shift
+        const currentShift = await db.getFirstAsync<any>(`
+          SELECT beginning_cash FROM shifts
+          WHERE start_time = ?
+        `, [shiftStartTime]);
+        beginningCash = currentShift?.beginning_cash || 0;
+      } else {
+        // Fall back to previous day's EOD or settings
+        const lastEod = await db.getFirstAsync<any>(`
+          SELECT next_day_beginning_cash
+          FROM end_of_day_records
+          WHERE DATE(date) < ?
+          ORDER BY date DESC
+          LIMIT 1
+        `, [targetDate]);
+
+        beginningCash = lastEod?.next_day_beginning_cash || 0;
+
+        // Fall back to settings if no previous EOD exists
+        if (!beginningCash) {
+          const savedBeginningCash = await this.getSetting('beginning_cash');
+          beginningCash = savedBeginningCash ? parseFloat(savedBeginningCash) : 0;
+        }
+      }
+
+      // Get sales summary with payment method breakdown
+      // NOTE: gross_sales = total_amount + discount_amount (handles old transactions where subtotal is NULL)
+      // Filter by shift start time if provided, otherwise by date
+      const salesSummary = await db.getFirstAsync<any>(`
+        SELECT
+          COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as transaction_count,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN (COALESCE(total_amount, 0) + COALESCE(discount_amount, 0)) ELSE 0 END), 0) as gross_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN tax_amount ELSE 0 END), 0) as vat_amount,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN discount_amount ELSE 0 END), 0) as discount_amount,
+          COALESCE(SUM(CASE WHEN status = 'VOID' THEN total_amount ELSE 0 END), 0) as void_amount,
+          COUNT(CASE WHEN status = 'VOID' THEN 1 END) as void_count,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CARD' THEN total_amount ELSE 0 END), 0) as card_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CHECK' THEN total_amount ELSE 0 END), 0) as check_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND (payment_method = 'CHARGE_INVOICE' OR payment_method = 'CREDIT') THEN total_amount ELSE 0 END), 0) as credit_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'GCASH' THEN total_amount ELSE 0 END), 0) as gcash_sales,
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'MAYA' THEN total_amount ELSE 0 END), 0) as maya_sales
+        FROM transactions
+        WHERE ${dateFilter}
+      `);
+
+      // Get VAT breakdown by joining transaction_items with products
+      // Filter by shift start time if provided
+      const vatDateFilter = useShiftFilter
+        ? `t.transaction_date >= '${shiftStartTime}'`
+        : `DATE(t.transaction_date) = '${targetDate}'`;
+
+      const vatBreakdown = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(CASE WHEN p.vat_type = 'vatable' OR p.vat_type IS NULL THEN ti.total_amount ELSE 0 END), 0) as vatable_total,
+          COALESCE(SUM(CASE WHEN p.vat_type = 'vat_exempt' THEN ti.total_amount ELSE 0 END), 0) as vat_exempt_sales,
+          COALESCE(SUM(CASE WHEN p.vat_type = 'zero_rated' THEN ti.total_amount ELSE 0 END), 0) as zero_rated_sales
+        FROM transaction_items ti
+        INNER JOIN transactions t ON ti.transaction_id = t.id
+        LEFT JOIN products p ON ti.product_id = p.id
+        WHERE ${vatDateFilter} AND t.status = 'COMPLETED'
+      `);
+
+      // Calculate proper VAT breakdown for vatable items (price is VAT-inclusive)
+      const vatableTotal = vatBreakdown?.vatable_total || 0;
+      const vatableSales = Math.round((vatableTotal / 1.12) * 100) / 100; // VAT-exclusive amount
+      const vatAmount = Math.round((vatableTotal - vatableSales) * 100) / 100; // VAT amount (12%)
+
+      // Get refund amount and count (filter by shift if provided)
+      const refundDateFilter = useShiftFilter
+        ? `return_date >= '${shiftStartTime}'`
+        : `DATE(return_date) = '${targetDate}'`;
+
+      const refundSummary = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(total_amount), 0) as refund_amount,
+          COUNT(*) as refund_count
+        FROM sales_returns
+        WHERE ${refundDateFilter} AND status = 'COMPLETED'
+      `);
+
+      // Get cash movements (filter by shift if provided)
+      const cashMovements = await this.getCashDrawerBalance(useShiftFilter ? undefined : targetDate, shiftStartTime);
+
+      const grossSales = salesSummary?.gross_sales || 0;
+      const discountAmount = salesSummary?.discount_amount || 0;
+      const refundAmount = refundSummary?.refund_amount || 0;
+      const netSales = grossSales - discountAmount - refundAmount;
+
+      const cashSales = salesSummary?.cash_sales || 0;
+
+      // Expected Cash = Beginning Cash + Cash Fund + Cash Sales - Cash Out - Petty Cash
+      // Where Cash Fund = opening_fund + cash_in
+      const expectedCash = beginningCash + cashMovements.net_balance + cashSales - refundAmount;
+
+      const result = {
+        date: targetDate,
+        time: currentTime,
+        day_closed: dayIsClosed,
+        transaction_count: salesSummary?.transaction_count || 0,
+        gross_sales: grossSales,
+        vat_sales: vatableSales,
+        vat_amount: vatAmount,
+        vat_exempt_sales: vatBreakdown?.vat_exempt_sales || 0,
+        zero_rated_sales: vatBreakdown?.zero_rated_sales || 0,
+        discount_amount: discountAmount,
+        void_amount: salesSummary?.void_amount || 0,
+        void_count: salesSummary?.void_count || 0,
+        refund_amount: refundAmount,
+        net_sales: netSales,
+        cash_sales: cashSales,
+        card_sales: salesSummary?.card_sales || 0,
+        check_sales: salesSummary?.check_sales || 0,
+        credit_sales: salesSummary?.credit_sales || 0,
+        gcash_sales: salesSummary?.gcash_sales || 0,
+        maya_sales: salesSummary?.maya_sales || 0,
+        beginning_cash: beginningCash,
+        cash_fund: cashMovements.opening_fund + cashMovements.cash_in,
+        petty_cash: cashMovements.petty_cash,
+        expected_cash: expectedCash
+      };
+
+      return result;
+    } catch (error) {
+      console.error('Error getting X-Reading data:', error);
+      return {
+        date: targetDate,
+        time: currentTime,
+        day_closed: false,
+        transaction_count: 0,
+        gross_sales: 0,
+        vat_sales: 0,
+        vat_amount: 0,
+        vat_exempt_sales: 0,
+        zero_rated_sales: 0,
+        discount_amount: 0,
+        void_amount: 0,
+        void_count: 0,
+        refund_amount: 0,
+        net_sales: 0,
+        cash_sales: 0,
+        card_sales: 0,
+        check_sales: 0,
+        credit_sales: 0,
+        gcash_sales: 0,
+        maya_sales: 0,
+        beginning_cash: 0,
+        cash_fund: 0,
+        petty_cash: 0,
+        expected_cash: 0
+      };
+    }
+  }
+
+  public async saveXReading(cashierId: number): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      // Get current shift to filter by shift start time
+      let shiftStartTime: string | undefined;
+      const currentShift = await this.getCurrentShift(cashierId);
+      if (currentShift) {
+        shiftStartTime = currentShift.start_time;
+      }
+
+      const xReadingData = await this.getXReadingData(undefined, shiftStartTime);
+
+      const result = await db.runAsync(
+        `INSERT INTO x_readings (
+          date, time, current_invoice_number, gross_sales, vat_sales, vat_amount,
+          vat_exempt_sales, zero_rated_sales, discount_amount, void_amount, refund_amount,
+          net_sales, transaction_count, cashier_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          xReadingData.date,
+          xReadingData.time,
+          '', // Will be filled with last invoice
+          xReadingData.gross_sales,
+          xReadingData.vat_sales,
+          xReadingData.vat_amount,
+          xReadingData.vat_exempt_sales,
+          xReadingData.zero_rated_sales,
+          xReadingData.discount_amount,
+          xReadingData.void_amount,
+          xReadingData.refund_amount,
+          xReadingData.net_sales,
+          xReadingData.transaction_count,
+          cashierId
+        ]
+      );
+
+      // Add eJournal entry
+      await db.runAsync(
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        ['X_READING', `XREAD-${result.lastInsertRowId}`, 'X-Reading generated', xReadingData.net_sales, cashierId]
+      );
+
+      console.log(`X-Reading saved: ID ${result.lastInsertRowId}`);
+      return result.lastInsertRowId as number;
+    } catch (error) {
+      console.error('Error saving X-Reading:', error);
+      throw error;
     }
   }
 }

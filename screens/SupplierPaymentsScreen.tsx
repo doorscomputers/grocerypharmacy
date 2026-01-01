@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -24,8 +24,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Supplier } from '../database/schema';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type SupplierPaymentsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -41,15 +42,25 @@ type PaymentMethod = 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'CREDIT_CARD' | 'ONLIN
 export default function SupplierPaymentsScreen({ navigation }: Props) {
   const [activeTab, setActiveTab] = useState<'payments' | 'payables' | 'aging'>('payments');
   const [payments, setPayments] = useState<any[]>([]);
+  const [filteredPayments, setFilteredPayments] = useState<any[]>([]);
   const [accountsPayable, setAccountsPayable] = useState<any[]>([]);
   const [agingReport, setAgingReport] = useState<any>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Date filter
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
+
   // Payment Dialog
   const [paymentDialogVisible, setPaymentDialogVisible] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
+  const [selectedInvoice, setSelectedInvoice] = useState<any>(null);
+  const [invoiceMenuVisible, setInvoiceMenuVisible] = useState(false);
+  const [supplierInvoices, setSupplierInvoices] = useState<any[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [paymentMethodMenuVisible, setPaymentMethodMenuVisible] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
@@ -62,10 +73,25 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
     loadData();
   }, []);
 
+  // Filter payments when date range changes
+  useEffect(() => {
+    const filtered = payments.filter(payment => {
+      const paymentDate = new Date(payment.payment_date);
+      return paymentDate >= dateRange.startDate && paymentDate <= dateRange.endDate;
+    });
+    setFilteredPayments(filtered);
+  }, [payments, dateRange]);
+
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
+  }, []);
+
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const [paymentsData, payablesData, agingData, suppliersData] = await Promise.all([
         dbService.getSupplierPayments(undefined, 50),
@@ -109,11 +135,41 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
 
   const openPaymentDialog = () => {
     setSelectedSupplier(null);
+    setSelectedInvoice(null);
+    setSupplierInvoices([]);
     setPaymentMethod('CASH');
     setPaymentAmount('');
     setReferenceNumber('');
     setPaymentNotes('');
     setPaymentDialogVisible(true);
+  };
+
+  const loadSupplierInvoices = async (supplierId: number) => {
+    try {
+      const dbService = getDatabase();
+      // Get unpaid invoices for this supplier
+      const invoices = await dbService.getAccountsPayable(supplierId);
+      // Filter only unpaid invoices (balance > 0)
+      const unpaidInvoices = invoices.filter((inv: any) => inv.balance_amount > 0);
+      setSupplierInvoices(unpaidInvoices);
+    } catch (error) {
+      console.error('Error loading supplier invoices:', error);
+      setSupplierInvoices([]);
+    }
+  };
+
+  const handleSupplierSelect = (supplier: Supplier) => {
+    setSelectedSupplier(supplier);
+    setSelectedInvoice(null);
+    setPaymentAmount('');
+    setSupplierMenuVisible(false);
+    loadSupplierInvoices(supplier.id);
+  };
+
+  const handleInvoiceSelect = (invoice: any) => {
+    setSelectedInvoice(invoice);
+    setPaymentAmount(invoice.balance_amount.toString());
+    setInvoiceMenuVisible(false);
   };
 
   const createPayment = async () => {
@@ -122,20 +178,32 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
       return;
     }
 
+    if (!selectedInvoice) {
+      Alert.alert('Error', 'Please select an invoice to pay');
+      return;
+    }
+
     if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
       Alert.alert('Error', 'Please enter a valid payment amount');
       return;
     }
 
+    const amount = parseFloat(paymentAmount);
+    if (amount > selectedInvoice.balance_amount) {
+      Alert.alert('Error', `Payment amount cannot exceed balance of ₱${selectedInvoice.balance_amount.toLocaleString()}`);
+      return;
+    }
+
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const paymentData = {
         supplier_id: selectedSupplier.id,
+        purchase_id: selectedInvoice.purchase_id,
         payment_method: paymentMethod,
         reference_number: referenceNumber || undefined,
-        amount: parseFloat(paymentAmount),
+        amount: amount,
         notes: paymentNotes || undefined,
         created_by: 1 // TODO: Get from user context
       };
@@ -319,22 +387,33 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
     switch (activeTab) {
       case 'payments':
         return (
-          <FlatList
-            data={payments}
-            keyExtractor={(item) => item.id.toString()}
-            renderItem={renderPayment}
-            contentContainerStyle={styles.listContainer}
-            showsVerticalScrollIndicator={false}
-            refreshing={loading}
-            onRefresh={loadData}
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <Paragraph style={styles.emptyText}>
-                  No payments found. Create your first payment.
-                </Paragraph>
-              </View>
-            }
-          />
+          <View style={{ flex: 1 }}>
+            {/* Date Filter */}
+            <Card style={styles.dateFilterCard}>
+              <Card.Content>
+                <DateRangeFilter
+                  onDateChange={handleDateChange}
+                  selectedPreset="this_month"
+                />
+              </Card.Content>
+            </Card>
+            <FlatList
+              data={filteredPayments}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={renderPayment}
+              contentContainerStyle={styles.listContainer}
+              showsVerticalScrollIndicator={false}
+              refreshing={loading}
+              onRefresh={loadData}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Paragraph style={styles.emptyText}>
+                    No payments found for the selected date range.
+                  </Paragraph>
+                </View>
+              }
+            />
+          </View>
         );
       case 'payables':
         return (
@@ -427,21 +506,87 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                     icon="chevron-down"
                     contentStyle={{ justifyContent: 'flex-start' }}
                   >
-                    {selectedSupplier ? selectedSupplier.name : 'Select Supplier'}
+                    {selectedSupplier ? selectedSupplier.name : 'Select Supplier *'}
                   </Button>
                 }
+                contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                style={{ backgroundColor: '#ffffff' }}
               >
                 {suppliers.map(supplier => (
                   <Menu.Item
                     key={supplier.id}
-                    onPress={() => {
-                      setSelectedSupplier(supplier);
-                      setSupplierMenuVisible(false);
-                    }}
+                    onPress={() => handleSupplierSelect(supplier)}
                     title={supplier.name}
+                    style={{ backgroundColor: '#ffffff' }}
+                    titleStyle={{ color: '#333333' }}
                   />
                 ))}
               </Menu>
+
+              {/* Invoice Selection */}
+              {selectedSupplier && (
+                <Menu
+                  visible={invoiceMenuVisible}
+                  onDismiss={() => setInvoiceMenuVisible(false)}
+                  anchor={
+                    <Button
+                      mode="outlined"
+                      onPress={() => setInvoiceMenuVisible(true)}
+                      style={styles.dialogInput}
+                      icon="chevron-down"
+                      contentStyle={{ justifyContent: 'flex-start' }}
+                    >
+                      {selectedInvoice
+                        ? `${selectedInvoice.purchase_number} - ₱${selectedInvoice.balance_amount.toLocaleString()}`
+                        : 'Select Invoice to Pay *'}
+                    </Button>
+                  }
+                  contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                  style={{ backgroundColor: '#ffffff' }}
+                >
+                  {supplierInvoices.length === 0 ? (
+                    <Menu.Item
+                      title="No unpaid invoices"
+                      disabled
+                      style={{ backgroundColor: '#ffffff' }}
+                      titleStyle={{ color: '#999999' }}
+                    />
+                  ) : (
+                    supplierInvoices.map(invoice => (
+                      <Menu.Item
+                        key={invoice.id}
+                        onPress={() => handleInvoiceSelect(invoice)}
+                        title={`${invoice.purchase_number} - Balance: ₱${invoice.balance_amount.toLocaleString()}`}
+                        description={`Due: ${new Date(invoice.due_date).toLocaleDateString()}`}
+                        style={{ backgroundColor: '#ffffff' }}
+                        titleStyle={{ color: '#333333' }}
+                      />
+                    ))
+                  )}
+                </Menu>
+              )}
+
+              {/* Selected Invoice Details */}
+              {selectedInvoice && (
+                <Card style={styles.invoiceDetailCard}>
+                  <Card.Content>
+                    <Title style={styles.invoiceDetailTitle}>{selectedInvoice.purchase_number}</Title>
+                    <Divider style={{ marginVertical: 8 }} />
+                    <View style={styles.invoiceDetailRow}>
+                      <Paragraph style={styles.invoiceDetailLabel}>Original Amount:</Paragraph>
+                      <Paragraph style={styles.invoiceDetailValue}>₱{selectedInvoice.original_amount.toLocaleString()}</Paragraph>
+                    </View>
+                    <View style={styles.invoiceDetailRow}>
+                      <Paragraph style={styles.invoiceDetailLabel}>Already Paid:</Paragraph>
+                      <Paragraph style={styles.invoiceDetailValue}>₱{selectedInvoice.paid_amount.toLocaleString()}</Paragraph>
+                    </View>
+                    <View style={styles.invoiceDetailRow}>
+                      <Paragraph style={[styles.invoiceDetailLabel, { fontWeight: 'bold' }]}>Balance Due:</Paragraph>
+                      <Paragraph style={[styles.invoiceDetailValue, { fontWeight: 'bold', color: '#F44336' }]}>₱{selectedInvoice.balance_amount.toLocaleString()}</Paragraph>
+                    </View>
+                  </Card.Content>
+                </Card>
+              )}
 
               {/* Payment Method Selection */}
               <Menu
@@ -458,6 +603,8 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                     {paymentMethod}
                   </Button>
                 }
+                contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                style={{ backgroundColor: '#ffffff' }}
               >
                 {(['CASH', 'CHECK', 'BANK_TRANSFER', 'CREDIT_CARD', 'ONLINE'] as PaymentMethod[]).map(method => (
                   <Menu.Item
@@ -467,6 +614,8 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                       setPaymentMethodMenuVisible(false);
                     }}
                     title={method}
+                    style={{ backgroundColor: '#ffffff' }}
+                    titleStyle={{ color: '#333333' }}
                   />
                 ))}
               </Menu>
@@ -685,9 +834,38 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   dialogContent: {
-    maxHeight: 400,
+    maxHeight: 450,
   },
   dialogInput: {
     marginBottom: 16,
+  },
+  invoiceDetailCard: {
+    marginBottom: 16,
+    backgroundColor: '#E3F2FD',
+  },
+  invoiceDetailTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#1976D2',
+    textAlign: 'center',
+  },
+  invoiceDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: 4,
+  },
+  invoiceDetailLabel: {
+    fontSize: 14,
+    color: '#666',
+  },
+  invoiceDetailValue: {
+    fontSize: 14,
+    color: '#333',
+  },
+  dateFilterCard: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+    elevation: 2,
   },
 });

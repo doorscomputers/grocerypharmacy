@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
-  FlatList,
   Alert,
   ScrollView,
   TouchableOpacity,
   Text,
   Modal,
   Dimensions,
+  Platform,
 } from 'react-native';
 import {
   Card,
@@ -31,7 +31,7 @@ import { CameraView, Camera } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 
 type PhysicalInventoryScreenNavigationProp = StackNavigationProp<
@@ -120,7 +120,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
 
   const searchProducts = async (searchTerm: string) => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       // Search for products matching the term, limit to 20 results for performance
       const searchResults = await dbService.getProducts(true, 20, searchTerm);
       console.log(`Found ${searchResults.length} products for search: "${searchTerm}"`);
@@ -145,7 +145,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     }
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       // Add to database
       await dbService.createPhysicalCountDetail({
@@ -198,7 +198,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
 
       // Create count session in database WITHOUT loading all products
       const sessionId = `COUNT_${Date.now()}`;
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       await dbService.createPhysicalCountSession({
         session_id: sessionId,
@@ -247,7 +247,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     }
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const discrepancy = physical - selectedItem.system_quantity;
       const valueDiscrepancy = discrepancy * selectedItem.unit_cost;
 
@@ -310,45 +310,64 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     const discrepancyItems = countedItems.filter(item => item.discrepancy !== 0);
     const totalDiscrepancyValue = discrepancyItems.reduce((sum, item) => sum + item.value_discrepancy, 0);
 
-    // Show comprehensive confirmation dialog
-    Alert.alert(
-      'Complete Physical Inventory Count',
+    const confirmMessage =
       `Are you ready to finalize the physical inventory count?\n\n` +
-      `📊 Summary:\n` +
-      `✅ Counted Items: ${countedItems.length}\n` +
-      `⏳ Uncounted Items: ${uncountedItems.length}\n` +
-      `⚠️ Discrepancies Found: ${discrepancyItems.length}\n` +
-      `💰 Total Discrepancy Value: ₱${totalDiscrepancyValue.toFixed(2)}\n\n` +
+      `Summary:\n` +
+      `- Counted Items: ${countedItems.length}\n` +
+      `- Uncounted Items: ${uncountedItems.length}\n` +
+      `- Discrepancies Found: ${discrepancyItems.length}\n` +
+      `- Total Discrepancy Value: ₱${totalDiscrepancyValue.toFixed(2)}\n\n` +
       `${uncountedItems.length > 0 ?
-        '⚠️ Uncounted items will match system quantities.\n\n' :
+        'Warning: Uncounted items will match system quantities.\n\n' :
         ''}` +
-      `This will update all product quantities in your database and cannot be easily undone.`,
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel'
-        },
-        {
-          text: 'Yes, Complete Count',
-          onPress: () => {
-            if (uncountedItems.length > 0) {
-              // Additional confirmation for uncounted items
-              Alert.alert(
-                'Incomplete Count Warning',
-                `You have ${uncountedItems.length} products that haven't been counted. These will be assumed to match system quantities. Continue?`,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Continue', onPress: processInventoryCount },
-                ]
-              );
-            } else {
-              processInventoryCount();
-            }
+      `This will update all product quantities in your database.`;
+
+    // Use window.confirm for web compatibility (Alert.alert buttons don't work on web)
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm(confirmMessage);
+      if (confirmed) {
+        if (uncountedItems.length > 0) {
+          const secondConfirm = window.confirm(
+            `You have ${uncountedItems.length} products that haven't been counted. These will be assumed to match system quantities. Continue?`
+          );
+          if (secondConfirm) {
+            processInventoryCount();
+          }
+        } else {
+          processInventoryCount();
+        }
+      }
+    } else {
+      // Native mobile Alert
+      Alert.alert(
+        'Complete Physical Inventory Count',
+        confirmMessage,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel'
           },
-          style: 'default'
-        },
-      ]
-    );
+          {
+            text: 'Yes, Complete Count',
+            onPress: () => {
+              if (uncountedItems.length > 0) {
+                Alert.alert(
+                  'Incomplete Count Warning',
+                  `You have ${uncountedItems.length} products that haven't been counted. These will be assumed to match system quantities. Continue?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Continue', onPress: processInventoryCount },
+                  ]
+                );
+              } else {
+                processInventoryCount();
+              }
+            },
+            style: 'default'
+          },
+        ]
+      );
+    }
   };
 
   const processInventoryCount = async () => {
@@ -360,7 +379,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     setLoading(true);
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
       await db.withTransactionAsync(async () => {
@@ -409,20 +428,32 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
         });
       });
 
-      Alert.alert(
-        'Count Complete',
-        'Physical inventory count has been completed and system quantities have been updated.',
-        [
-          {
-            text: 'View Report',
-            onPress: () => setReportDialogVisible(true),
-          },
-          {
-            text: 'View Products',
-            onPress: () => navigation.navigate('Products'),
-          },
-        ]
-      );
+      // Show success message - web compatible
+      if (Platform.OS === 'web') {
+        const viewReport = window.confirm(
+          'Physical inventory count has been completed and system quantities have been updated.\n\nClick OK to view report, Cancel to go to Products.'
+        );
+        if (viewReport) {
+          setReportDialogVisible(true);
+        } else {
+          navigation.navigate('Products');
+        }
+      } else {
+        Alert.alert(
+          'Count Complete',
+          'Physical inventory count has been completed and system quantities have been updated.',
+          [
+            {
+              text: 'View Report',
+              onPress: () => setReportDialogVisible(true),
+            },
+            {
+              text: 'View Products',
+              onPress: () => navigation.navigate('Products'),
+            },
+          ]
+        );
+      }
 
       setCurrentSession({
         ...currentSession,
@@ -430,7 +461,11 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
       });
     } catch (error) {
       console.error('Count completion error:', error);
-      Alert.alert('Error', 'Failed to complete physical inventory count');
+      if (Platform.OS === 'web') {
+        window.alert('Error: Failed to complete physical inventory count');
+      } else {
+        Alert.alert('Error', 'Failed to complete physical inventory count');
+      }
     } finally {
       setLoading(false);
     }
@@ -572,7 +607,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
           </Card.Content>
         </Card>
 
-        <View style={styles.bodyContainer}>
+        <ScrollView style={styles.bodyContainer} contentContainerStyle={styles.bodyScrollContent}>
           {/* Search Section */}
           <View style={styles.searchSection}>
             <TextInput
@@ -641,16 +676,29 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
 
           {/* Search Results - Show when searching */}
           {searchQuery.trim().length >= 3 && (
-            <View style={styles.productSection}>
+            <View style={[styles.productSection, Platform.OS === 'web' && { minHeight: 250 }]}>
               <Title style={styles.sectionTitle}>
                 🔍 Search Results ({products.length}) - Tap to Add to Count
               </Title>
-              <View style={styles.productListContainer}>
-                <FlatList
-                  data={products}
-                  keyExtractor={(item) => item.id.toString()}
-                  renderItem={({ item }) => (
+              <ScrollView
+                style={[
+                  styles.productListContainer,
+                  Platform.OS === 'web' && { maxHeight: 280, overflow: 'auto' as any }
+                ]}
+                contentContainerStyle={styles.productListContent}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+              >
+                {products.length === 0 ? (
+                  <View style={styles.emptyProductsContainer}>
+                    <Text style={styles.emptyIconText}>🔍</Text>
+                    <Text style={styles.emptyProductsTitle}>No Products Found</Text>
+                    <Text style={styles.emptyProductsText}>Try a different search term</Text>
+                  </View>
+                ) : (
+                  products.map((item) => (
                     <TouchableOpacity
+                      key={item.id.toString()}
                       style={[styles.productItem, styles.searchResultItem]}
                       onPress={() => addProductToCount(item)}
                       activeOpacity={0.7}
@@ -666,20 +714,9 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
                         </View>
                       </View>
                     </TouchableOpacity>
-                  )}
-                  style={styles.productList}
-                  contentContainerStyle={styles.productListContent}
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                  ListEmptyComponent={() => (
-                    <View style={styles.emptyProductsContainer}>
-                      <Text style={styles.emptyIconText}>🔍</Text>
-                      <Text style={styles.emptyProductsTitle}>No Products Found</Text>
-                      <Text style={styles.emptyProductsText}>Try a different search term</Text>
-                    </View>
-                  )}
-                />
-              </View>
+                  ))
+                )}
+              </ScrollView>
             </View>
           )}
 
@@ -690,89 +727,85 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
                 📊 Products to Count ({filteredItems.length})
               </Title>
               <View style={styles.productListContainer}>
-                <FlatList
-                  data={filteredItems}
-                  keyExtractor={(item) => item.product_id.toString()}
-                  renderItem={({ item }) => {
-                    const statusIcon = item.status === 'counted'
-                      ? (item.discrepancy === 0 ? "✓" : "⚠")
-                      : "📦";
-                    const statusColor = item.status === 'counted'
-                      ? (item.discrepancy === 0 ? "#4CAF50" : "#FF9800")
-                      : "#666";
-
-                    return (
-                      <TouchableOpacity
-                        style={[
-                          styles.productItem,
-                          item.status === 'counted' && styles.countedProductItem,
-                          item.discrepancy !== 0 && item.status === 'counted' && styles.discrepancyProductItem
-                        ]}
-                        onPress={() => handleCountProduct(item)}
-                        activeOpacity={0.7}
-                      >
-                        <View style={styles.productItemContent}>
-                          <View style={[styles.productIcon, { backgroundColor: `${statusColor}15` }]}>
-                            <Text style={[styles.productIconText, { color: statusColor }]}>
-                              {statusIcon}
-                            </Text>
-                          </View>
-
-                          <View style={styles.productInfo}>
-                            <Text style={styles.productName} numberOfLines={2}>
-                              {item.product_name}
-                            </Text>
-                            <Text style={styles.productCode}>
-                              Code: {item.product_code}
-                            </Text>
-                            <View style={styles.productMetaRow}>
-                              <Text style={styles.productSystem}>
-                                System: {item.system_quantity} {item.unit}
-                              </Text>
-                              {item.status === 'counted' && (
-                                <Text style={styles.productPhysical}>
-                                  Physical: {item.physical_quantity}
-                                </Text>
-                              )}
-                            </View>
-                            {item.status === 'counted' && item.discrepancy !== 0 && (
-                              <Text style={[
-                                styles.discrepancyDisplay,
-                                { color: item.discrepancy > 0 ? '#4CAF50' : '#F44336' }
-                              ]}>
-                                Difference: {item.discrepancy >= 0 ? '+' : ''}{item.discrepancy} • Value: ₱{item.value_discrepancy.toFixed(2)}
-                              </Text>
-                            )}
-                          </View>
-
-                          <TouchableOpacity
-                            style={styles.countButton}
-                            onPress={() => handleCountProduct(item)}
-                            activeOpacity={0.8}
-                          >
-                            <Text style={styles.countButtonText}>📊</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  }}
-                  style={styles.productList}
-                  contentContainerStyle={styles.productListContent}
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                  ListEmptyComponent={() => (
+                <View style={[styles.productList, styles.productListContent]}>
+                  {filteredItems.length === 0 ? (
                     <View style={styles.emptyProductsContainer}>
                       <Text style={styles.emptyIconText}>🔍</Text>
                       <Text style={styles.emptyProductsTitle}>No Items to Count</Text>
                       <Text style={styles.emptyProductsText}>Search for products to add to your count list</Text>
                     </View>
+                  ) : (
+                    filteredItems.map((item) => {
+                      const statusIcon = item.status === 'counted'
+                        ? (item.discrepancy === 0 ? "✓" : "⚠")
+                        : "📦";
+                      const statusColor = item.status === 'counted'
+                        ? (item.discrepancy === 0 ? "#4CAF50" : "#FF9800")
+                        : "#666";
+
+                      return (
+                        <TouchableOpacity
+                          key={item.product_id.toString()}
+                          style={[
+                            styles.productItem,
+                            item.status === 'counted' && styles.countedProductItem,
+                            item.discrepancy !== 0 && item.status === 'counted' && styles.discrepancyProductItem
+                          ]}
+                          onPress={() => handleCountProduct(item)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={styles.productItemContent}>
+                            <View style={[styles.productIcon, { backgroundColor: `${statusColor}15` }]}>
+                              <Text style={[styles.productIconText, { color: statusColor }]}>
+                                {statusIcon}
+                              </Text>
+                            </View>
+
+                            <View style={styles.productInfo}>
+                              <Text style={styles.productName} numberOfLines={2}>
+                                {item.product_name}
+                              </Text>
+                              <Text style={styles.productCode}>
+                                Code: {item.product_code}
+                              </Text>
+                              <View style={styles.productMetaRow}>
+                                <Text style={styles.productSystem}>
+                                  System: {item.system_quantity} {item.unit}
+                                </Text>
+                                {item.status === 'counted' && (
+                                  <Text style={styles.productPhysical}>
+                                    Physical: {item.physical_quantity}
+                                  </Text>
+                                )}
+                              </View>
+                              {item.status === 'counted' && item.discrepancy !== 0 && (
+                                <Text style={[
+                                  styles.discrepancyDisplay,
+                                  { color: item.discrepancy > 0 ? '#4CAF50' : '#F44336' }
+                                ]}>
+                                  Difference: {item.discrepancy >= 0 ? '+' : ''}{item.discrepancy} • Value: ₱{item.value_discrepancy.toFixed(2)}
+                                </Text>
+                              )}
+                            </View>
+
+                            <TouchableOpacity
+                              style={styles.countButton}
+                              onPress={() => handleCountProduct(item)}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.countButtonText}>📊</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
                   )}
-                />
+                </View>
               </View>
             </View>
           )}
 
-        </View>
+        </ScrollView>
 
         {/* Summary Section - Enhanced Visibility */}
         <View style={styles.summarySection}>
@@ -1030,6 +1063,10 @@ const styles = StyleSheet.create({
   bodyContainer: {
     flex: 1,
   },
+  bodyScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 16,
+  },
   searchSection: {
     marginBottom: 16,
   },
@@ -1067,6 +1104,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
     borderRadius: 8,
     padding: 8,
+    minHeight: 200,
   },
   sectionTitle: {
     fontSize: 18,

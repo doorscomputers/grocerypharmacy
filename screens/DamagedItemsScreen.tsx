@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
-  FlatList,
   Alert,
   ScrollView,
   Text,
+  FlatList,
 } from 'react-native';
 import {
   Card,
@@ -26,7 +26,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
 
 type DamagedItemsScreenNavigationProp = StackNavigationProp<
@@ -69,7 +69,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const [sessionsData, productsData] = await Promise.all([
         dbService.getDamageSessions(10),
         dbService.getProducts(true, 100)
@@ -130,7 +130,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
 
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const sessionData = {
         session_name: sessionName.trim(),
@@ -191,7 +191,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
 
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const damageData = {
         session_id: selectedSession.session_id,
@@ -246,7 +246,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
           onPress: async () => {
             try {
               setLoading(true);
-              const dbService = DatabaseService.getInstance();
+              const dbService = getDatabase();
               await dbService.completeDamageSession(session.session_id, 1);
 
               Alert.alert('Success', 'Damage session completed successfully');
@@ -279,7 +279,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
 
             try {
               setLoading(true);
-              const dbService = DatabaseService.getInstance();
+              const dbService = getDatabase();
               await dbService.cancelDamageSession(session.session_id, 1, reason.trim());
 
               Alert.alert('Success', 'Damage session cancelled and inventory restored');
@@ -299,7 +299,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
 
   const viewSessionDetails = async (session: any) => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const sessionDetails = await dbService.getDamageSessionById(session.session_id);
 
       if (sessionDetails && sessionDetails.items) {
@@ -488,20 +488,18 @@ export default function DamagedItemsScreen({ navigation }: Props) {
                 right={<TextInput.Icon icon="magnify" />}
               />
 
-              <FlatList
-                data={filteredProducts.slice(0, 10)}
-                keyExtractor={(item) => item.id.toString()}
-                renderItem={({ item }) => (
+              <View style={styles.productList}>
+                {filteredProducts.slice(0, 10).map((item) => (
                   <List.Item
+                    key={item.id.toString()}
                     title={item.name}
                     description={`${item.code} • Stock: ${item.stock_quantity} • Cost: ₱${item.cost.toFixed(2)}`}
                     onPress={() => setSelectedProduct(item)}
                     style={selectedProduct?.id === item.id ? styles.selectedProduct : undefined}
                     left={props => <List.Icon {...props} icon="package-variant" />}
                   />
-                )}
-                style={styles.productList}
-              />
+                ))}
+              </View>
 
               {selectedProduct && (
                 <>
@@ -536,6 +534,8 @@ export default function DamagedItemsScreen({ navigation }: Props) {
                         {damageReason}
                       </Button>
                     }
+                    contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                    style={{ backgroundColor: '#ffffff' }}
                   >
                     {(['EXPIRED', 'BROKEN', 'DEFECTIVE', 'SPOILED', 'LOST', 'THEFT', 'OTHER'] as DamageReason[]).map(reason => (
                       <Menu.Item
@@ -546,6 +546,8 @@ export default function DamagedItemsScreen({ navigation }: Props) {
                         }}
                         title={reason}
                         leadingIcon={getReasonIcon(reason)}
+                        style={{ backgroundColor: '#ffffff' }}
+                        titleStyle={{ color: '#333333' }}
                       />
                     ))}
                   </Menu>

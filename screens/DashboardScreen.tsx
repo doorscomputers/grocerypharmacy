@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   StyleSheet,
   ScrollView,
+  Platform,
+  Alert,
 } from 'react-native';
 import {
   Card,
@@ -15,11 +17,11 @@ import {
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { Transaction } from '../database/schema';
 import { useAuth } from '../contexts/AuthContext';
-import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService } from '../utils/permissions';
 
 type DashboardScreenNavigationProp = StackNavigationProp<
@@ -42,15 +44,19 @@ export default function DashboardScreen({ navigation }: Props) {
   });
   const [loading, setLoading] = useState(true);
   const theme = useTheme();
-  const { user, hasPermission, logout } = useAuth();
+  const { user, logout } = useAuth();
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
+
+  // Refresh data every time the screen gains focus
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboardData();
+    }, [])
+  );
 
   const loadDashboardData = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       let transactions: Transaction[];
 
       // Cashiers can only see their own transactions
@@ -98,19 +104,48 @@ export default function DashboardScreen({ navigation }: Props) {
     </Card>
   );
 
-  const handleLogout = async () => {
-    await logout();
-    navigation.replace('Login');
+  const handleLogout = () => {
+    Alert.alert(
+      'Confirm Logout',
+      'Are you sure you want to logout?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            await logout();
+            navigation.replace('Login');
+          },
+        },
+      ]
+    );
   };
 
+  const APP_VERSION = 'v1.3.4'; // Added standard business reports: Purchase, Sales Returns, Purchase Returns, AR Aging, AP Aging
+
+  // Web needs explicit height constraints for scrolling
+  const webContainerStyle = Platform.OS === 'web'
+    ? { height: 'calc(100vh - 64px)', maxHeight: 'calc(100vh - 64px)', overflow: 'hidden' as const }
+    : {};
+
+  const webScrollStyle = Platform.OS === 'web'
+    ? { flex: 1, overflow: 'auto' as const }
+    : {};
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <ScrollView style={styles.scrollView}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
+      <ScrollView
+        style={[styles.scrollView, webScrollStyle]}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={true}
+      >
         <View style={styles.responsiveHeader}>
           <View>
             <Title style={styles.headerTitle}>
               {user?.role === 'CASHIER' ? 'My Overview' : "Today's Overview"}
             </Title>
+            <Paragraph style={{ fontSize: 10, color: '#999' }}>{APP_VERSION}</Paragraph>
             <Paragraph style={styles.headerDate}>
               Welcome, {user?.full_name} ({PermissionService.getRoleDisplayName(user?.role as any)})
             </Paragraph>
@@ -137,7 +172,7 @@ export default function DashboardScreen({ navigation }: Props) {
         <View style={styles.responsiveStatsGrid}>
           <DashboardCard
             title="Total Sales"
-            value={`₱${todayStats.sales.toFixed(2)}`}
+            value={`₱${todayStats.sales.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             subtitle="Today"
             color="#4CAF50"
             onPress={() => navigation.navigate('Reports')}
@@ -172,161 +207,120 @@ export default function DashboardScreen({ navigation }: Props) {
           <Title style={styles.sectionTitle}>Quick Actions</Title>
 
           <View style={styles.responsiveActionGrid}>
-            {/* All users can create sales */}
-            <RoleGuard permission="CREATE_SALE">
-              <Card style={styles.responsiveActionCard} onPress={handleQuickSale}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    💰 New Sale
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Start a new transaction
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
+            {/* ========== ALL USERS ========== */}
 
-            {/* Products - view for cashiers, manage for admin/manager */}
-            <RoleGuard permission="VIEW_PRODUCTS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('Products')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    📦 Products
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    {hasPermission('MANAGE_PRODUCTS') ? 'Manage inventory' : 'View products'}
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Reports - Admin and Manager only */}
-            <RoleGuard permission="VIEW_REPORTS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('Reports')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    📊 Reports
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    View sales reports
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Supplier Management - Admin and Manager only */}
-            <RoleGuard permission="MANAGE_SUPPLIERS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('SupplierManagement')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    🏢 Suppliers
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Manage supplier information
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Purchase Orders - Admin and Manager only */}
-            <RoleGuard permission="CREATE_PURCHASE_ORDER">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PurchaseOrder')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    🛒 Purchase Orders
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Create and receive orders
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Supplier Payments - Admin and Manager only */}
-            <RoleGuard permission="MANAGE_SUPPLIER_PAYMENTS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('SupplierPayments')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    💳 Supplier Payments
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Manage accounts payable
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Damaged Items - Admin and Manager only */}
-            <RoleGuard permission="MANAGE_DAMAGED_ITEMS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('DamagedItems')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    🗑️ Damaged Items
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Record damaged inventory
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Settings - Admin only */}
-            <RoleGuard permission="VIEW_SETTINGS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('Settings')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    ⚙️ Settings
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    System configuration
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* User Management - Admin only */}
-            <RoleGuard permission="MANAGE_USERS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('UserManagement')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    👥 Users
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Manage user accounts
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            {/* Permission Management - Admin only */}
-            <RoleGuard permission="MANAGE_USERS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PermissionManagement')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    🔐 Permissions
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Control role access
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
-
-            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('InitialInventory')}>
+            {/* New Sale - All users */}
+            <Card style={styles.responsiveActionCard} onPress={handleQuickSale}>
               <Card.Content style={styles.responsiveActionContent}>
-                <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                  📋 Initial Setup
+                <Title style={[styles.actionTitle, { color: '#4CAF50' }]}>
+                  New Sale
                 </Title>
                 <Paragraph style={styles.actionSubtitle}>
-                  Set starting inventory
+                  Start a new transaction
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Sales Returns - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('SalesReturns')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#F44336' }]}>
+                  Returns
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Process customer returns
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Purchase - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PurchaseOrder')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#2196F3' }]}>
+                  Purchase
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Receive inventory
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Purchase Returns - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PurchaseReturns')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#795548' }]}>
+                  PO Returns
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Return to suppliers
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Accounts Receivable (Customer Payments) - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('CustomerPayments')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#FF9800' }]}>
+                  Receivables
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Collect customer payments
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Accounts Payable (Supplier Payments) - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('SupplierPayments')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#9C27B0' }]}>
+                  Payables
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Pay supplier invoices
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Master Data - All users can view, CRUD based on role inside */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('MasterData')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#6200EE' }]}>
+                  Master Data
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Products, Categories, Suppliers...
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Reports Hub - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('ReportsHub')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#E91E63' }]}>
+                  Reports
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  All business reports
+                </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Inventory Section */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('DamagedItems')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#F44336' }]}>
+                  Damaged Items
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Record damaged inventory
                 </Paragraph>
               </Card.Content>
             </Card>
 
             <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PhysicalInventory')}>
               <Card.Content style={styles.responsiveActionContent}>
-                <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                  🔢 Physical Count
+                <Title style={[styles.actionTitle, { color: '#FF9800' }]}>
+                  Physical Count
                 </Title>
                 <Paragraph style={styles.actionSubtitle}>
                   Count physical inventory
@@ -334,21 +328,10 @@ export default function DashboardScreen({ navigation }: Props) {
               </Card.Content>
             </Card>
 
-            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('Settings')}>
-              <Card.Content style={styles.responsiveActionContent}>
-                <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                  ⚙️ Settings
-                </Title>
-                <Paragraph style={styles.actionSubtitle}>
-                  Configure system
-                </Paragraph>
-              </Card.Content>
-            </Card>
-
             <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('InventoryMovements')}>
               <Card.Content style={styles.responsiveActionContent}>
-                <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                  📊 Item Ledger
+                <Title style={[styles.actionTitle, { color: '#673AB7' }]}>
+                  Item Ledger
                 </Title>
                 <Paragraph style={styles.actionSubtitle}>
                   View transaction history
@@ -356,31 +339,29 @@ export default function DashboardScreen({ navigation }: Props) {
               </Card.Content>
             </Card>
 
-            <RoleGuard permission="MANAGE_CUSTOMERS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('CustomerManagement')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    👥 Customers
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Manage customer accounts
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
+            {/* End of Day - Z-Reading with cash accountability */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('EndOfDay')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#00695C' }]}>
+                  End of Day
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  Z-Reading & Cash Count
+                </Paragraph>
+              </Card.Content>
+            </Card>
 
-            <RoleGuard permission="COLLECT_CUSTOMER_PAYMENTS">
-              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('CustomerPayments')}>
-                <Card.Content style={styles.responsiveActionContent}>
-                  <Title style={[styles.actionTitle, { color: theme.colors.primary }]}>
-                    💰 Customer Payments
-                  </Title>
-                  <Paragraph style={styles.actionSubtitle}>
-                    Collect charge invoice payments
-                  </Paragraph>
-                </Card.Content>
-              </Card>
-            </RoleGuard>
+            {/* Settings - All users */}
+            <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('Settings')}>
+              <Card.Content style={styles.responsiveActionContent}>
+                <Title style={[styles.actionTitle, { color: '#455A64' }]}>
+                  Settings
+                </Title>
+                <Paragraph style={styles.actionSubtitle}>
+                  System configuration
+                </Paragraph>
+              </Card.Content>
+            </Card>
           </View>
         </View>
       </ScrollView>
@@ -391,7 +372,7 @@ export default function DashboardScreen({ navigation }: Props) {
         label="Quick Sale"
         onPress={handleQuickSale}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -401,6 +382,10 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 100,
   },
   responsiveHeader: {
     flexDirection: 'row',

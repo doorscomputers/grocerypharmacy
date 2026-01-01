@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -19,13 +19,13 @@ import {
   Portal,
   ActivityIndicator,
   DataTable,
-  TextInput,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { InventoryMovement } from '../database/schema';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 interface InventoryCountItem {
   product_id: number;
@@ -97,11 +97,17 @@ export default function ReportsScreen({ navigation }: Props) {
   const [todayTransactions, setTodayTransactions] = useState([]);
   const [inventoryHistory, setInventoryHistory] = useState([]);
   const [inventoryFilterVisible, setInventoryFilterVisible] = useState(false);
-  const [selectedDateRange, setSelectedDateRange] = useState({
-    startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
-    endDate: new Date().toISOString().split('T')[0] // today
+  const [selectedDateRange, setSelectedDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
   });
   const theme = useTheme();
+
+  const handleInventoryDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setSelectedDateRange({ startDate, endDate });
+    }
+  }, []);
 
   useEffect(() => {
     loadTodayTransactions();
@@ -110,7 +116,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
   const loadTodayTransactions = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const transactions = await dbService.getTodaysTransactions();
       setTodayTransactions(transactions);
     } catch (error) {
@@ -120,21 +126,30 @@ export default function ReportsScreen({ navigation }: Props) {
 
   const loadInventoryHistory = async (startDate?: string, endDate?: string) => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
+      // Use parameterized queries to prevent SQL injection
       let dateFilter = '';
-      if (startDate && endDate && startDate.trim() && endDate.trim()) {
-        // Try both date and created_at for better compatibility
-        dateFilter = `AND (DATE(pcs.date) BETWEEN '${startDate}' AND '${endDate}' OR DATE(pcs.created_at) BETWEEN '${startDate}' AND '${endDate}')`;
-        console.log('Date filter SQL:', dateFilter);
-        console.log('Date range:', { startDate, endDate });
-      } else if (startDate && startDate.trim()) {
-        dateFilter = `AND (DATE(pcs.date) >= '${startDate}' OR DATE(pcs.created_at) >= '${startDate}')`;
-        console.log('Start date filter SQL:', dateFilter);
-      } else if (endDate && endDate.trim()) {
-        dateFilter = `AND (DATE(pcs.date) <= '${endDate}' OR DATE(pcs.created_at) <= '${endDate}')`;
-        console.log('End date filter SQL:', dateFilter);
+      const queryParams: string[] = [];
+
+      // Validate date format (YYYY-MM-DD) to prevent injection
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      const validStartDate = startDate && startDate.trim() && dateRegex.test(startDate.trim());
+      const validEndDate = endDate && endDate.trim() && dateRegex.test(endDate.trim());
+
+      if (validStartDate && validEndDate) {
+        dateFilter = `AND (DATE(pcs.date) BETWEEN ? AND ? OR DATE(pcs.created_at) BETWEEN ? AND ?)`;
+        queryParams.push(startDate!.trim(), endDate!.trim(), startDate!.trim(), endDate!.trim());
+        console.log('Date filter with params:', { startDate, endDate });
+      } else if (validStartDate) {
+        dateFilter = `AND (DATE(pcs.date) >= ? OR DATE(pcs.created_at) >= ?)`;
+        queryParams.push(startDate!.trim(), startDate!.trim());
+        console.log('Start date filter:', startDate);
+      } else if (validEndDate) {
+        dateFilter = `AND (DATE(pcs.date) <= ? OR DATE(pcs.created_at) <= ?)`;
+        queryParams.push(endDate!.trim(), endDate!.trim());
+        console.log('End date filter:', endDate);
       } else {
         console.log('No date filter applied - showing all sessions');
       }
@@ -179,7 +194,7 @@ export default function ReportsScreen({ navigation }: Props) {
         ${dateFilter}
         ORDER BY pcs.created_at DESC
         LIMIT 50
-      `);
+      `, queryParams);
       const sessions = rawSessions as InventorySession[];
 
       console.log(`Found ${sessions.length} physical count sessions with date filter:`, sessions.map(s => ({ id: s.reference_number, date: s.date, status: s.status })));
@@ -244,7 +259,7 @@ export default function ReportsScreen({ navigation }: Props) {
   const generateZReading = async () => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const zReading = await dbService.generateZReading(1); // Cashier ID would come from user context
 
       setCurrentReport(zReading);
@@ -270,7 +285,7 @@ export default function ReportsScreen({ navigation }: Props) {
   const generateXReading = async () => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const xReading = await dbService.generateXReading(1); // Cashier ID would come from user context
 
       setCurrentReport(xReading);
@@ -297,12 +312,14 @@ export default function ReportsScreen({ navigation }: Props) {
   const generateInventoryHistoryReport = async () => {
     setLoading(true);
     try {
-      await loadInventoryHistory(selectedDateRange.startDate, selectedDateRange.endDate);
+      const startDateStr = selectedDateRange.startDate.toISOString().split('T')[0];
+      const endDateStr = selectedDateRange.endDate.toISOString().split('T')[0];
+      await loadInventoryHistory(startDateStr, endDateStr);
       setReportType('inventory');
       setCurrentReport({
         inventoryHistory,
-        dateRange: selectedDateRange,
-        reportTitle: `Physical Inventory Count History (${selectedDateRange.startDate} to ${selectedDateRange.endDate})`
+        dateRange: { startDate: startDateStr, endDate: endDateStr },
+        reportTitle: `Physical Inventory Count History (${startDateStr} to ${endDateStr})`
       });
       setReportVisible(true);
       setInventoryFilterVisible(false);
@@ -1123,70 +1140,10 @@ export default function ReportsScreen({ navigation }: Props) {
               Select date range to filter physical inventory count sessions:
             </Paragraph>
 
-            <TextInput
-              label="Start Date"
-              value={selectedDateRange.startDate}
-              onChangeText={(date) => setSelectedDateRange({...selectedDateRange, startDate: date})}
-              mode="outlined"
-              style={{ marginBottom: 12 }}
-              placeholder="YYYY-MM-DD"
+            <DateRangeFilter
+              onDateChange={handleInventoryDateChange}
+              selectedPreset="this_month"
             />
-
-            <TextInput
-              label="End Date"
-              value={selectedDateRange.endDate}
-              onChangeText={(date) => setSelectedDateRange({...selectedDateRange, endDate: date})}
-              mode="outlined"
-              style={{ marginBottom: 16 }}
-              placeholder="YYYY-MM-DD"
-            />
-
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
-              <Button
-                mode="outlined"
-                compact
-                onPress={() => {
-                  const today = new Date().toISOString().split('T')[0];
-                  setSelectedDateRange({ startDate: today, endDate: today });
-                }}
-              >
-                Today
-              </Button>
-
-              <Button
-                mode="outlined"
-                compact
-                onPress={() => {
-                  const today = new Date();
-                  const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-                  setSelectedDateRange({
-                    startDate: lastWeek.toISOString().split('T')[0],
-                    endDate: today.toISOString().split('T')[0]
-                  });
-                }}
-              >
-                Last 7 Days
-              </Button>
-
-              <Button
-                mode="outlined"
-                compact
-                onPress={() => {
-                  const today = new Date();
-                  const lastMonth = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-                  setSelectedDateRange({
-                    startDate: lastMonth.toISOString().split('T')[0],
-                    endDate: today.toISOString().split('T')[0]
-                  });
-                }}
-              >
-                Last 30 Days
-              </Button>
-            </View>
-
-            <Paragraph style={{ fontSize: 12, opacity: 0.7 }}>
-              Selected range: {selectedDateRange.startDate} to {selectedDateRange.endDate}
-            </Paragraph>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setInventoryFilterVisible(false)}>Cancel</Button>

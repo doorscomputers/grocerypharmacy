@@ -20,7 +20,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 
 type DatabaseViewerScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -57,7 +57,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
 
   const loadTableCounts = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
       const counts: {[key: string]: number} = {};
 
@@ -82,7 +82,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   const loadTableData = async (tableName: string) => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
       const result = await db.getAllAsync(
@@ -109,7 +109,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
 
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
       const result = await db.getAllAsync(customQuery);
@@ -137,7 +137,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   const performClear = async () => {
     setLoading(true);
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const db = dbService.getDatabase();
 
       // Clear data in correct order (respecting foreign keys)

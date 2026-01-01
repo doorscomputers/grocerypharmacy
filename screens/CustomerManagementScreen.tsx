@@ -4,25 +4,28 @@ import {
   StyleSheet,
   FlatList,
   Alert,
+  ScrollView,
 } from 'react-native';
 import {
   Card,
   Title,
   Paragraph,
   Button,
-  TextInput,
   useTheme,
   Chip,
   Searchbar,
-  Modal,
+  Dialog,
   Portal,
   Divider,
   FAB,
+  IconButton,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
+import { Customer } from '../database/schema';
+import { StableTextInput } from '../components/StableTextInput';
 
 type CustomerManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -34,100 +37,132 @@ type Props = {
 };
 
 export default function CustomerManagementScreen({ navigation }: Props) {
-  const [customers, setCustomers] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
 
-  // Customer modal state
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingCustomer, setEditingCustomer] = useState<any>(null);
-  const [customerData, setCustomerData] = useState({
-    name: '',
-    contact_person: '',
-    phone: '',
-    email: '',
-    address: '',
-    tin: '',
-    credit_terms: '30',
-    credit_limit: '0',
-    notes: '',
-  });
+  // Dialog state
+  const [dialogVisible, setDialogVisible] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+
+  // Form fields
+  const [name, setName] = useState('');
+  const [contactPerson, setContactPerson] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [address, setAddress] = useState('');
+  const [tin, setTin] = useState('');
+  const [creditTerms, setCreditTerms] = useState('30');
+  const [creditLimit, setCreditLimit] = useState('0');
+  const [notes, setNotes] = useState('');
 
   const theme = useTheme();
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [showInactive]);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
-      const customersData = await dbService.getCustomers(false); // Include inactive
+      const dbService = getDatabase();
+      const customersData = await dbService.getCustomers(!showInactive);
       setCustomers(customersData);
     } catch (error) {
       console.error('Error loading customers:', error);
+      Alert.alert('Error', 'Failed to load customers');
     } finally {
       setLoading(false);
     }
   };
 
-  const resetForm = () => {
-    setCustomerData({
-      name: '',
-      contact_person: '',
-      phone: '',
-      email: '',
-      address: '',
-      tin: '',
-      credit_terms: '30',
-      credit_limit: '0',
-      notes: '',
-    });
+  const clearForm = () => {
+    setName('');
+    setContactPerson('');
+    setPhone('');
+    setEmail('');
+    setAddress('');
+    setTin('');
+    setCreditTerms('30');
+    setCreditLimit('0');
+    setNotes('');
     setEditingCustomer(null);
   };
 
-  const handleAdd = () => {
-    resetForm();
-    setModalVisible(true);
+  const openAddDialog = () => {
+    clearForm();
+    setDialogVisible(true);
   };
 
-  const handleEdit = (customer: any) => {
+  const openEditDialog = (customer: Customer) => {
     setEditingCustomer(customer);
-    setCustomerData({
-      name: customer.name || '',
-      contact_person: customer.contact_person || '',
-      phone: customer.phone || '',
-      email: customer.email || '',
-      address: customer.address || '',
-      tin: customer.tin || '',
-      credit_terms: customer.credit_terms?.toString() || '30',
-      credit_limit: customer.credit_limit?.toString() || '0',
-      notes: customer.notes || '',
-    });
-    setModalVisible(true);
+    setName(customer.name);
+    setContactPerson(customer.contact_person || '');
+    setPhone(customer.phone || '');
+    setEmail(customer.email || '');
+    setAddress(customer.address || '');
+    setTin(customer.tin || '');
+    setCreditTerms(customer.credit_terms?.toString() || '30');
+    setCreditLimit(customer.credit_limit?.toString() || '0');
+    setNotes(customer.notes || '');
+    setDialogVisible(true);
   };
 
   const handleSave = async () => {
-    if (!customerData.name.trim()) {
+    if (!name.trim()) {
       Alert.alert('Error', 'Customer name is required');
       return;
     }
 
+    // Check for duplicate customer name
+    const duplicateName = customers.find(
+      (c) => c.name.toLowerCase() === name.trim().toLowerCase() &&
+      (!editingCustomer || c.id !== editingCustomer.id)
+    );
+
+    if (duplicateName) {
+      Alert.alert('Error', `Customer "${name}" already exists. Please use a unique name.`);
+      return;
+    }
+
+    // Validate credit terms (1-365 days)
+    const parsedCreditTerms = parseInt(creditTerms);
+    if (isNaN(parsedCreditTerms) || parsedCreditTerms < 1 || parsedCreditTerms > 365) {
+      Alert.alert('Error', 'Credit terms must be between 1 and 365 days');
+      return;
+    }
+
+    // Validate credit limit (non-negative)
+    const parsedCreditLimit = parseFloat(creditLimit);
+    if (isNaN(parsedCreditLimit) || parsedCreditLimit < 0) {
+      Alert.alert('Error', 'Credit limit cannot be negative');
+      return;
+    }
+
+    // Validate email format if provided
+    if (email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        Alert.alert('Error', 'Please enter a valid email address');
+        return;
+      }
+    }
+
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       const saveData = {
-        name: customerData.name.trim(),
-        contact_person: customerData.contact_person.trim() || undefined,
-        phone: customerData.phone.trim() || undefined,
-        email: customerData.email.trim() || undefined,
-        address: customerData.address.trim() || undefined,
-        tin: customerData.tin.trim() || undefined,
-        credit_terms: parseInt(customerData.credit_terms) || 30,
-        credit_limit: parseFloat(customerData.credit_limit) || 0,
-        notes: customerData.notes.trim() || undefined,
+        name: name.trim(),
+        contact_person: contactPerson.trim() || undefined,
+        phone: phone.trim() || undefined,
+        email: email.trim() || undefined,
+        address: address.trim() || undefined,
+        tin: tin.trim() || undefined,
+        credit_terms: parsedCreditTerms,
+        credit_limit: parsedCreditLimit,
+        notes: notes.trim() || undefined,
       };
 
       if (editingCustomer) {
@@ -138,8 +173,8 @@ export default function CustomerManagementScreen({ navigation }: Props) {
         Alert.alert('Success', 'Customer created successfully');
       }
 
-      setModalVisible(false);
-      resetForm();
+      setDialogVisible(false);
+      clearForm();
       await loadData();
     } catch (error) {
       console.error('Error saving customer:', error);
@@ -149,16 +184,19 @@ export default function CustomerManagementScreen({ navigation }: Props) {
     }
   };
 
-  const handleToggleStatus = async (customer: any) => {
+  const handleToggleStatus = async (customer: Customer) => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
 
       await dbService.updateCustomer(customer.id, {
         is_active: !customer.is_active
       });
 
-      Alert.alert('Success', `Customer ${customer.is_active ? 'deactivated' : 'activated'} successfully`);
+      Alert.alert(
+        'Success',
+        `Customer ${customer.is_active ? 'deactivated' : 'activated'} successfully`
+      );
       await loadData();
     } catch (error) {
       console.error('Error toggling customer status:', error);
@@ -180,68 +218,106 @@ export default function CustomerManagementScreen({ navigation }: Props) {
     );
   });
 
-  const renderCustomer = ({ item }: { item: any }) => (
-    <Card style={styles.customerCard}>
+  const formatCurrency = (amount: number) => {
+    return `₱${(amount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const renderCustomer = ({ item }: { item: Customer }) => (
+    <Card style={[styles.customerCard, !item.is_active && styles.inactiveCard]}>
       <Card.Content>
         <View style={styles.customerHeader}>
           <View style={styles.customerInfo}>
-            <Title style={styles.customerName}>{item.name}</Title>
+            <Title style={[styles.customerName, !item.is_active && styles.inactiveText]}>
+              {item.name}
+            </Title>
             <Paragraph style={styles.customerCode}>Code: {item.code}</Paragraph>
-            {item.contact_person && (
-              <Paragraph style={styles.contactPerson}>Contact: {item.contact_person}</Paragraph>
-            )}
-            {item.phone && (
-              <Paragraph style={styles.phone}>Phone: {item.phone}</Paragraph>
-            )}
-            {item.email && (
-              <Paragraph style={styles.email}>Email: {item.email}</Paragraph>
-            )}
           </View>
-          <View style={styles.customerStats}>
-            <Chip
-              style={[
-                styles.statusChip,
-                { backgroundColor: item.is_active ? '#4CAF50' : '#F44336' }
-              ]}
-              textStyle={{ color: 'white', fontSize: 10 }}
-              compact
-            >
-              {item.is_active ? 'ACTIVE' : 'INACTIVE'}
-            </Chip>
-            <Paragraph style={styles.creditTerms}>
-              Terms: {item.credit_terms} days
-            </Paragraph>
-            <Paragraph style={styles.creditLimit}>
-              Limit: ₱{item.credit_limit?.toFixed(2) || '0.00'}
-            </Paragraph>
-          </View>
+          <Chip
+            compact
+            style={[
+              styles.statusChip,
+              { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' }
+            ]}
+            textStyle={{
+              color: item.is_active ? '#4CAF50' : '#F44336',
+              fontSize: 11,
+              fontWeight: 'bold'
+            }}
+          >
+            {item.is_active ? 'Active' : 'Inactive'}
+          </Chip>
         </View>
 
-        {item.address && (
-          <Paragraph style={styles.address}>Address: {item.address}</Paragraph>
-        )}
+        <Divider style={styles.divider} />
 
-        {item.tin && (
-          <Paragraph style={styles.tin}>TIN: {item.tin}</Paragraph>
-        )}
+        <View style={styles.detailsSection}>
+          {item.contact_person && (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.detailLabel}>Contact:</Paragraph>
+              <Paragraph style={styles.detailValue}>{item.contact_person}</Paragraph>
+            </View>
+          )}
+          {item.phone && (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.detailLabel}>Phone:</Paragraph>
+              <Paragraph style={styles.detailValue}>{item.phone}</Paragraph>
+            </View>
+          )}
+          {item.email && (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.detailLabel}>Email:</Paragraph>
+              <Paragraph style={styles.detailValue}>{item.email}</Paragraph>
+            </View>
+          )}
+          {item.address && (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.detailLabel}>Address:</Paragraph>
+              <Paragraph style={styles.detailValue}>{item.address}</Paragraph>
+            </View>
+          )}
+          {item.tin && (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.detailLabel}>TIN:</Paragraph>
+              <Paragraph style={styles.detailValue}>{item.tin}</Paragraph>
+            </View>
+          )}
+          <View style={styles.detailRow}>
+            <Paragraph style={styles.detailLabel}>Credit Terms:</Paragraph>
+            <Paragraph style={styles.detailValue}>{item.credit_terms || 30} days</Paragraph>
+          </View>
+          <View style={styles.detailRow}>
+            <Paragraph style={styles.detailLabel}>Credit Limit:</Paragraph>
+            <Paragraph style={[styles.detailValue, styles.creditAmount]}>
+              {formatCurrency(item.credit_limit || 0)}
+            </Paragraph>
+          </View>
+          {item.notes && (
+            <View style={styles.notesRow}>
+              <Paragraph style={styles.detailLabel}>Notes:</Paragraph>
+              <Paragraph style={styles.notesText}>{item.notes}</Paragraph>
+            </View>
+          )}
+        </View>
 
-        {item.notes && (
-          <Paragraph style={styles.notes}>Notes: {item.notes}</Paragraph>
-        )}
-
-        <View style={styles.customerActions}>
+        <View style={styles.actionButtons}>
           <Button
             mode="outlined"
-            onPress={() => handleEdit(item)}
+            onPress={() => openEditDialog(item)}
             style={styles.actionButton}
+            icon="pencil"
             compact
           >
             Edit
           </Button>
           <Button
-            mode={item.is_active ? 'outlined' : 'contained'}
+            mode="outlined"
             onPress={() => handleToggleStatus(item)}
-            style={styles.actionButton}
+            style={[
+              styles.actionButton,
+              { borderColor: item.is_active ? '#FF5722' : '#4CAF50' }
+            ]}
+            icon={item.is_active ? 'account-cancel' : 'account-check'}
+            textColor={item.is_active ? '#FF5722' : '#4CAF50'}
             compact
           >
             {item.is_active ? 'Deactivate' : 'Activate'}
@@ -255,13 +331,20 @@ export default function CustomerManagementScreen({ navigation }: Props) {
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={styles.header}>
         <Title style={styles.headerTitle}>Customer Management</Title>
-
         <Searchbar
           placeholder="Search customers..."
           onChangeText={setSearchQuery}
           value={searchQuery}
           style={styles.searchBar}
         />
+        <Button
+          mode={showInactive ? 'contained' : 'outlined'}
+          compact
+          onPress={() => setShowInactive(!showInactive)}
+          style={styles.filterButton}
+        >
+          {showInactive ? 'Show Active Only' : 'Show All'}
+        </Button>
       </View>
 
       <FlatList
@@ -275,129 +358,129 @@ export default function CustomerManagementScreen({ navigation }: Props) {
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Paragraph style={styles.emptyText}>
-              No customers found. Tap the + button to add a customer.
+              {searchQuery
+                ? 'No customers found matching your search.'
+                : 'No customers found. Tap the + button to add a customer.'}
             </Paragraph>
           </View>
         }
       />
 
       <FAB
-        style={styles.fab}
+        style={[styles.fab, { backgroundColor: theme.colors.primary }]}
         icon="plus"
-        onPress={handleAdd}
+        label="Add Customer"
+        onPress={openAddDialog}
       />
 
-      {/* Customer Modal */}
+      {/* Add/Edit Customer Dialog */}
       <Portal>
-        <Modal
-          visible={modalVisible}
-          onDismiss={() => setModalVisible(false)}
-          contentContainerStyle={styles.modalContainer}
+        <Dialog
+          visible={dialogVisible}
+          onDismiss={() => setDialogVisible(false)}
+          style={styles.dialog}
         >
-          <Title style={styles.modalTitle}>
-            {editingCustomer ? 'Edit Customer' : 'Add Customer'}
-          </Title>
+          <Dialog.Title>
+            {editingCustomer ? 'Edit Customer' : 'Add New Customer'}
+          </Dialog.Title>
+          <Dialog.ScrollArea style={styles.dialogScrollArea}>
+            <ScrollView showsVerticalScrollIndicator={true}>
+              <View style={styles.dialogContent}>
+                <StableTextInput
+                  label="Customer Name *"
+                  value={name}
+                  onChangeText={setName}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                />
 
-          <View style={styles.modalContent}>
-            <TextInput
-              label="Customer Name *"
-              value={customerData.name}
-              onChangeText={(text) => setCustomerData({ ...customerData, name: text })}
-              mode="outlined"
-              style={styles.input}
-            />
+                <StableTextInput
+                  label="Contact Person"
+                  value={contactPerson}
+                  onChangeText={setContactPerson}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                />
 
-            <TextInput
-              label="Contact Person"
-              value={customerData.contact_person}
-              onChangeText={(text) => setCustomerData({ ...customerData, contact_person: text })}
-              mode="outlined"
-              style={styles.input}
-            />
+                <StableTextInput
+                  label="Phone Number"
+                  value={phone}
+                  onChangeText={setPhone}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                  keyboardType="phone-pad"
+                />
 
-            <TextInput
-              label="Phone"
-              value={customerData.phone}
-              onChangeText={(text) => setCustomerData({ ...customerData, phone: text })}
-              mode="outlined"
-              style={styles.input}
-              keyboardType="phone-pad"
-            />
+                <StableTextInput
+                  label="Email Address"
+                  value={email}
+                  onChangeText={setEmail}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
 
-            <TextInput
-              label="Email"
-              value={customerData.email}
-              onChangeText={(text) => setCustomerData({ ...customerData, email: text })}
-              mode="outlined"
-              style={styles.input}
-              keyboardType="email-address"
-            />
+                <StableTextInput
+                  label="Address"
+                  value={address}
+                  onChangeText={setAddress}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                  multiline
+                  numberOfLines={2}
+                />
 
-            <TextInput
-              label="Address"
-              value={customerData.address}
-              onChangeText={(text) => setCustomerData({ ...customerData, address: text })}
-              mode="outlined"
-              style={styles.input}
-              multiline
-              numberOfLines={2}
-            />
+                <StableTextInput
+                  label="TIN Number"
+                  value={tin}
+                  onChangeText={setTin}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                />
 
-            <TextInput
-              label="TIN"
-              value={customerData.tin}
-              onChangeText={(text) => setCustomerData({ ...customerData, tin: text })}
-              mode="outlined"
-              style={styles.input}
-            />
+                <View style={styles.rowInputs}>
+                  <StableTextInput
+                    label="Credit Terms (days)"
+                    value={creditTerms}
+                    onChangeText={setCreditTerms}
+                    mode="outlined"
+                    style={[styles.dialogInput, styles.halfInput]}
+                    keyboardType="numeric"
+                  />
+                  <StableTextInput
+                    label="Credit Limit (₱)"
+                    value={creditLimit}
+                    onChangeText={setCreditLimit}
+                    mode="outlined"
+                    style={[styles.dialogInput, styles.halfInput]}
+                    keyboardType="numeric"
+                  />
+                </View>
 
-            <TextInput
-              label="Credit Terms (Days)"
-              value={customerData.credit_terms}
-              onChangeText={(text) => setCustomerData({ ...customerData, credit_terms: text })}
-              mode="outlined"
-              style={styles.input}
-              keyboardType="numeric"
-            />
-
-            <TextInput
-              label="Credit Limit"
-              value={customerData.credit_limit}
-              onChangeText={(text) => setCustomerData({ ...customerData, credit_limit: text })}
-              mode="outlined"
-              style={styles.input}
-              keyboardType="numeric"
-            />
-
-            <TextInput
-              label="Notes"
-              value={customerData.notes}
-              onChangeText={(text) => setCustomerData({ ...customerData, notes: text })}
-              mode="outlined"
-              style={styles.input}
-              multiline
-              numberOfLines={3}
-            />
-
-            <View style={styles.modalButtons}>
-              <Button
-                mode="outlined"
-                onPress={() => setModalVisible(false)}
-                style={styles.modalButton}
-              >
-                Cancel
-              </Button>
-              <Button
-                mode="contained"
-                onPress={handleSave}
-                style={styles.modalButton}
-                loading={loading}
-              >
-                {editingCustomer ? 'Update' : 'Create'}
-              </Button>
-            </View>
-          </View>
-        </Modal>
+                <StableTextInput
+                  label="Notes"
+                  value={notes}
+                  onChangeText={setNotes}
+                  mode="outlined"
+                  style={styles.dialogInput}
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
+            </ScrollView>
+          </Dialog.ScrollArea>
+          <Dialog.Actions>
+            <Button onPress={() => setDialogVisible(false)}>Cancel</Button>
+            <Button
+              onPress={handleSave}
+              loading={loading}
+              mode="contained"
+            >
+              {editingCustomer ? 'Update' : 'Create'}
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
       </Portal>
     </SafeAreaView>
   );
@@ -414,86 +497,90 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   searchBar: {
     marginBottom: 8,
+    elevation: 2,
+  },
+  filterButton: {
+    alignSelf: 'flex-end',
+    marginTop: 4,
   },
   listContainer: {
     padding: 16,
     paddingTop: 8,
-    paddingBottom: 80, // Space for FAB
+    paddingBottom: 100,
   },
   customerCard: {
-    marginBottom: 16,
-    elevation: 4,
+    marginBottom: 12,
+    elevation: 3,
+  },
+  inactiveCard: {
+    backgroundColor: '#F5F5F5',
+    opacity: 0.85,
   },
   customerHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 8,
   },
   customerInfo: {
     flex: 1,
-  },
-  customerStats: {
-    alignItems: 'flex-end',
   },
   customerName: {
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 2,
   },
+  inactiveText: {
+    color: '#757575',
+  },
   customerCode: {
     fontSize: 12,
-    opacity: 0.7,
-    marginBottom: 4,
-  },
-  contactPerson: {
-    fontSize: 14,
-    marginBottom: 2,
-  },
-  phone: {
-    fontSize: 14,
-    marginBottom: 2,
-  },
-  email: {
-    fontSize: 14,
-    marginBottom: 2,
+    color: '#666',
   },
   statusChip: {
-    marginBottom: 8,
-    alignSelf: 'flex-end',
+    marginLeft: 8,
   },
-  creditTerms: {
-    fontSize: 12,
-    marginBottom: 2,
+  divider: {
+    marginVertical: 12,
   },
-  creditLimit: {
-    fontSize: 12,
+  detailsSection: {
+    marginBottom: 12,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  detailLabel: {
+    fontSize: 13,
     fontWeight: 'bold',
+    color: '#555',
+    width: 90,
   },
-  address: {
-    fontSize: 14,
-    marginBottom: 4,
-    fontStyle: 'italic',
+  detailValue: {
+    fontSize: 13,
+    flex: 1,
+    color: '#333',
   },
-  tin: {
+  creditAmount: {
+    fontWeight: 'bold',
+    color: '#1976D2',
+  },
+  notesRow: {
+    marginTop: 4,
+  },
+  notesText: {
     fontSize: 12,
-    marginBottom: 4,
-    opacity: 0.8,
-  },
-  notes: {
-    fontSize: 12,
-    marginBottom: 8,
+    color: '#666',
     fontStyle: 'italic',
-    opacity: 0.7,
+    marginTop: 2,
   },
-  customerActions: {
+  actionButtons: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 8,
+    marginTop: 4,
   },
   actionButton: {
     flex: 1,
@@ -507,7 +594,7 @@ const styles = StyleSheet.create({
   emptyText: {
     textAlign: 'center',
     fontSize: 16,
-    opacity: 0.7,
+    color: '#666',
   },
   fab: {
     position: 'absolute',
@@ -515,32 +602,26 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
   },
-  modalContainer: {
-    backgroundColor: 'white',
-    padding: 20,
-    margin: 20,
-    borderRadius: 8,
-    maxHeight: '90%',
+  dialog: {
+    maxHeight: '85%',
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 16,
-    textAlign: 'center',
+  dialogScrollArea: {
+    maxHeight: 400,
+    paddingHorizontal: 0,
   },
-  modalContent: {
-    flex: 1,
+  dialogContent: {
+    paddingHorizontal: 24,
+    paddingVertical: 8,
   },
-  input: {
-    marginBottom: 16,
+  dialogInput: {
+    marginBottom: 12,
+    backgroundColor: '#fff',
   },
-  modalButtons: {
+  rowInputs: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 24,
-    gap: 16,
+    gap: 12,
   },
-  modalButton: {
+  halfInput: {
     flex: 1,
   },
 });

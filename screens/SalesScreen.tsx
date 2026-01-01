@@ -1,265 +1,310 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
   FlatList,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
+  Modal,
+  TextInput as RNTextInput,
   TouchableOpacity,
-  Text,
-  ScrollView,
+  Keyboard,
 } from 'react-native';
 import {
-  Card,
-  Title,
-  Paragraph,
-  Button,
   TextInput,
-  Divider,
-  List,
-  IconButton,
-  Chip,
   useTheme,
-  Dialog,
-  Portal,
+  IconButton,
+  Text,
+  Button,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Product } from '../database/schema';
-import { initializeSampleData } from '../utils/SampleData';
+import StartShiftDialog from '../components/StartShiftDialog';
 
-type SalesScreenNavigationProp = StackNavigationProp<
-  RootStackParamList,
-  'Sales'
->;
+// POS Components
+import {
+  POSCartItem,
+  POSPaymentModal,
+  POSSearchDropdown,
+  POSProductBrowser,
+  POSDiscountModal,
+  POSQuantityModal,
+  POSHamburgerMenu,
+  POSCashFundModal,
+  POSPettyCashModal,
+  POSXReadingModal,
+  POSVoidModal,
+  POSRefundModal,
+  POSExchangeModal,
+  POSQuickCustomerModal,
+} from '../components/pos';
+import POSSeniorDiscountModal from '../components/pos/POSSeniorDiscountModal';
+import { CartItem } from '../hooks/usePOSCart';
+import ReceiptPreview, { ReceiptData } from '../components/ReceiptPreview';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
+import { buildReceipt, PRINTER_WIDTH } from '../utils/escpos';
 
-type Props = {
+// Hooks
+import usePOSCart from '../hooks/usePOSCart';
+import usePOSProducts from '../hooks/usePOSProducts';
+
+type SalesScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Sales'>;
+type SalesScreenRouteProp = RouteProp<RootStackParamList, 'Sales'>;
+
+interface Props {
   navigation: SalesScreenNavigationProp;
-};
-
-interface CartItem {
-  id: number;
-  code: string;
-  name: string;
-  price: number;
-  quantity: number;
-  tax_rate: number;
-  is_vat_inclusive: boolean;
+  route: SalesScreenRouteProp;
 }
 
-
-export default function SalesScreen({ navigation }: Props) {
+export default function SalesScreen({ navigation, route }: Props) {
   const { user } = useAuth();
-  const [cart, setCart] = useState<CartItem[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [paymentVisible, setPaymentVisible] = useState(false);
-  const [amountTendered, setAmountTendered] = useState('');
-  const [customerName, setCustomerName] = useState('');
-  const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'CHECK' | 'ONLINE' | 'CHARGE_INVOICE'>('CASH');
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [discountType, setDiscountType] = useState('none'); // 'none', 'percent', 'amount', 'senior'
-  const [discountValue, setDiscountValue] = useState('');
-  const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
   const theme = useTheme();
+  const printerService = BluetoothPrinterService.getInstance();
+  const searchInputRef = useRef<RNTextInput>(null);
+  const productsRef = useRef<Product[]>([]);
 
+  // Custom hooks for state management
+  const {
+    cart,
+    totals,
+    discount,
+    addItem,
+    removeItem,
+    updateQuantity,
+    incrementQuantity,
+    decrementQuantity,
+    clearCart,
+    setDiscountType,
+    setDiscountValue,
+    setSeniorDiscount,
+    clearSeniorDiscount,
+    getItemQuantity,
+  } = usePOSCart();
+
+  const {
+    products,
+    categories,
+    searchQuery,
+    filteredProducts,
+    loading,
+    setSearchQuery,
+    refreshProducts,
+    findProductByBarcode,
+  } = usePOSProducts();
+
+  // Keep productsRef in sync with products (to avoid stale closure in callbacks)
   useEffect(() => {
-    loadProducts();
-    loadCustomers();
-  }, []);
+    productsRef.current = products;
+  }, [products]);
 
-  // Reload products when search query changes with debounce
+  // Local state
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [paymentVisible, setPaymentVisible] = useState(false);
+  const [receiptVisible, setReceiptVisible] = useState(false);
+  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [browseVisible, setBrowseVisible] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const [discountModalVisible, setDiscountModalVisible] = useState(false);
+  const [seniorDiscountModalVisible, setSeniorDiscountModalVisible] = useState(false);
+  const [quantityModalVisible, setQuantityModalVisible] = useState(false);
+  const [selectedItemForQty, setSelectedItemForQty] = useState<CartItem | null>(null);
+  const [hamburgerMenuVisible, setHamburgerMenuVisible] = useState(false);
+  const [lastReceiptData, setLastReceiptData] = useState<ReceiptData | null>(null);
+
+  // POS Operation Modal States
+  const [cashFundModalVisible, setCashFundModalVisible] = useState(false);
+  const [pettyCashModalVisible, setPettyCashModalVisible] = useState(false);
+  const [xReadingModalVisible, setXReadingModalVisible] = useState(false);
+  const [voidModalVisible, setVoidModalVisible] = useState(false);
+  const [refundModalVisible, setRefundModalVisible] = useState(false);
+  const [exchangeModalVisible, setExchangeModalVisible] = useState(false);
+  const [quickCustomerModalVisible, setQuickCustomerModalVisible] = useState(false);
+
+  // Shift Management State
+  const [currentShift, setCurrentShift] = useState<{id: number; beginning_cash: number} | null>(null);
+  const [shiftDialogVisible, setShiftDialogVisible] = useState(false);
+  const [checkingShift, setCheckingShift] = useState(true);
+
+  // Check for active shift on mount
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      loadProducts();
-    }, 300);
+    checkActiveShift();
+  }, [user?.id]);
 
-    return () => clearTimeout(timeoutId);
-  }, [searchQuery]);
-
-  // Reload products when screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      console.log('SalesScreen focused, reloading products...');
-      loadProducts();
-    }, [])
-  );
-
-  const loadProducts = async () => {
+  const checkActiveShift = async () => {
+    if (!user?.id) return;
+    setCheckingShift(true);
     try {
-      const dbService = DatabaseService.getInstance();
-
-      // Use optimized getProducts with search term if available
-      const rawProductList = await dbService.getProducts(true, 50, searchQuery.trim() || undefined);
-      console.log('SalesScreen: Loaded active products:', rawProductList.length);
-      setProducts(rawProductList as Product[]);
+      const dbService = getDatabase();
+      const shift = await dbService.getCurrentShift(user.id);
+      if (shift) {
+        setCurrentShift({ id: shift.id, beginning_cash: shift.beginning_cash });
+        setShiftDialogVisible(false);
+      } else {
+        setCurrentShift(null);
+        setShiftDialogVisible(true);
+      }
     } catch (error) {
-      console.error('SalesScreen: Error loading products:', error);
+      console.error('Error checking active shift:', error);
+      // Allow sales even if shift check fails (fallback behavior)
+      setShiftDialogVisible(false);
+    } finally {
+      setCheckingShift(false);
     }
   };
 
+  const handleShiftStarted = (shiftId: number) => {
+    setCurrentShift({ id: shiftId, beginning_cash: 0 });
+    setShiftDialogVisible(false);
+    // Refresh after shift start
+    refreshProducts();
+  };
+
+  // Load customers
+  useEffect(() => {
+    loadCustomers();
+  }, []);
+
+  // Refresh on focus and auto-focus search
+  useFocusEffect(
+    useCallback(() => {
+      refreshProducts();
+      // Auto-focus search field for barcode scanning
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
+    }, [refreshProducts])
+  );
+
+  // Show/hide search dropdown based on query
+  useEffect(() => {
+    setShowSearchDropdown(searchQuery.length >= 1 && filteredProducts.length > 0);
+  }, [searchQuery, filteredProducts.length]);
+
   const loadCustomers = async () => {
     try {
-      const dbService = DatabaseService.getInstance();
-      const customerList = await dbService.getCustomers(true); // Only active customers
+      const dbService = getDatabase();
+      const customerList = await dbService.getCustomers(true);
       setCustomers(customerList);
     } catch (error) {
       console.error('Error loading customers:', error);
     }
   };
 
-  const loadSampleData = async () => {
-    try {
-      console.log('Loading sample data...');
-      await initializeSampleData();
-      await loadProducts();
-      Alert.alert('Success', 'Sample products loaded successfully!');
-    } catch (error) {
-      console.error('Error loading sample data:', error);
-      Alert.alert('Error', 'Failed to load sample data');
+  // Handle barcode scan / search submit
+  const handleSearchSubmit = useCallback(() => {
+    if (filteredProducts.length === 1) {
+      // Exact match - add to cart
+      addItem(filteredProducts[0]);
+      setSearchQuery('');
+      setShowSearchDropdown(false);
+    } else if (filteredProducts.length > 1) {
+      // Multiple matches - keep dropdown open
+      setShowSearchDropdown(true);
     }
-  };
+    // Keep focus for next scan
+    searchInputRef.current?.focus();
+  }, [filteredProducts, addItem, setSearchQuery]);
 
-  const addToCart = (product: Product) => {
-    console.log('Adding to cart:', product.name);
+  // Handle product selection from dropdown
+  const handleSelectFromDropdown = useCallback((product: Product) => {
+    addItem(product);
+    setSearchQuery('');
+    setShowSearchDropdown(false);
+    Keyboard.dismiss();
+    // Re-focus for next scan
+    setTimeout(() => searchInputRef.current?.focus(), 100);
+  }, [addItem, setSearchQuery]);
 
-    const existingItem = cart.find(item => item.id === product.id);
+  // Handle product selection from browser
+  const handleSelectFromBrowser = useCallback((product: Product) => {
+    addItem(product);
+    setBrowseVisible(false);
+    // Re-focus for next scan
+    setTimeout(() => searchInputRef.current?.focus(), 100);
+  }, [addItem]);
 
-    if (existingItem) {
-      setCart(cart.map(item =>
-        item.id === product.id
-          ? { ...item, quantity: item.quantity + 1 }
-          : item
-      ));
-      console.log(`Updated ${product.name} quantity to ${existingItem.quantity + 1}`);
+  // Handle barcode scanned from camera
+  const handleBarcodeScan = useCallback((barcode: string) => {
+    console.log('Barcode scanned:', barcode);
+    const currentProducts = productsRef.current;
+    const barcodeUpper = barcode.toUpperCase().trim();
+
+    // Try multiple matching strategies
+    let product = currentProducts.find(p =>
+      (p.code || '').toUpperCase().trim() === barcodeUpper
+    );
+
+    // Try with leading 0 added (UPC-A to EAN-13)
+    if (!product) {
+      const withLeadingZero = '0' + barcodeUpper;
+      product = currentProducts.find(p =>
+        (p.code || '').toUpperCase().trim() === withLeadingZero
+      );
+    }
+
+    // Try with leading 0 removed
+    if (!product && barcodeUpper.startsWith('0')) {
+      const withoutLeadingZero = barcodeUpper.substring(1);
+      product = currentProducts.find(p =>
+        (p.code || '').toUpperCase().trim() === withoutLeadingZero
+      );
+    }
+
+    // Try partial match (barcode ends with product code or vice versa)
+    if (!product) {
+      product = currentProducts.find(p => {
+        const code = (p.code || '').toUpperCase().trim();
+        return code.endsWith(barcodeUpper) || barcodeUpper.endsWith(code);
+      });
+    }
+
+    console.log('Match found:', product ? product.name : 'NONE');
+    if (product) {
+      addItem(product);
+      setTimeout(() => searchInputRef.current?.focus(), 100);
     } else {
-      setCart([...cart, {
-        id: product.id,
-        code: product.code,
-        name: product.name,
-        price: product.price,
-        quantity: 1,
-        tax_rate: product.tax_rate,
-        is_vat_inclusive: product.is_vat_inclusive,
-      }]);
-      console.log(`Added ${product.name} to cart`);
+      setSearchQuery(barcode);
+      setShowSearchDropdown(true);
     }
-  };
+  }, [addItem, setSearchQuery]);
 
-  const removeFromCart = (productId: number) => {
-    setCart(cart.filter(item => item.id !== productId));
-  };
-
-  const updateQuantity = (productId: number, quantity: number) => {
-    if (quantity <= 0) {
-      removeFromCart(productId);
-      return;
+  // Handle checkout button
+  const handleCheckout = useCallback(() => {
+    if (cart.length > 0) {
+      setPaymentVisible(true);
     }
+  }, [cart.length]);
 
-    setCart(cart.map(item =>
-      item.id === productId
-        ? { ...item, quantity }
-        : item
-    ));
-  };
+  // Process payment
+  const handlePaymentComplete = useCallback(async (data: {
+    paymentMethod: 'CASH' | 'CARD' | 'CHECK' | 'ONLINE' | 'CHARGE_INVOICE';
+    amountTendered: number;
+    customerId?: number;
+    customerName?: string;
+  }) => {
+    if (!user) return;
 
-  const calculateTotals = () => {
-    let subtotal = 0;
-    let taxAmount = 0;
-
-    cart.forEach(item => {
-      const itemTotal = item.price * item.quantity;
-
-      if (item.is_vat_inclusive) {
-        // VAT is included in the price
-        const vatExclusive = itemTotal / (1 + item.tax_rate / 100);
-        subtotal += vatExclusive;
-        taxAmount += itemTotal - vatExclusive;
-      } else {
-        // VAT is added to the price
-        subtotal += itemTotal;
-        taxAmount += (itemTotal * item.tax_rate) / 100;
-      }
-    });
-
-    const totalBeforeDiscount = subtotal + taxAmount;
-    let discountAmount = 0;
-
-    // Calculate discount
-    if (isSeniorCitizen) {
-      // Philippine Senior Citizen discount: 20% on goods, 12% VAT exemption
-      discountAmount = subtotal * 0.20; // 20% discount on VAT-exclusive amount
-      taxAmount = 0; // VAT exemption for senior citizens
-    } else if (discountType === 'percent' && discountValue) {
-      discountAmount = (totalBeforeDiscount * parseFloat(discountValue)) / 100;
-    } else if (discountType === 'amount' && discountValue) {
-      discountAmount = parseFloat(discountValue) || 0;
-    }
-
-    const total = Math.max(0, totalBeforeDiscount - discountAmount);
-
-    return {
-      subtotal: Number(subtotal.toFixed(2)),
-      taxAmount: Number(taxAmount.toFixed(2)),
-      discountAmount: Number(discountAmount.toFixed(2)),
-      totalBeforeDiscount: Number(totalBeforeDiscount.toFixed(2)),
-      total: Number(total.toFixed(2)),
-    };
-  };
-
-  const handleCheckout = () => {
-    if (cart.length === 0) {
-      Alert.alert('Error', 'Cart is empty');
-      return;
-    }
-    setPaymentVisible(true);
-  };
-
-  const processPayment = async () => {
-    if (!user) {
-      Alert.alert('Error', 'You must be logged in to complete a sale');
-      return;
-    }
-
-    const tendered = parseFloat(amountTendered);
-    const totals = calculateTotals();
-
-    // Skip validation for charge invoices
-    if (paymentMethod !== 'CHARGE_INVOICE') {
-      if (isNaN(tendered) || tendered < totals.total) {
-        Alert.alert('Error', 'Invalid payment amount');
-        return;
-      }
-    }
-
-    // For charge invoices, require customer selection
-    if (paymentMethod === 'CHARGE_INVOICE' && !selectedCustomer && !customerName.trim()) {
-      Alert.alert('Error', 'Please select a customer or enter customer name for charge invoice');
-      return;
-    }
-
-    setLoading(true);
+    setIsProcessing(true);
 
     try {
-      const dbService = DatabaseService.getInstance();
-      const changeAmount = tendered - totals.total;
+      const dbService = getDatabase();
+      const changeAmount = data.amountTendered - totals.total;
 
       const transactionData = {
-        customer_id: selectedCustomer?.id,
-        customer_name: customerName || selectedCustomer?.name,
+        customer_id: data.customerId,
+        customer_name: data.customerName,
         subtotal: totals.subtotal,
         tax_amount: totals.taxAmount,
+        discount_amount: totals.discountAmount || 0,  // Save discount amount to database
         total_amount: totals.total,
-        payment_method: paymentMethod,
-        amount_tendered: paymentMethod === 'CHARGE_INVOICE' ? 0 : tendered,
-        change_amount: paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
+        payment_method: data.paymentMethod,
+        amount_tendered: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : data.amountTendered,
+        change_amount: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
         cashier_id: user.id,
         items: cart.map(item => ({
           product_id: item.id,
@@ -276,410 +321,531 @@ export default function SalesScreen({ navigation }: Props) {
 
       const result = await dbService.createTransaction(transactionData);
 
-      Alert.alert(
-        'Transaction Complete',
-        `Invoice: ${result.invoiceNumber}\nChange: ₱${changeAmount.toFixed(2)}`,
-        [
-          {
-            text: 'New Sale',
-            onPress: () => {
-              setCart([]);
-              setAmountTendered('');
-              setCustomerName('');
-              setDiscountType('none');
-              setDiscountValue('');
-              setIsSeniorCitizen(false);
-              setPaymentVisible(false);
-            },
-          },
-          {
-            text: 'Back to Dashboard',
-            onPress: () => {
-              setCart([]);
-              setAmountTendered('');
-              setCustomerName('');
-              setDiscountType('none');
-              setDiscountValue('');
-              setIsSeniorCitizen(false);
-              setPaymentVisible(false);
-              navigation.navigate('Dashboard');
-            },
-          },
-        ]
-      );
+      // Get store settings for receipt
+      const storeName = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const storeAddress = await dbService.getSetting('company_address') || '';
+      const storePhone = await dbService.getSetting('store_phone') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      const permitNumber = await dbService.getSetting('permit_number') || '';
+
+      // Prepare receipt data with BIR VAT breakdown
+      const newReceiptData: ReceiptData = {
+        businessName: storeName,
+        businessAddress: storeAddress,
+        businessPhone: storePhone,
+        tin: tin,
+        permitNumber: permitNumber,
+        invoiceNumber: result.invoiceNumber,
+        transactionDate: new Date(),
+        cashierName: user.full_name || user.username,
+        items: cart.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.price,
+          totalPrice: item.price * item.quantity,
+        })),
+        subtotal: totals.grossTotal || 0,  // Use gross total (sum of item prices)
+        taxAmount: totals.taxAmount || 0,
+        discountAmount: totals.discountAmount || 0,
+        discountLabel: discount.isSeniorCitizen ? 'SC/PWD Discount' : 'Discount',
+        total: totals.total || 0,
+        // BIR VAT Breakdown
+        vatableSales: totals.vatableSales || 0,
+        vatExemptSales: totals.vatExemptSales || 0,
+        zeroRatedSales: totals.zeroRatedSales || 0,
+        vatAmount: totals.vatAmount || 0,
+        paymentMethod: data.paymentMethod,
+        amountTendered: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : data.amountTendered,
+        changeAmount: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
+        customerName: data.customerName,
+      };
+
+      setReceiptData(newReceiptData);
+      setLastReceiptData(newReceiptData);  // Store for reprint
+      setPaymentVisible(false);
+      setReceiptVisible(true);
     } catch (error) {
       console.error('Transaction error:', error);
-      Alert.alert('Error', 'Transaction failed');
     } finally {
-      setLoading(false);
+      setIsProcessing(false);
+    }
+  }, [user, cart, totals, discount]);
+
+  // Print receipt
+  const handlePrintReceipt = async () => {
+    if (!receiptData || !printerService.isConnected()) {
+      navigation.navigate('PrinterSettings');
+      return;
+    }
+
+    try {
+      setIsPrinting(true);
+      const settings = printerService.getSettings();
+      const printerWidth = settings.printerWidth || PRINTER_WIDTH.MM_58;
+      const receiptBuilder = buildReceipt(receiptData, printerWidth);
+      await printerService.print(receiptBuilder);
+    } catch (error) {
+      console.error('Print error:', error);
+    } finally {
+      setIsPrinting(false);
     }
   };
 
-  const filteredProducts = products.filter(product => {
-    if (!searchQuery.trim()) {
-      return true; // Show all products when no search query
-    }
+  // Close receipt and reset
+  const handleCloseReceipt = useCallback(() => {
+    setReceiptVisible(false);
+    setReceiptData(null);
+    clearCart();
+    refreshProducts();
+    // Re-focus for next customer
+    setTimeout(() => searchInputRef.current?.focus(), 100);
+  }, [clearCart, refreshProducts]);
 
-    const query = searchQuery.toLowerCase().trim();
-    const name = (product.name || '').toLowerCase();
-    const code = (product.code || '').toLowerCase();
+  // Handle quantity press (manual input)
+  const handleQuantityPress = useCallback((item: CartItem) => {
+    setSelectedItemForQty(item);
+    setQuantityModalVisible(true);
+  }, []);
 
-    // For barcode scanning (exact match for codes)
-    if (query.length >= 8 && /^[0-9]+$/.test(query)) {
-      return code === query;
-    }
+  // Handle quantity confirm from modal
+  const handleQuantityConfirm = useCallback((productId: number, quantity: number) => {
+    updateQuantity(productId, quantity);
+    setQuantityModalVisible(false);
+    setSelectedItemForQty(null);
+  }, [updateQuantity]);
 
-    // For text search (contains match for names and codes)
-    const matches = name.includes(query) || code.includes(query);
-    console.log(`Product ${product.name} matches "${query}":`, matches);
-    return matches;
-  });
-
-  console.log('Search query:', searchQuery);
-  console.log('Total products:', products.length);
-  console.log('Filtered products:', filteredProducts.length);
-
-  const totals = calculateTotals();
+  // Render cart item
+  const renderCartItem = useCallback(({ item, index }: { item: any; index: number }) => (
+    <POSCartItem
+      item={item}
+      index={index + 1}
+      onIncrement={incrementQuantity}
+      onDecrement={decrementQuantity}
+      onRemove={removeItem}
+      onQuantityPress={handleQuantityPress}
+    />
+  ), [incrementQuantity, decrementQuantity, removeItem, handleQuantityPress]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.mainContainer}>
-        {/* Product Search */}
-        <View style={styles.searchSection}>
-          <TextInput
-            label="Search Products / Scan Barcode"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            mode="outlined"
-            style={styles.searchInput}
-            placeholder="Type product name, code, or scan barcode..."
-            autoCapitalize="none"
-            autoCorrect={false}
-            blurOnSubmit={false}
-            onSubmitEditing={(event) => {
-              // Handle barcode scanner input (usually ends with Enter/Return)
-              const scannedValue = event.nativeEvent.text.trim();
-              if (scannedValue) {
-                console.log('Barcode scanned in Sales:', scannedValue);
-                setSearchQuery(scannedValue);
-                // Auto-add to cart if single product match found
-                setTimeout(() => {
-                  if (filteredProducts.length === 1) {
-                    console.log('Single match found, auto-adding to cart:', filteredProducts[0].name);
-                    addToCart(filteredProducts[0]);
-                    setSearchQuery(''); // Clear search after adding
-                  }
-                }, 100);
-              }
-            }}
-            right={
-              searchQuery.trim() ? (
+    <SafeAreaView style={[styles.container, { backgroundColor: '#F5F5F5' }]}>
+      {/* ===== SEARCH BAR SECTION ===== */}
+      <View style={styles.searchSection}>
+        <View style={styles.searchRow}>
+          {/* Search Input */}
+          <View style={styles.searchInputWrapper}>
+            <TextInput
+              ref={searchInputRef}
+              placeholder="Scan barcode or search..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              onSubmitEditing={handleSearchSubmit}
+              mode="outlined"
+              style={styles.searchInput}
+              dense
+              left={<TextInput.Icon icon="magnify" />}
+              right={searchQuery ? (
                 <TextInput.Icon
                   icon="close"
-                  onPress={() => setSearchQuery('')}
+                  onPress={() => {
+                    setSearchQuery('');
+                    setShowSearchDropdown(false);
+                  }}
                 />
-              ) : (
-                <TextInput.Icon icon="barcode-scan" />
-              )
-            }
-          />
-          {searchQuery.trim() && (
-            <Paragraph style={styles.searchIndicator}>
-              Searching for "{searchQuery}" - {filteredProducts.length} result(s) found
-              {filteredProducts.length === 1 && (
-                <Text style={styles.barcodeHint}>
-                  {' '}💡 Single match - will auto-add to cart!
-                </Text>
-              )}
-            </Paragraph>
+              ) : null}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+
+            {/* Search Dropdown */}
+            <POSSearchDropdown
+              products={filteredProducts.slice(0, 10)}
+              visible={showSearchDropdown}
+              onSelect={handleSelectFromDropdown}
+              searchQuery={searchQuery}
+            />
+          </View>
+
+          {/* Barcode Button */}
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleBarcodeScan })}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.actionButtonIcon}>📷</Text>
+          </TouchableOpacity>
+
+          {/* Browse Products Button */}
+          <TouchableOpacity
+            style={[styles.actionButton, styles.browseButton]}
+            onPress={() => setBrowseVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.actionButtonIcon}>📦</Text>
+          </TouchableOpacity>
+
+          {/* Hamburger Menu Button */}
+          <TouchableOpacity
+            style={[styles.actionButton, styles.menuButton]}
+            onPress={() => setHamburgerMenuVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.actionButtonIcon}>☰</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* ===== CART SECTION (80% of screen) ===== */}
+      <View style={styles.cartSection}>
+        <View style={styles.cartHeader}>
+          <Text style={styles.cartTitle}>🛒 Cart</Text>
+          <Text style={styles.cartCount}>
+            {cart.length} item{cart.length !== 1 ? 's' : ''}
+          </Text>
+          {cart.length > 0 && (
+            <TouchableOpacity onPress={clearCart} style={styles.clearButton}>
+              <Text style={styles.clearButtonText}>Clear All</Text>
+            </TouchableOpacity>
           )}
         </View>
 
-        {/* Product List - Only show when searching */}
-        {searchQuery.trim() && (
-          <View style={styles.productSection}>
-            <Text style={styles.sectionTitle}>
-              Products ({filteredProducts.length} of {products.length})
-            </Text>
-
-            <View style={styles.productListContainer}>
-              <FlatList
-                data={filteredProducts}
-                keyExtractor={(item) => item.id.toString()}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.productItem}
-                    onPress={() => {
-                      console.log('Product tapped:', item.name);
-                      addToCart(item);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.productItemContent}>
-                      <View style={styles.productIcon}>
-                        <Text style={styles.productIconText}>📦</Text>
-                      </View>
-
-                      <View style={styles.productInfo}>
-                        <Text style={styles.productName} numberOfLines={2}>
-                          {item.name}
-                        </Text>
-                        <Text style={styles.productCode}>
-                          Code: {item.code}
-                        </Text>
-                        <View style={styles.productMetaRow}>
-                          <Text style={styles.productPrice}>
-                            ₱{item.price.toFixed(2)}
-                          </Text>
-                          <Text style={styles.productStock}>
-                            Stock: {item.stock_quantity}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <TouchableOpacity
-                        style={styles.addButton}
-                        onPress={() => {
-                          console.log('Add button tapped for:', item.name);
-                          addToCart(item);
-                        }}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.addButtonText}>+</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </TouchableOpacity>
-                )}
-                style={styles.productList}
-                contentContainerStyle={styles.productListContent}
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                ListEmptyComponent={() => (
-                  <View style={styles.emptyProductsContainer}>
-                    <Text style={styles.emptyIconText}>🔍</Text>
-                    <Text style={styles.emptyProductsTitle}>No Results Found</Text>
-                    <Text style={styles.emptyProductsText}>
-                      Try a different search term
-                    </Text>
-                  </View>
-                )}
-              />
+        {/* Cart Items List */}
+        <FlatList
+          data={cart}
+          keyExtractor={item => item.id.toString()}
+          renderItem={renderCartItem}
+          style={styles.cartList}
+          contentContainerStyle={styles.cartListContent}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <View style={styles.emptyCart}>
+              <Text style={styles.emptyCartIcon}>🛒</Text>
+              <Text style={styles.emptyCartTitle}>Cart is empty</Text>
+              <Text style={styles.emptyCartSubtitle}>
+                Scan a barcode or search for products
+              </Text>
             </View>
-          </View>
-        )}
-
-        {/* Search prompt when no search query */}
-        {!searchQuery.trim() && cart.length === 0 && (
-          <View style={styles.searchPrompt}>
-            <Text style={styles.searchPromptIcon}>🔍</Text>
-            <Text style={styles.searchPromptTitle}>Search for Products</Text>
-            <Text style={styles.searchPromptText}>
-              Type in the search box above to find and add products to your cart
-            </Text>
-          </View>
-        )}
-
-        {/* Cart Summary */}
-        {cart.length > 0 && (
-          <View style={[
-            styles.cartSummary,
-            !searchQuery.trim() && styles.cartSummaryExpanded
-          ]}>
-            <Text style={styles.cartTitle}>Cart ({cart.length} items)</Text>
-
-            {/* Cart Items with ScrollView */}
-            <ScrollView
-              style={[
-                styles.cartItems,
-                !searchQuery.trim() && styles.cartItemsExpanded
-              ]}
-              contentContainerStyle={styles.cartItemsContent}
-              showsVerticalScrollIndicator={true}
-              nestedScrollEnabled={true}
-            >
-              {cart.map((item) => (
-                <View key={item.id} style={styles.cartItem}>
-                  <View style={styles.cartItemInfo}>
-                    <Text style={styles.cartItemName} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.cartItemPrice}>
-                      ₱{item.price.toFixed(2)} each
-                    </Text>
-                  </View>
-
-                  <View style={styles.cartItemControls}>
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => updateQuantity(item.id, item.quantity - 1)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.quantityButtonText}>−</Text>
-                    </TouchableOpacity>
-
-                    <TextInput
-                      style={styles.quantityInput}
-                      value={item.quantity.toString()}
-                      onChangeText={(text) => {
-                        const newQuantity = parseInt(text) || 0;
-                        if (newQuantity >= 0) {
-                          updateQuantity(item.id, newQuantity);
-                        }
-                      }}
-                      keyboardType="numeric"
-                      selectTextOnFocus={true}
-                      maxLength={3}
-                    />
-
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => updateQuantity(item.id, item.quantity + 1)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.quantityButtonText}>+</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.removeButton}
-                      onPress={() => removeFromCart(item.id)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.removeButtonText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))}
-            </ScrollView>
-
-            <View style={styles.cartTotalSection}>
-              {/* Discount Controls */}
-              <View style={styles.discountSection}>
-                <View style={styles.discountRow}>
-                  <TouchableOpacity
-                    style={[styles.discountButton, isSeniorCitizen && styles.discountButtonActive]}
-                    onPress={() => {
-                      setIsSeniorCitizen(!isSeniorCitizen);
-                      if (!isSeniorCitizen) {
-                        setDiscountType('none');
-                        setDiscountValue('');
-                      }
-                    }}
-                  >
-                    <Text style={[styles.discountButtonText, isSeniorCitizen && styles.discountButtonTextActive]}>
-                      Senior Citizen (20% + VAT Exempt)
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {!isSeniorCitizen && (
-                  <View style={styles.discountRow}>
-                    <TouchableOpacity
-                      style={[styles.discountTypeButton, discountType === 'percent' && styles.discountButtonActive]}
-                      onPress={() => {
-                        setDiscountType(discountType === 'percent' ? 'none' : 'percent');
-                        setDiscountValue('');
-                      }}
-                    >
-                      <Text style={[styles.discountButtonText, discountType === 'percent' && styles.discountButtonTextActive]}>
-                        % Discount
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.discountTypeButton, discountType === 'amount' && styles.discountButtonActive]}
-                      onPress={() => {
-                        setDiscountType(discountType === 'amount' ? 'none' : 'amount');
-                        setDiscountValue('');
-                      }}
-                    >
-                      <Text style={[styles.discountButtonText, discountType === 'amount' && styles.discountButtonTextActive]}>
-                        ₱ Amount
-                      </Text>
-                    </TouchableOpacity>
-
-                    {(discountType === 'percent' || discountType === 'amount') && (
-                      <TextInput
-                        style={styles.discountInput}
-                        placeholder={discountType === 'percent' ? '10' : '50.00'}
-                        value={discountValue}
-                        onChangeText={setDiscountValue}
-                        keyboardType="numeric"
-                      />
-                    )}
-                  </View>
-                )}
-              </View>
-
-              {/* Total Breakdown */}
-              <View style={styles.totalBreakdown}>
-                <Text style={styles.totalLine}>Subtotal: ₱{totals.subtotal.toFixed(2)}</Text>
-                <Text style={styles.totalLine}>VAT (12%): ₱{totals.taxAmount.toFixed(2)}</Text>
-                {totals.discountAmount > 0 && (
-                  <Text style={styles.discountLine}>
-                    Discount: -₱{totals.discountAmount.toFixed(2)}
-                    {isSeniorCitizen && ' (Senior Citizen)'}
-                  </Text>
-                )}
-                <Text style={styles.cartTotal}>Total: ₱{totals.total.toFixed(2)}</Text>
-              </View>
-
-              <Button
-                mode="contained"
-                onPress={handleCheckout}
-                style={styles.checkoutButton}
-                disabled={loading}
-              >
-                Checkout
-              </Button>
-            </View>
-          </View>
-        )}
+          }
+        />
       </View>
 
-      {/* Payment Dialog */}
-      <Portal>
-        <Dialog visible={paymentVisible} onDismiss={() => setPaymentVisible(false)}>
-          <Dialog.Title>Process Payment</Dialog.Title>
-          <Dialog.Content>
-            <TextInput
-              label="Customer Name (Optional)"
-              value={customerName}
-              onChangeText={setCustomerName}
-              mode="outlined"
-              style={styles.input}
-            />
+      {/* ===== TOTALS & CHECKOUT SECTION ===== */}
+      <View style={styles.checkoutSection}>
+        {/* Discount Buttons */}
+        <View style={styles.discountRow}>
+          <TouchableOpacity
+            style={[
+              styles.discountButton,
+              discount.isSeniorCitizen && styles.discountButtonActive,
+              cart.length === 0 && styles.discountButtonDisabled,
+            ]}
+            onPress={cart.length === 0 ? undefined : () => setSeniorDiscountModalVisible(true)}
+            activeOpacity={cart.length === 0 ? 1 : 0.7}
+            disabled={cart.length === 0}
+          >
+            <Text style={[
+              styles.discountButtonText,
+              discount.isSeniorCitizen && styles.discountButtonTextActive,
+              cart.length === 0 && styles.discountButtonTextDisabled,
+            ]}>
+              {discount.isSeniorCitizen
+                ? `👴 SC/PWD (${discount.seniorCount}/${discount.totalCustomers})`
+                : '👴 SC/PWD'}
+            </Text>
+          </TouchableOpacity>
 
-            <View style={styles.paymentSummary}>
-              <Paragraph>Total Amount: ₱{totals.total.toFixed(2)}</Paragraph>
+          <TouchableOpacity
+            style={[
+              styles.discountButton,
+              (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.discountButtonActive,
+              cart.length === 0 && styles.discountButtonDisabled,
+            ]}
+            onPress={cart.length === 0 ? undefined : () => setDiscountModalVisible(true)}
+            activeOpacity={cart.length === 0 ? 1 : 0.7}
+            disabled={cart.length === 0}
+          >
+            <Text style={[
+              styles.discountButtonText,
+              (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.discountButtonTextActive,
+              cart.length === 0 && styles.discountButtonTextDisabled,
+            ]}>
+              {(discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen
+                ? `Discount: ${discount.type === 'percent' ? discount.value + '%' : '₱' + discount.value}`
+                : 'Discount'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Totals */}
+        <View style={styles.totalsContainer}>
+          {(totals.discountAmount || 0) > 0 && (
+            <>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Sub-Total</Text>
+                <Text style={styles.totalValue}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Discount</Text>
+                <Text style={[styles.totalValue, { color: '#F44336' }]}>
+                  -₱{(totals.discountAmount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </Text>
+              </View>
+            </>
+          )}
+          <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
+            <Text style={styles.grandTotalLabel}>TOTAL</Text>
+            <Text style={styles.grandTotalValue}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+          </View>
+        </View>
+
+        {/* Checkout Button */}
+        <TouchableOpacity
+          style={[
+            styles.checkoutButton,
+            cart.length === 0 && styles.checkoutButtonDisabled,
+          ]}
+          onPress={handleCheckout}
+          disabled={cart.length === 0 || isProcessing}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.checkoutButtonText}>
+            💳 CHECKOUT ₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ===== MODALS ===== */}
+
+      {/* Product Browser Modal */}
+      <POSProductBrowser
+        visible={browseVisible}
+        products={products}
+        categories={categories}
+        onSelect={handleSelectFromBrowser}
+        onClose={() => setBrowseVisible(false)}
+        getCartQuantity={getItemQuantity}
+      />
+
+      {/* Payment Modal */}
+      <POSPaymentModal
+        visible={paymentVisible}
+        totals={totals}
+        discount={discount}
+        customers={customers}
+        onClose={() => setPaymentVisible(false)}
+        onComplete={handlePaymentComplete}
+        onQuickAddCustomer={() => {
+          setQuickCustomerModalVisible(true);
+        }}
+        loading={isProcessing}
+      />
+
+      {/* Discount Modal */}
+      <POSDiscountModal
+        visible={discountModalVisible}
+        subtotal={totals.subtotal + totals.taxAmount}
+        currentType={discount.type}
+        currentValue={discount.value}
+        onApply={(type, value) => {
+          clearSeniorDiscount();  // Clear SC discount first
+          setDiscountType(type);
+          setDiscountValue(value);
+        }}
+        onClear={() => {
+          setDiscountType('none');
+          setDiscountValue('');
+        }}
+        onClose={() => setDiscountModalVisible(false)}
+      />
+
+      {/* Quantity Modal */}
+      <POSQuantityModal
+        visible={quantityModalVisible}
+        item={selectedItemForQty}
+        onConfirm={handleQuantityConfirm}
+        onClose={() => {
+          setQuantityModalVisible(false);
+          setSelectedItemForQty(null);
+        }}
+      />
+
+      {/* Senior Discount Modal */}
+      <POSSeniorDiscountModal
+        visible={seniorDiscountModalVisible}
+        subtotal={totals.subtotal}
+        vatAmount={totals.vatAmount}
+        currentTotalCustomers={discount.totalCustomers}
+        currentSeniorCount={discount.seniorCount}
+        isSeniorApplied={discount.isSeniorCitizen}
+        onApply={(totalCustomers, seniorCount) => {
+          setDiscountType('none');  // Clear regular discount first
+          setDiscountValue('');
+          setSeniorDiscount(totalCustomers, seniorCount);
+        }}
+        onClear={clearSeniorDiscount}
+        onClose={() => setSeniorDiscountModalVisible(false)}
+      />
+
+      {/* Receipt Modal */}
+      <Modal
+        visible={receiptVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={handleCloseReceipt}
+      >
+        <View style={styles.receiptOverlay}>
+          <View style={styles.receiptContainer}>
+            <View style={styles.receiptHeader}>
+              <Text style={styles.receiptTitle}>Transaction Complete</Text>
+              <IconButton icon="close" size={24} onPress={handleCloseReceipt} />
             </View>
 
-            <TextInput
-              label="Amount Tendered"
-              value={amountTendered}
-              onChangeText={setAmountTendered}
-              mode="outlined"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-
-            {amountTendered && !isNaN(parseFloat(amountTendered)) && (
-              <Paragraph style={styles.change}>
-                Change: ₱{(parseFloat(amountTendered) - totals.total).toFixed(2)}
-              </Paragraph>
+            {receiptData && (
+              <ReceiptPreview
+                data={receiptData}
+                width={printerService.getSettings().printerWidth === PRINTER_WIDTH.MM_80 ? '80mm' : '58mm'}
+                onPrint={handlePrintReceipt}
+                onClose={handleCloseReceipt}
+                isPrinting={isPrinting}
+                showActions={true}
+              />
             )}
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setPaymentVisible(false)}>Cancel</Button>
-            <Button
-              onPress={processPayment}
-              loading={loading}
-              disabled={loading}
-            >
-              Complete Sale
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+
+            <View style={styles.receiptFooter}>
+              <Text style={styles.receiptFooterText}>
+                Tap "New Sale" to start another transaction
+              </Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Hamburger Menu */}
+      <POSHamburgerMenu
+        visible={hamburgerMenuVisible}
+        onClose={() => setHamburgerMenuVisible(false)}
+        hasLastTransaction={lastReceiptData !== null}
+        onReprint={() => {
+          if (lastReceiptData) {
+            setReceiptData(lastReceiptData);
+            setReceiptVisible(true);
+          }
+        }}
+        onXReading={() => {
+          setHamburgerMenuVisible(false);
+          setXReadingModalVisible(true);
+        }}
+        onZReading={() => {
+          setHamburgerMenuVisible(false);
+          navigation.navigate('EndOfDay');
+        }}
+        onCashFund={() => {
+          setHamburgerMenuVisible(false);
+          setCashFundModalVisible(true);
+        }}
+        onPettyCash={() => {
+          setHamburgerMenuVisible(false);
+          setPettyCashModalVisible(true);
+        }}
+        onCashCount={() => {
+          setHamburgerMenuVisible(false);
+          navigation.navigate('CashCount');
+        }}
+        onRefund={() => {
+          setHamburgerMenuVisible(false);
+          setRefundModalVisible(true);
+        }}
+        onExchange={() => {
+          setHamburgerMenuVisible(false);
+          setExchangeModalVisible(true);
+        }}
+        onVoid={() => {
+          setHamburgerMenuVisible(false);
+          setVoidModalVisible(true);
+        }}
+        onQuickAddCustomer={() => {
+          setHamburgerMenuVisible(false);
+          setQuickCustomerModalVisible(true);
+        }}
+      />
+
+      {/* Cash Fund Modal */}
+      <POSCashFundModal
+        visible={cashFundModalVisible}
+        onClose={() => setCashFundModalVisible(false)}
+        onSuccess={() => {
+          setCashFundModalVisible(false);
+        }}
+        cashierId={user?.id || 0}
+      />
+
+      {/* Petty Cash Modal */}
+      <POSPettyCashModal
+        visible={pettyCashModalVisible}
+        onClose={() => setPettyCashModalVisible(false)}
+        onSuccess={() => {
+          setPettyCashModalVisible(false);
+        }}
+        cashierId={user?.id || 0}
+      />
+
+      {/* X-Reading Modal */}
+      <POSXReadingModal
+        visible={xReadingModalVisible}
+        onClose={() => setXReadingModalVisible(false)}
+        cashierId={user?.id || 0}
+      />
+
+      {/* Void Transaction Modal */}
+      <POSVoidModal
+        visible={voidModalVisible}
+        onClose={() => setVoidModalVisible(false)}
+        onSuccess={() => {
+          setVoidModalVisible(false);
+          refreshProducts();
+        }}
+        cashierId={user?.id || 0}
+      />
+
+      {/* Refund Modal */}
+      <POSRefundModal
+        visible={refundModalVisible}
+        onClose={() => setRefundModalVisible(false)}
+        onSuccess={() => {
+          setRefundModalVisible(false);
+          refreshProducts();
+        }}
+        cashierId={user?.id || 0}
+      />
+
+      {/* Exchange Modal */}
+      <POSExchangeModal
+        visible={exchangeModalVisible}
+        onClose={() => setExchangeModalVisible(false)}
+        onSuccess={() => {
+          setExchangeModalVisible(false);
+          refreshProducts();
+        }}
+        cashierId={user?.id || 0}
+      />
+
+      {/* Quick Add Customer Modal */}
+      <POSQuickCustomerModal
+        visible={quickCustomerModalVisible}
+        onClose={() => setQuickCustomerModalVisible(false)}
+        onCustomerCreated={(customer) => {
+          setQuickCustomerModalVisible(false);
+          loadCustomers();
+        }}
+        userId={user?.id || 0}
+      />
+
+      {/* Start Shift Dialog - Required before sales can be made */}
+      <StartShiftDialog
+        visible={shiftDialogVisible && !checkingShift}
+        userId={user?.id || 0}
+        onShiftStarted={handleShiftStarted}
+      />
     </SafeAreaView>
   );
 }
@@ -688,480 +854,246 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  mainContainer: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 0,
-  },
+
+  // Search Section
   searchSection: {
-    marginBottom: 16,
-    paddingHorizontal: 0,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchInputWrapper: {
+    flex: 1,
+    marginRight: 8,
+    position: 'relative',
+    zIndex: 1000,
   },
   searchInput: {
-    backgroundColor: 'white',
+    backgroundColor: '#FFFFFF',
   },
-  searchIndicator: {
-    marginTop: '2%',
-    fontSize: 14,
-    color: '#2196F3',
-    fontWeight: '500',
-    textAlign: 'center',
-    backgroundColor: '#e3f2fd',
-    paddingVertical: '2%',
-    paddingHorizontal: '3%',
-    borderRadius: 20,
-  },
-  productSection: {
-    flex: 1,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: '4%',
-    color: '#333',
-  },
-  productListContainer: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    padding: '2%',
-  },
-  productList: {
-    flex: 1,
-  },
-  productListContent: {
-    paddingBottom: '4%',
-  },
-  productItem: {
-    backgroundColor: 'white',
-    marginVertical: 4,
-    borderRadius: 8,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-  },
-  productItemContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: '4%',
-  },
-  productIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e3f2fd',
+  actionButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: '#E3F2FD',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginLeft: 4,
   },
-  productIconText: {
-    fontSize: 18,
+  browseButton: {
+    backgroundColor: '#FFF3E0',
   },
-  productInfo: {
+  menuButton: {
+    backgroundColor: '#F3E5F5',
+  },
+  actionButtonIcon: {
+    fontSize: 22,
+  },
+
+  // Cart Section
+  cartSection: {
     flex: 1,
-    marginRight: 12,
+    backgroundColor: '#F5F5F5',
   },
-  productName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 4,
-  },
-  productCode: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 4,
-  },
-  productMetaRow: {
+  cartHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  productPrice: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2e7d32',
-  },
-  productStock: {
-    fontSize: 14,
-    color: '#666',
-  },
-  addButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#2196F3',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  addButtonText: {
-    color: 'white',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  cartSummary: {
-    backgroundColor: 'white',
-    paddingHorizontal: '4%',
-    paddingTop: '4%',
-    paddingBottom: '3%',
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    elevation: 4,
-    maxHeight: '40%',
-  },
-  cartSummaryExpanded: {
-    flex: 1,
-    maxHeight: '95%',
-    marginBottom: 0,
-    paddingBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
   cartTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
-    color: '#333',
+    fontWeight: '700',
+    color: '#212121',
   },
-  cartItems: {
-    maxHeight: 200,
-    marginBottom: 16,
-  },
-  cartItemsExpanded: {
-    maxHeight: 600,
-    flex: 1,
-  },
-  cartItemsContent: {
-    paddingBottom: 8,
-  },
-  searchPrompt: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 60,
-    paddingHorizontal: 24,
-  },
-  searchPromptIcon: {
-    fontSize: 48,
-    marginBottom: 16,
-    opacity: 0.5,
-  },
-  searchPromptTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  searchPromptText: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  cartItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    marginVertical: 4,
-  },
-  cartItemInfo: {
-    flex: 1,
-    marginRight: 12,
-  },
-  cartItemName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 2,
-  },
-  cartItemPrice: {
+  cartCount: {
     fontSize: 14,
-    color: '#666',
+    color: '#616161',
+    marginLeft: 12,
+    flex: 1,
   },
-  cartItemControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  quantityButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: '#2196F3',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginHorizontal: 4,
-    elevation: 2,
-    shadowColor: '#2196F3',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-  },
-  quantityButtonText: {
-    color: 'white',
-    fontSize: 20,
-    fontWeight: 'bold',
-    lineHeight: 20,
-  },
-  quantityInput: {
-    width: 50,
-    height: 40,
-    borderWidth: 2,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    backgroundColor: 'white',
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginHorizontal: 4,
-  },
-  removeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: '#f44336',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-    elevation: 2,
-    shadowColor: '#f44336',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-  },
-  removeButtonText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
-    lineHeight: 18,
-  },
-  cartTotalSection: {
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    paddingTop: 12,
-  },
-  discountSection: {
-    marginBottom: 12,
-    padding: 8,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-  },
-  discountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-    flexWrap: 'wrap',
-  },
-  discountButton: {
-    paddingVertical: 8,
+  clearButton: {
     paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 6,
-    backgroundColor: '#e0e0e0',
-    marginRight: 8,
-    marginBottom: 4,
+    backgroundColor: '#FFEBEE',
   },
-  discountButtonActive: {
-    backgroundColor: '#4CAF50',
-  },
-  discountTypeButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    backgroundColor: '#e0e0e0',
-    marginRight: 8,
-    marginBottom: 4,
-    flex: 1,
-    minWidth: 80,
-  },
-  discountButtonText: {
-    fontSize: 14,
+  clearButtonText: {
+    fontSize: 12,
     fontWeight: '600',
-    color: '#333',
-    textAlign: 'center',
-  },
-  discountButtonTextActive: {
-    color: 'white',
-  },
-  discountInput: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    backgroundColor: 'white',
-    minWidth: 80,
-    textAlign: 'center',
-    fontSize: 14,
-  },
-  totalBreakdown: {
-    marginBottom: 12,
-  },
-  totalLine: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 4,
-  },
-  discountLine: {
-    fontSize: 16,
-    color: '#f44336',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  cartTotal: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2e7d32',
-    textAlign: 'center',
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-  },
-  checkoutButton: {
-    backgroundColor: '#2196F3',
-    borderRadius: 8,
-  },
-  cartSection: {
-    flex: 1,
-    minWidth: 350,
-  },
-  cartCard: {
-    flex: 1,
-    elevation: 4,
-  },
-  cartCardContent: {
-    flex: 1,
-    paddingBottom: 8,
-  },
-  emptyCartContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: 200,
-  },
-  emptyCart: {
-    textAlign: 'center',
-    fontStyle: 'italic',
-    fontSize: 16,
-  },
-  cartContentContainer: {
-    flex: 1,
+    color: '#F44336',
   },
   cartList: {
     flex: 1,
-    maxHeight: 200,
   },
-  deleteButton: {
-    margin: 0,
-    width: 32,
-    height: 32,
+  cartListContent: {
+    padding: 12,
+    paddingBottom: 16,
   },
-  quantity: {
-    marginHorizontal: 8,
-    fontWeight: 'bold',
-    fontSize: 16,
-    minWidth: 24,
+  emptyCart: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 80,
+  },
+  emptyCartIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+    opacity: 0.5,
+  },
+  emptyCartTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#616161',
+    marginBottom: 8,
+  },
+  emptyCartSubtitle: {
+    fontSize: 14,
+    color: '#9E9E9E',
     textAlign: 'center',
   },
-  divider: {
-    marginVertical: 12,
+
+  // Checkout Section
+  checkoutSection: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
   },
-  totals: {
-    marginBottom: 16,
-    paddingHorizontal: 4,
+  discountRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+  },
+  discountButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    marginRight: 8,
+    alignItems: 'center',
+  },
+  discountButtonActive: {
+    backgroundColor: '#E8F5E9',
+    borderWidth: 1,
+    borderColor: '#4CAF50',
+  },
+  discountButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+  },
+  discountButtonTextActive: {
+    color: '#2E7D32',
+  },
+  discountButtonDisabled: {
+    backgroundColor: '#E0E0E0',
+    opacity: 0.6,
+  },
+  discountButtonTextDisabled: {
+    color: '#9E9E9E',
+  },
+  totalsContainer: {
+    marginBottom: 12,
   },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginVertical: 3,
-  },
-  totalFinal: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 2,
-    borderTopColor: '#E0E0E0',
+    marginBottom: 4,
   },
   totalLabel: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 14,
+    color: '#616161',
   },
-  totalAmount: {
-    color: '#4CAF50',
-    fontWeight: 'bold',
-    fontSize: 18,
+  totalValue: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#212121',
   },
-  buttonContent: {
-    paddingVertical: 12,
-  },
-  input: {
-    marginBottom: 16,
-  },
-  paymentSummary: {
-    backgroundColor: '#E3F2FD',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  change: {
-    textAlign: 'center',
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#4CAF50',
+  grandTotalRow: {
     marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
   },
-  emptyProductsContainer: {
+  grandTotalLabel: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#212121',
+  },
+  grandTotalValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
+  checkoutButton: {
+    backgroundColor: '#2196F3',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  checkoutButtonDisabled: {
+    backgroundColor: '#BDBDBD',
+  },
+  checkoutButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // Receipt Modal
+  receiptOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 40,
-    paddingHorizontal: 20,
+    padding: 16,
   },
-  emptyIconText: {
-    fontSize: 48,
-    marginBottom: 16,
+  receiptContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 400,
+    maxHeight: '95%',
+    elevation: 8,
   },
-  emptyProductsTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  emptyProductsText: {
-    textAlign: 'center',
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 16,
-  },
-  productHeader: {
+  receiptHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    paddingLeft: 16,
+    paddingRight: 4,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
-  reloadButton: {
-    marginLeft: 8,
+  receiptTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#4CAF50',
   },
-  debugText: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 8,
+  receiptFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    alignItems: 'center',
   },
-  debugTitle: {
-    fontWeight: 'bold',
+  receiptFooterText: {
     fontSize: 14,
-    marginBottom: 8,
-    color: '#333',
-  },
-  barcodeHint: {
-    fontSize: 12,
-    color: '#2196F3',
-    fontStyle: 'italic',
+    color: '#616161',
   },
 });

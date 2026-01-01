@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -13,7 +13,6 @@ import {
   IconButton,
   Portal,
   Dialog,
-  TextInput,
   Paragraph,
   Chip,
   useTheme,
@@ -21,11 +20,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
-import { DatabaseService } from '../database/DatabaseService';
+import { getDatabase } from '../database/getDatabase';
 import { User } from '../database/schema';
 import { useAuth } from '../contexts/AuthContext';
 import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService } from '../utils/permissions';
+import { StableTextInput } from '../components/StableTextInput';
+import { hashPassword } from '../utils/passwordHash';
 
 type UserManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -57,7 +58,7 @@ export default function UserManagementScreen({ navigation }: Props) {
   const loadUsers = async () => {
     try {
       setLoading(true);
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       const fetchedUsers = await dbService.getUsers();
       setUsers(fetchedUsers as User[]);
     } catch (error) {
@@ -75,12 +76,12 @@ export default function UserManagementScreen({ navigation }: Props) {
     }
 
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       await dbService.createUser({
         username: newUser.username,
         full_name: newUser.full_name,
         role: newUser.role,
-        password_hash: `$2b$10$demo_hash_${newUser.password}`, // In production, properly hash the password
+        password_hash: hashPassword(newUser.password),
       });
 
       setDialogVisible(false);
@@ -95,7 +96,7 @@ export default function UserManagementScreen({ navigation }: Props) {
 
   const handleToggleUserStatus = async (user: User) => {
     try {
-      const dbService = DatabaseService.getInstance();
+      const dbService = getDatabase();
       await dbService.updateUser(user.id, { is_active: !user.is_active });
       loadUsers();
     } catch (error) {
@@ -193,25 +194,25 @@ export default function UserManagementScreen({ navigation }: Props) {
           <Dialog visible={dialogVisible} onDismiss={() => setDialogVisible(false)}>
             <Dialog.Title>Add New User</Dialog.Title>
             <Dialog.Content>
-              <TextInput
+              <StableTextInput
                 label="Username"
                 value={newUser.username}
-                onChangeText={(text) => setNewUser({ ...newUser, username: text })}
+                onChangeText={(text) => setNewUser(prev => ({ ...prev, username: text }))}
                 mode="outlined"
                 style={styles.dialogInput}
                 autoCapitalize="none"
               />
-              <TextInput
+              <StableTextInput
                 label="Full Name"
                 value={newUser.full_name}
-                onChangeText={(text) => setNewUser({ ...newUser, full_name: text })}
+                onChangeText={(text) => setNewUser(prev => ({ ...prev, full_name: text }))}
                 mode="outlined"
                 style={styles.dialogInput}
               />
-              <TextInput
+              <StableTextInput
                 label="Password"
                 value={newUser.password}
-                onChangeText={(text) => setNewUser({ ...newUser, password: text })}
+                onChangeText={(text) => setNewUser(prev => ({ ...prev, password: text }))}
                 mode="outlined"
                 secureTextEntry
                 style={styles.dialogInput}
