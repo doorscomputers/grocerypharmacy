@@ -233,3 +233,7 @@ The app includes Philippine business sample data:
   - Always handle database errors gracefully
   - Test on actual Android tablet for best results
   ```
+
+# Activate the Device
+
+PS D:\NextJSProj\posmobile\posmobile> node scripts/generate-license.js 816299459fa626b9f6e5541aec3897204b60b5ea40b31cb22fa426a7044df9f3

@@ -747,6 +747,153 @@ export function buildZReading(
   return builder;
 }
 
+// Payment Receipt Data interface
+export interface PaymentReceiptPrintData {
+  businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  tin?: string;
+  paymentNumber: string;
+  paymentDate: Date;
+  receivedBy: string;
+  customerName: string;
+  customerCode?: string;
+  invoiceNumber: string;
+  originalAmount: number;
+  previouslyPaid: number;
+  amountPaid: number;
+  balanceAfterPayment: number;
+  paymentMethod: string;
+  referenceNumber?: string;
+  notes?: string;
+  footerText?: string;
+}
+
+export function buildPaymentReceipt(
+  data: PaymentReceiptPrintData,
+  printerWidth: number = PRINTER_WIDTH.MM_58
+): ESCPOSBuilder {
+  const builder = new ESCPOSBuilder(printerWidth);
+
+  const formatDate = (date: Date): string => {
+    return date.toLocaleDateString('en-PH', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  };
+
+  const formatTime = (date: Date): string => {
+    return date.toLocaleTimeString('en-PH', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  // Header
+  builder
+    .initialize()
+    .align('center')
+    .bold(true)
+    .println(data.businessName || 'STORE')
+    .bold(false);
+
+  if (data.businessAddress) {
+    builder.println(data.businessAddress);
+  }
+  if (data.businessPhone) {
+    builder.println(`Tel: ${data.businessPhone}`);
+  }
+  if (data.tin) {
+    builder.println(`TIN: ${data.tin}`);
+  }
+
+  builder
+    .doubleSeparator()
+    .bold(true)
+    .println('PAYMENT RECEIPT')
+    .bold(false)
+    .separator()
+    .align('left');
+
+  // Payment details
+  builder
+    .leftRight('Receipt #:', data.paymentNumber)
+    .leftRight('Date:', formatDate(data.paymentDate))
+    .leftRight('Time:', formatTime(data.paymentDate))
+    .leftRight('Received By:', data.receivedBy)
+    .separator();
+
+  // Customer info
+  builder
+    .bold(true)
+    .println('CUSTOMER')
+    .bold(false)
+    .leftRight('Name:', data.customerName);
+
+  if (data.customerCode) {
+    builder.leftRight('Code:', data.customerCode);
+  }
+
+  builder.separator();
+
+  // Invoice info
+  builder
+    .bold(true)
+    .println('PAYMENT FOR')
+    .bold(false)
+    .leftRight('Invoice #:', data.invoiceNumber)
+    .leftRight('Invoice Amount:', `P${data.originalAmount.toFixed(2)}`)
+    .leftRight('Previously Paid:', `P${data.previouslyPaid.toFixed(2)}`)
+    .doubleSeparator();
+
+  // Amount paid
+  builder
+    .bold(true)
+    .leftRight('AMOUNT PAID:', `P${data.amountPaid.toFixed(2)}`)
+    .bold(false)
+    .feed()
+    .leftRight('Balance:', `P${data.balanceAfterPayment.toFixed(2)}`)
+    .separator();
+
+  // Payment method
+  builder.leftRight('Payment Method:', data.paymentMethod);
+
+  if (data.referenceNumber) {
+    builder.leftRight('Reference #:', data.referenceNumber);
+  }
+
+  if (data.notes) {
+    builder
+      .feed()
+      .println(`Notes: ${data.notes}`);
+  }
+
+  builder.separator();
+
+  // Footer
+  builder
+    .align('center')
+    .println('Thank you for your payment!')
+    .feed();
+
+  if (data.footerText) {
+    builder.println(data.footerText);
+  }
+
+  builder
+    .doubleSeparator()
+    .bold(true)
+    .println('*** PAYMENT ACKNOWLEDGMENT ***')
+    .bold(false)
+    .println(new Date().toLocaleString())
+    .feed(2)
+    .cut();
+
+  return builder;
+}
+
 export default {
   ESCPOSBuilder,
   PRINTER_WIDTH,
@@ -756,4 +903,5 @@ export default {
   buildTestPrint,
   buildXReading,
   buildZReading,
+  buildPaymentReceipt,
 };

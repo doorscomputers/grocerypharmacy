@@ -22,9 +22,12 @@ if (Platform.OS !== 'web') {
     Device = bleModule.Device;
     State = bleModule.State;
     Characteristic = bleModule.Characteristic;
+    console.log('BLE module loaded successfully, BleManager:', !!BleManager);
   } catch (e) {
-    console.log('BLE module not available');
+    console.log('BLE module not available:', e);
   }
+} else {
+  console.log('BLE skipped - running on web platform');
 }
 
 // Common Bluetooth printer service UUIDs
@@ -87,10 +90,12 @@ class BluetoothPrinterService {
     lastPrinterId: null,
     lastPrinterName: null,
   };
+  private initPromise: Promise<void> | null = null;
+  private isInitialized: boolean = false;
 
   private constructor() {
-    // Initialize BLE manager
-    this.initializeBleManager();
+    // Initialize BLE manager and store the promise
+    this.initPromise = this.initializeBleManager();
   }
 
   /**
@@ -111,6 +116,7 @@ class BluetoothPrinterService {
     if (Platform.OS === 'web' || !BleManager) {
       console.log('BLE not available on this platform');
       await this.loadSettings();
+      this.isInitialized = true;
       return;
     }
 
@@ -127,9 +133,42 @@ class BluetoothPrinterService {
 
       // Load saved settings
       await this.loadSettings();
+      this.isInitialized = true;
+      console.log('BLE Manager initialized successfully');
     } catch (error) {
       console.log('BLE initialization skipped:', (error as Error).message);
       await this.loadSettings();
+      this.isInitialized = true;
+    }
+  }
+
+  /**
+   * Ensure BLE manager is initialized before operations
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (!this.isInitialized && this.initPromise) {
+      await this.initPromise;
+    }
+
+    // Try to create BLE manager if it doesn't exist yet
+    if (!this.bleManager && Platform.OS !== 'web' && BleManager) {
+      try {
+        console.log('Creating BLE Manager on-demand...');
+        this.bleManager = new BleManager();
+
+        // Monitor Bluetooth state changes
+        this.bleManager.onStateChange((state: any) => {
+          console.log('Bluetooth state changed:', state);
+          if (State && state === State.PoweredOff) {
+            this.setState('disconnected', 'Bluetooth is turned off');
+          }
+        }, true);
+
+        console.log('BLE Manager created successfully');
+      } catch (error) {
+        console.error('Failed to create BLE Manager:', error);
+        throw new Error('Failed to initialize Bluetooth. Please restart the app.');
+      }
     }
   }
 
@@ -317,12 +356,15 @@ class BluetoothPrinterService {
    * Start scanning for printers
    */
   async startScan(durationMs: number = 10000): Promise<PrinterDevice[]> {
+    // Wait for initialization to complete
+    await this.ensureInitialized();
+
     if (!this.isBleAvailable()) {
-      throw new Error('Bluetooth is not available on this platform');
+      throw new Error('Bluetooth is not available on this platform. Please ensure Bluetooth is supported.');
     }
 
     if (!this.bleManager) {
-      throw new Error('BLE Manager not initialized');
+      throw new Error('Bluetooth could not be initialized. Please ensure Bluetooth is enabled and restart the app.');
     }
 
     // Request permissions first
@@ -355,21 +397,19 @@ class BluetoothPrinterService {
               return;
             }
 
+            // Show ALL named Bluetooth devices (user can select their printer)
             if (device && device.name) {
-              // Filter for likely printer devices
-              const isPrinter = this.isPrinterDevice(device);
+              console.log('Found BLE device:', device.name, device.id);
 
-              if (isPrinter) {
-                const printerDevice: PrinterDevice = {
-                  id: device.id,
-                  name: device.name,
-                  rssi: device.rssi,
-                  isConnectable: device.isConnectable,
-                };
+              const printerDevice: PrinterDevice = {
+                id: device.id,
+                name: device.name,
+                rssi: device.rssi,
+                isConnectable: device.isConnectable,
+              };
 
-                this.discoveredDevices.set(device.id, printerDevice);
-                this.deviceFoundListeners.forEach((listener) => listener(printerDevice));
-              }
+              this.discoveredDevices.set(device.id, printerDevice);
+              this.deviceFoundListeners.forEach((listener) => listener(printerDevice));
             }
           }
         );
@@ -441,6 +481,9 @@ class BluetoothPrinterService {
    * Connect to a printer device
    */
   async connect(deviceId: string): Promise<boolean> {
+    // Wait for initialization to complete
+    await this.ensureInitialized();
+
     if (!this.isBleAvailable()) {
       throw new Error('Bluetooth is not available on this platform');
     }

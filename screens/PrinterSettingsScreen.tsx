@@ -6,6 +6,7 @@ import {
   Alert,
   RefreshControl,
   Platform,
+  ScrollView,
 } from 'react-native';
 import {
   Card,
@@ -258,6 +259,11 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={true}
+      >
       {/* Status Card */}
       <Card style={styles.card}>
         <Card.Content>
@@ -335,10 +341,13 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
           ) : !isScanning ? (
             <View style={styles.emptyState}>
               <Paragraph style={styles.emptyText}>
-                No printers found. Tap "Scan" to search for nearby Bluetooth printers.
+                No Bluetooth devices found.
               </Paragraph>
               <Paragraph style={styles.hintText}>
-                Make sure your printer is turned on and paired via your device's Bluetooth settings.
+                Note: This app uses Bluetooth Low Energy (BLE). Some printers use Classic Bluetooth which may not appear here.
+              </Paragraph>
+              <Paragraph style={styles.hintText}>
+                Tips: Turn printer off and on, ensure it's in pairing mode, and try scanning again.
               </Paragraph>
             </View>
           ) : null}
@@ -442,22 +451,26 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
         <Card.Content>
           <Title style={styles.sectionTitle}>Troubleshooting</Title>
           <Paragraph style={styles.helpText}>
-            1. Turn on your Bluetooth printer
+            1. Turn on your Bluetooth printer and put it in pairing mode
           </Paragraph>
           <Paragraph style={styles.helpText}>
-            2. Pair the printer in your device's Bluetooth settings first
+            2. Make sure Bluetooth is enabled on your device
           </Paragraph>
           <Paragraph style={styles.helpText}>
-            3. Tap "Scan" to find the printer
+            3. Tap "Scan" to search for nearby devices
           </Paragraph>
           <Paragraph style={styles.helpText}>
-            4. Select the printer from the list to connect
+            4. Select your printer from the list to connect
           </Paragraph>
           <Paragraph style={styles.helpText}>
-            5. Use "Test Print" to verify the connection
+            5. If printer doesn't appear, it may use Classic Bluetooth (not BLE)
+          </Paragraph>
+          <Paragraph style={[styles.helpText, { fontStyle: 'italic', marginTop: 8 }]}>
+            Note: This app requires BLE-compatible thermal printers (most modern 58mm/80mm receipt printers support BLE).
           </Paragraph>
         </Card.Content>
       </Card>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -465,7 +478,13 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
     padding: 16,
+    paddingBottom: 32,
   },
   card: {
     marginBottom: 16,

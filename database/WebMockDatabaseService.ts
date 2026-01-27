@@ -793,19 +793,31 @@ export class WebMockDatabaseService {
       for (const item of transaction.items) {
         const product = products.find(p => p.id === item.product_id);
         if (product) {
+          // Capture quantity before
+          const quantityBefore = product.stock_quantity || 0;
+
           // Reduce stock
-          product.stock_quantity = Math.max(0, product.stock_quantity - item.quantity);
+          product.stock_quantity = Math.max(0, quantityBefore - item.quantity);
+          const quantityAfter = product.stock_quantity;
+
           console.log(`[WebMock] Stock reduced: ${product.name} -${item.quantity} = ${product.stock_quantity}`);
 
-          // Create inventory movement for the sale
+          // Create inventory movement for the sale with complete data
           inventoryMovements.push({
             id: ++inventoryMovementIdCounter,
             product_id: item.product_id,
+            product_code: product.code || item.product_code || '',
+            product_name: product.name || item.product_name || '',
             movement_type: 'OUT',
             quantity: item.quantity,
+            quantity_before: quantityBefore,
+            quantity_after: quantityAfter,
+            unit_cost: product.cost || 0,
+            total_value: item.quantity * (product.cost || 0),
             reference_type: 'SALE',
-            reference_id: transaction.transaction_number || `TXN-${transactionId}`,
-            notes: `Sale transaction`,
+            reference_id: transactionId,
+            reference_number: transaction.invoice_number || transaction.transaction_number || `TXN-${transactionId}`,
+            notes: `Sale: ${product.name} (${item.quantity} units)`,
             created_by: transaction.cashier_id || 1,
             created_at: new Date().toISOString(),
           });
@@ -852,6 +864,103 @@ export class WebMockDatabaseService {
     saveToLocalStorage();
     console.log(`[WebMock] Transaction created: ${transactionId}, items: ${transaction.items?.length || 0}`);
     return transactionId;
+  }
+
+  // ============ VOID TRANSACTION ============
+  public async voidTransaction(voidData: {
+    transaction_id: number;
+    void_reason: string;
+    void_by: number;
+  }): Promise<boolean> {
+    // Find the transaction
+    const transactionIndex = transactions.findIndex(t => t.id === voidData.transaction_id);
+    if (transactionIndex === -1) {
+      throw new Error('Transaction not found');
+    }
+
+    const transaction = transactions[transactionIndex];
+
+    // Check if already voided
+    if (transaction.status === 'VOID') {
+      throw new Error('Transaction is already voided');
+    }
+
+    // Get transaction items
+    const txnItems = transactionItems.filter(ti => ti.transaction_id === voidData.transaction_id);
+
+    // Restore stock for each item
+    for (const item of txnItems) {
+      const product = products.find(p => p.id === item.product_id);
+      if (product) {
+        // Capture quantity before restoration
+        const quantityBefore = product.stock_quantity || 0;
+
+        // Restore the sold quantity back to stock
+        product.stock_quantity = quantityBefore + item.quantity;
+        const quantityAfter = product.stock_quantity;
+
+        console.log(`[WebMock] Void: Stock restored for ${product.name} +${item.quantity} = ${product.stock_quantity}`);
+
+        // Create inventory movement for void
+        inventoryMovements.push({
+          id: ++inventoryMovementIdCounter,
+          product_id: item.product_id,
+          product_code: product.code || item.product_code || '',
+          product_name: product.name || item.product_name || '',
+          movement_type: 'IN',
+          quantity: item.quantity,
+          quantity_before: quantityBefore,
+          quantity_after: quantityAfter,
+          unit_cost: product.cost || 0,
+          total_value: item.quantity * (product.cost || 0),
+          reference_type: 'VOID',
+          reference_id: voidData.transaction_id,
+          reference_number: `VOID-${transaction.invoice_number || transaction.transaction_number}`,
+          notes: `Void: ${voidData.void_reason}`,
+          created_by: voidData.void_by,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    // If it was a charge invoice, reverse the AR entry
+    if (transaction.payment_method === 'CHARGE_INVOICE' && transaction.customer_id) {
+      const arIndex = accountsReceivable.findIndex(
+        ar => ar.transaction_id === voidData.transaction_id
+      );
+      if (arIndex !== -1) {
+        accountsReceivable[arIndex].status = 'VOID';
+        accountsReceivable[arIndex].balance = 0;
+        console.log(`[WebMock] Void: AR entry voided for transaction ${voidData.transaction_id}`);
+      }
+
+      // Update customer balance
+      const customer = customers.find(c => c.id === transaction.customer_id);
+      if (customer) {
+        customer.balance = Math.max(0, (customer.balance || 0) - transaction.total_amount);
+      }
+    }
+
+    // Update transaction status
+    transactions[transactionIndex].status = 'VOID';
+    transactions[transactionIndex].void_reason = voidData.void_reason;
+    transactions[transactionIndex].void_by = voidData.void_by;
+    transactions[transactionIndex].void_date = new Date().toISOString();
+
+    // Create eJournal entry for void
+    eJournalEntries.push({
+      id: ++eJournalIdCounter,
+      entry_type: 'VOID',
+      reference_number: `VOID-${transaction.invoice_number || transaction.transaction_number}`,
+      description: `Void: ${voidData.void_reason}`,
+      amount: -transaction.total_amount,
+      cashier_id: voidData.void_by,
+      created_at: new Date().toISOString(),
+    });
+
+    saveToLocalStorage();
+    console.log(`[WebMock] Transaction voided: ${voidData.transaction_id}, reason: ${voidData.void_reason}`);
+    return true;
   }
 
   // ============ SETTINGS ============
@@ -991,21 +1100,33 @@ export class WebMockDatabaseService {
         // INCREASE stock
         const product = products.find(p => p.id === item.product_id);
         if (product) {
-          product.stock_quantity = (product.stock_quantity || 0) + item.quantity;
+          // Capture quantity before
+          const quantityBefore = product.stock_quantity || 0;
+
+          product.stock_quantity = quantityBefore + item.quantity;
+          const quantityAfter = product.stock_quantity;
+
           // Update cost if provided
           if (item.unit_cost) {
             product.cost = item.unit_cost;
           }
           console.log(`[WebMock] Stock increased: ${product.name} +${item.quantity} = ${product.stock_quantity}`);
 
-          // Create inventory movement
+          // Create inventory movement with complete data
           inventoryMovements.push({
             id: ++inventoryMovementIdCounter,
             product_id: item.product_id,
+            product_code: product.code || '',
+            product_name: product.name || item.product_name || '',
             movement_type: 'IN',
             quantity: item.quantity,
+            quantity_before: quantityBefore,
+            quantity_after: quantityAfter,
+            unit_cost: item.unit_cost || product.cost || 0,
+            total_value: item.quantity * (item.unit_cost || product.cost || 0),
             reference_type: 'PURCHASE',
             reference_id: purchaseId,
+            reference_number: newPurchase.purchase_number || `PO-${purchaseId}`,
             notes: `Purchase from ${purchaseData.supplier_name}`,
             created_by: purchaseData.created_by || 1,
             created_at: new Date().toISOString(),
@@ -1045,6 +1166,313 @@ export class WebMockDatabaseService {
 
     saveToLocalStorage();
     return { purchaseId, id: purchaseIdCounter };
+  }
+
+  // ============ PURCHASE ORDERS ============
+  public async getPurchaseOrders(limit?: number): Promise<any[]> {
+    const result = [...purchases].sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    return limit ? result.slice(0, limit) : result;
+  }
+
+  public async getPurchaseOrderById(id: number): Promise<any> {
+    const purchase = purchases.find(p => p.id === id);
+    if (purchase) {
+      const items = purchaseItems.filter(item => item.purchase_id === purchase.purchase_id || item.purchase_id === id);
+      return { ...purchase, items };
+    }
+    return null;
+  }
+
+  public async createPurchaseOrder(purchaseData: any): Promise<{ purchaseId: number; purchaseNumber: string }> {
+    const purchaseNumber = `PO-${String(++purchaseIdCounter).padStart(6, '0')}`;
+    const supplier = suppliers.find(s => s.id === purchaseData.supplier_id);
+
+    let subtotal = 0;
+    let totalTax = 0;
+    let totalDiscount = 0;
+
+    for (const item of purchaseData.items) {
+      const itemTotal = item.quantity_ordered * item.unit_cost;
+      subtotal += itemTotal;
+      totalTax += item.tax_amount || 0;
+      totalDiscount += item.discount_amount || 0;
+    }
+
+    const totalAmount = subtotal + totalTax - totalDiscount;
+
+    const newPurchase = {
+      id: purchaseIdCounter,
+      purchase_number: purchaseNumber,
+      purchase_date: new Date().toISOString().split('T')[0],
+      supplier_id: purchaseData.supplier_id,
+      supplier_name: supplier?.name || 'Unknown Supplier',
+      expected_delivery_date: purchaseData.expected_delivery_date,
+      reference_number: purchaseData.reference_number,
+      payment_terms: purchaseData.payment_terms || '30 days',
+      notes: purchaseData.notes,
+      subtotal,
+      tax_amount: totalTax,
+      discount_amount: totalDiscount,
+      total_amount: totalAmount,
+      status: 'DRAFT',
+      created_by: purchaseData.created_by || 1,
+      created_at: new Date().toISOString(),
+    };
+    purchases.push(newPurchase);
+
+    // Add purchase items
+    for (const item of purchaseData.items) {
+      const itemTotal = item.quantity_ordered * item.unit_cost;
+      const taxAmount = item.tax_amount || 0;
+      const discountAmount = item.discount_amount || 0;
+      const lineTotal = itemTotal + taxAmount - discountAmount;
+
+      purchaseItems.push({
+        id: ++purchaseItemIdCounter,
+        purchase_id: purchaseIdCounter,
+        product_id: item.product_id,
+        product_code: item.product_code,
+        product_name: item.product_name,
+        quantity_ordered: item.quantity_ordered,
+        quantity_received: 0,
+        unit_cost: item.unit_cost,
+        discount_amount: discountAmount,
+        tax_amount: taxAmount,
+        total_amount: lineTotal,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    saveToLocalStorage();
+    return { purchaseId: purchaseIdCounter, purchaseNumber };
+  }
+
+  public async updatePurchaseOrder(
+    purchaseId: number,
+    purchaseData: {
+      supplier_id: number;
+      expected_delivery_date?: string;
+      reference_number?: string;
+      payment_terms?: string;
+      notes?: string;
+      items: Array<{
+        product_id: number;
+        product_code: string;
+        product_name: string;
+        quantity_ordered: number;
+        unit_cost: number;
+        discount_amount?: number;
+        tax_amount?: number;
+      }>;
+    }
+  ): Promise<{ success: boolean; message: string }> {
+    const purchaseIndex = purchases.findIndex(p => p.id === purchaseId);
+
+    if (purchaseIndex === -1) {
+      return { success: false, message: 'Purchase order not found' };
+    }
+
+    const purchase = purchases[purchaseIndex];
+    if (purchase.status !== 'DRAFT') {
+      return { success: false, message: 'Only DRAFT purchase orders can be edited' };
+    }
+
+    const supplier = suppliers.find(s => s.id === purchaseData.supplier_id);
+
+    // Calculate totals
+    let subtotal = 0;
+    let totalTax = 0;
+    let totalDiscount = 0;
+
+    for (const item of purchaseData.items) {
+      const itemTotal = item.quantity_ordered * item.unit_cost;
+      subtotal += itemTotal;
+      totalTax += item.tax_amount || 0;
+      totalDiscount += item.discount_amount || 0;
+    }
+
+    const totalAmount = subtotal + totalTax - totalDiscount;
+
+    // Update purchase header
+    purchases[purchaseIndex] = {
+      ...purchase,
+      supplier_id: purchaseData.supplier_id,
+      supplier_name: supplier?.name || purchase.supplier_name,
+      expected_delivery_date: purchaseData.expected_delivery_date,
+      reference_number: purchaseData.reference_number,
+      payment_terms: purchaseData.payment_terms || '30 days',
+      notes: purchaseData.notes,
+      subtotal,
+      tax_amount: totalTax,
+      discount_amount: totalDiscount,
+      total_amount: totalAmount,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Remove old items
+    const oldItemsRemoved = purchaseItems.filter(item => item.purchase_id !== purchaseId);
+    purchaseItems.length = 0;
+    purchaseItems.push(...oldItemsRemoved);
+
+    // Add new items
+    for (const item of purchaseData.items) {
+      const itemTotal = item.quantity_ordered * item.unit_cost;
+      const taxAmount = item.tax_amount || 0;
+      const discountAmount = item.discount_amount || 0;
+      const lineTotal = itemTotal + taxAmount - discountAmount;
+
+      purchaseItems.push({
+        id: ++purchaseItemIdCounter,
+        purchase_id: purchaseId,
+        product_id: item.product_id,
+        product_code: item.product_code,
+        product_name: item.product_name,
+        quantity_ordered: item.quantity_ordered,
+        quantity_received: 0,
+        unit_cost: item.unit_cost,
+        discount_amount: discountAmount,
+        tax_amount: taxAmount,
+        total_amount: lineTotal,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    saveToLocalStorage();
+    return { success: true, message: 'Purchase order updated successfully' };
+  }
+
+  public async receivePurchaseOrder(
+    purchaseId: number,
+    receivedBy: number,
+    items: Array<{ product_id: number; quantity_received: number }>
+  ): Promise<void> {
+    const purchase = purchases.find(p => p.id === purchaseId);
+    if (!purchase) return;
+
+    for (const item of items) {
+      const purchaseItem = purchaseItems.find(
+        pi => pi.purchase_id === purchaseId && pi.product_id === item.product_id
+      );
+      if (purchaseItem) {
+        purchaseItem.quantity_received = (purchaseItem.quantity_received || 0) + item.quantity_received;
+
+        // Update product stock
+        const product = products.find(p => p.id === item.product_id);
+        if (product) {
+          const quantityBefore = product.stock_quantity || 0;
+          product.stock_quantity = quantityBefore + item.quantity_received;
+
+          // Update cost
+          if (purchaseItem.unit_cost) {
+            product.cost = purchaseItem.unit_cost;
+          }
+
+          // Create inventory movement
+          inventoryMovements.push({
+            id: ++inventoryMovementIdCounter,
+            product_id: item.product_id,
+            product_code: product.code || '',
+            product_name: product.name || '',
+            movement_type: 'IN',
+            quantity: item.quantity_received,
+            quantity_before: quantityBefore,
+            quantity_after: product.stock_quantity,
+            unit_cost: purchaseItem.unit_cost || product.cost || 0,
+            total_value: item.quantity_received * (purchaseItem.unit_cost || product.cost || 0),
+            reference_type: 'PURCHASE',
+            reference_id: purchaseId,
+            reference_number: purchase.purchase_number,
+            notes: `Purchase receiving - PO #${purchase.purchase_number}`,
+            created_by: receivedBy,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    // Check if all items are fully received
+    const allItems = purchaseItems.filter(pi => pi.purchase_id === purchaseId);
+    const allReceived = allItems.every(item => item.quantity_received >= item.quantity_ordered);
+    const partiallyReceived = allItems.some(item => item.quantity_received > 0 && item.quantity_received < item.quantity_ordered);
+
+    if (allReceived) {
+      purchase.status = 'RECEIVED';
+    } else if (partiallyReceived) {
+      purchase.status = 'PARTIALLY_RECEIVED';
+    }
+
+    saveToLocalStorage();
+  }
+
+  public async recordInventoryMovement(movementData: {
+    product_id: number;
+    movement_type: 'IN' | 'OUT' | 'ADJUSTMENT';
+    quantity: number;
+    reference_type: string;
+    reference_id?: number;
+    reference_number?: string;
+    notes?: string;
+    created_by: number;
+  }): Promise<number> {
+    const product = products.find(p => p.id === movementData.product_id);
+
+    if (!product) {
+      throw new Error(`Product with ID ${movementData.product_id} not found`);
+    }
+
+    const quantityBefore = product.stock_quantity || 0;
+    let quantityAfter: number;
+
+    // Calculate quantity after based on movement type
+    switch (movementData.movement_type) {
+      case 'IN':
+        quantityAfter = quantityBefore + Math.abs(movementData.quantity);
+        break;
+      case 'OUT':
+        quantityAfter = quantityBefore - Math.abs(movementData.quantity);
+        break;
+      case 'ADJUSTMENT':
+        quantityAfter = movementData.quantity;
+        break;
+      default:
+        throw new Error(`Invalid movement type: ${movementData.movement_type}`);
+    }
+
+    // Update product stock
+    product.stock_quantity = quantityAfter;
+
+    const actualQuantityMoved = movementData.movement_type === 'ADJUSTMENT'
+      ? Math.abs(quantityAfter - quantityBefore)
+      : movementData.quantity;
+
+    // Create inventory movement record
+    const movementId = ++inventoryMovementIdCounter;
+    inventoryMovements.push({
+      id: movementId,
+      product_id: movementData.product_id,
+      product_code: product.code || '',
+      product_name: product.name || '',
+      movement_type: movementData.movement_type,
+      quantity: actualQuantityMoved,
+      quantity_before: quantityBefore,
+      quantity_after: quantityAfter,
+      unit_cost: product.cost || 0,
+      total_value: actualQuantityMoved * (product.cost || 0),
+      reference_type: movementData.reference_type,
+      reference_id: movementData.reference_id,
+      reference_number: movementData.reference_number,
+      notes: movementData.notes,
+      created_by: movementData.created_by,
+      created_by_name: users.find(u => u.id === movementData.created_by)?.full_name || 'System',
+      created_at: new Date().toISOString(),
+    });
+
+    saveToLocalStorage();
+    console.log(`[WebMock] Inventory movement recorded: ${product.name} ${movementData.movement_type} ${actualQuantityMoved} (${quantityBefore} → ${quantityAfter})`);
+
+    return movementId;
   }
 
   public async getDamagedItemsSessions(): Promise<any[]> {
@@ -1122,13 +1550,33 @@ export class WebMockDatabaseService {
   }
 
   public async createInventoryMovement(movement: any): Promise<number> {
+    const product = products.find(p => p.id === movement.product_id);
+    const quantityBefore = product?.stock_quantity || 0;
+    let quantityAfter = quantityBefore;
+
+    // Calculate quantity after based on movement type
+    if (movement.movement_type === 'IN') {
+      quantityAfter = quantityBefore + Math.abs(movement.quantity);
+    } else if (movement.movement_type === 'OUT') {
+      quantityAfter = Math.max(0, quantityBefore - Math.abs(movement.quantity));
+    } else if (movement.movement_type === 'ADJUSTMENT') {
+      quantityAfter = movement.quantity;
+    }
+
     const newMovement = {
       id: inventoryMovementIdCounter++,
       product_id: movement.product_id,
+      product_code: product?.code || movement.product_code || '',
+      product_name: product?.name || movement.product_name || '',
       movement_type: movement.movement_type, // 'IN' or 'OUT'
       quantity: movement.quantity,
+      quantity_before: quantityBefore,
+      quantity_after: quantityAfter,
+      unit_cost: product?.cost || movement.unit_cost || 0,
+      total_value: Math.abs(movement.quantity) * (product?.cost || movement.unit_cost || 0),
       reference_type: movement.reference_type, // 'SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'PHYSICAL_COUNT'
       reference_id: movement.reference_id || null,
+      reference_number: movement.reference_number || null,
       notes: movement.notes || null,
       created_by: movement.created_by,
       created_at: new Date().toISOString(),
@@ -1266,9 +1714,15 @@ export class WebMockDatabaseService {
 
   public async createSupplierPayment(paymentData: {
     supplier_id: number;
+    purchase_id?: number;
     amount: number;
-    payment_method: string;
+    payment_method: 'CASH' | 'CHEQUE' | 'OTHERS';
+    others_type?: 'GCASH' | 'MAYA' | 'BANK_TRANSFER' | 'PAYPAL' | 'OTHER';
     reference_number?: string;
+    cheque_number?: string;
+    bank_name?: string;
+    payee_name?: string;
+    cheque_date?: string;
     notes?: string;
     paid_by: number;
   }): Promise<number> {
@@ -1276,14 +1730,26 @@ export class WebMockDatabaseService {
     if (!supplier) throw new Error('Supplier not found');
 
     const paymentId = ++supplierPaymentIdCounter;
-    const payment = {
+    const payment: any = {
       id: paymentId,
       payment_number: `SP-${String(paymentId).padStart(6, '0')}`,
       supplier_id: paymentData.supplier_id,
+      purchase_id: paymentData.purchase_id,
       supplier_name: supplier.name,
       amount: paymentData.amount,
       payment_method: paymentData.payment_method,
+      others_type: paymentData.others_type,
       reference_number: paymentData.reference_number,
+      // Cheque fields
+      cheque_number: paymentData.cheque_number,
+      bank_name: paymentData.bank_name,
+      payee_name: paymentData.payee_name,
+      cheque_date: paymentData.cheque_date,
+      cheque_status: paymentData.payment_method === 'CHEQUE' ? 'PENDING' : null,
+      deposited_date: null,
+      cleared_date: null,
+      bounced_date: null,
+      bounced_reason: null,
       notes: paymentData.notes,
       paid_by: paymentData.paid_by,
       created_at: new Date().toISOString(),
@@ -1307,8 +1773,8 @@ export class WebMockDatabaseService {
     }
 
     // Update supplier balance
-    if (supplier.balance !== undefined) {
-      supplier.balance = Math.max(0, supplier.balance - paymentData.amount);
+    if ((supplier as any).balance !== undefined) {
+      (supplier as any).balance = Math.max(0, (supplier as any).balance - paymentData.amount);
     }
 
     // Create eJournal entry
@@ -1325,6 +1791,141 @@ export class WebMockDatabaseService {
     saveToLocalStorage();
     console.log(`[WebMock] Supplier payment processed: ₱${paymentData.amount} to ${supplier.name}`);
     return paymentId;
+  }
+
+  // Get all cheque payments for PDC tracking
+  public async getChequePayments(status?: string): Promise<any[]> {
+    let result = supplierPayments.filter(p => p.payment_method === 'CHEQUE');
+    if (status && status !== 'ALL') {
+      result = result.filter(p => p.cheque_status === status);
+    }
+    return result.sort((a, b) => {
+      // Sort by cheque_date first (for PDC due dates)
+      const dateA = a.cheque_date ? new Date(a.cheque_date).getTime() : 0;
+      const dateB = b.cheque_date ? new Date(b.cheque_date).getTime() : 0;
+      return dateA - dateB;
+    });
+  }
+
+  // Update cheque status (for PDC tracking)
+  public async updateChequeStatus(paymentId: number, newStatus: 'DEPOSITED' | 'CLEARED' | 'BOUNCED', options?: {
+    bounced_reason?: string;
+    updated_by?: number;
+  }): Promise<boolean> {
+    const payment = supplierPayments.find(p => p.id === paymentId);
+    if (!payment || payment.payment_method !== 'CHEQUE') {
+      throw new Error('Cheque payment not found');
+    }
+
+    const oldStatus = payment.cheque_status;
+    const now = new Date().toISOString();
+
+    // Update status and date fields
+    payment.cheque_status = newStatus;
+    if (newStatus === 'DEPOSITED') {
+      payment.deposited_date = now;
+    } else if (newStatus === 'CLEARED') {
+      payment.cleared_date = now;
+    } else if (newStatus === 'BOUNCED') {
+      payment.bounced_date = now;
+      payment.bounced_reason = options?.bounced_reason || 'OTHER';
+
+      // BOUNCED: Restore AP balance
+      const supplier = suppliers.find(s => s.id === payment.supplier_id);
+      if (supplier) {
+        // Restore supplier balance
+        (supplier as any).balance = ((supplier as any).balance || 0) + payment.amount;
+
+        // If linked to a specific purchase, restore that AP record
+        if (payment.purchase_id) {
+          const ap = accountsPayable.find(a => a.purchase_id === payment.purchase_id);
+          if (ap) {
+            ap.paid_amount = Math.max(0, (ap.paid_amount || 0) - payment.amount);
+            ap.balance = (ap.balance || 0) + payment.amount;
+            ap.status = ap.balance > 0 ? 'OUTSTANDING' : 'PAID';
+            console.log(`[WebMock] Bounced cheque restored AP for purchase ${payment.purchase_id}, new balance: ₱${ap.balance}`);
+          }
+        } else {
+          // Not linked to specific purchase - restore to oldest unpaid AP
+          const oldestAP = accountsPayable
+            .filter(a => a.supplier_id === payment.supplier_id)
+            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0];
+          if (oldestAP) {
+            oldestAP.paid_amount = Math.max(0, (oldestAP.paid_amount || 0) - payment.amount);
+            oldestAP.balance = (oldestAP.balance || 0) + payment.amount;
+            oldestAP.status = 'OUTSTANDING';
+          }
+        }
+
+        // Create eJournal entry for bounced cheque
+        eJournalEntries.push({
+          id: ++eJournalIdCounter,
+          entry_type: 'CHEQUE_BOUNCED',
+          reference_number: payment.payment_number,
+          description: `Bounced cheque from ${supplier.name} - ${payment.cheque_number}`,
+          amount: payment.amount,
+          cashier_id: options?.updated_by || 1,
+          created_at: now,
+        });
+
+        console.log(`[WebMock] Cheque ${payment.cheque_number} bounced, restored ₱${payment.amount} to AP`);
+      }
+    }
+
+    // Create status change journal entry
+    eJournalEntries.push({
+      id: ++eJournalIdCounter,
+      entry_type: 'CHEQUE_STATUS_CHANGE',
+      reference_number: payment.payment_number,
+      description: `Cheque ${payment.cheque_number} status: ${oldStatus} → ${newStatus}`,
+      amount: 0,
+      cashier_id: options?.updated_by || 1,
+      created_at: now,
+    });
+
+    saveToLocalStorage();
+    return true;
+  }
+
+  // Get PDC alerts (cheques due soon or past due)
+  public async getPDCAlerts(daysAhead: number = 7): Promise<any[]> {
+    const today = new Date();
+    const alerts: any[] = [];
+
+    const pendingCheques = supplierPayments.filter(
+      p => p.payment_method === 'CHEQUE' && p.cheque_status === 'PENDING'
+    );
+
+    for (const cheque of pendingCheques) {
+      if (!cheque.cheque_date) continue;
+
+      const chequeDate = new Date(cheque.cheque_date);
+      const daysDiff = Math.floor((chequeDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+      if (daysDiff < 0) {
+        alerts.push({
+          ...cheque,
+          alert_type: 'PAST_DUE',
+          days_overdue: Math.abs(daysDiff),
+          priority: 'HIGH',
+        });
+      } else if (daysDiff <= daysAhead) {
+        alerts.push({
+          ...cheque,
+          alert_type: 'DUE_SOON',
+          days_until_due: daysDiff,
+          priority: daysDiff <= 3 ? 'MEDIUM' : 'LOW',
+        });
+      }
+    }
+
+    // Sort by priority (past due first, then by date)
+    return alerts.sort((a, b) => {
+      if (a.alert_type !== b.alert_type) {
+        return a.alert_type === 'PAST_DUE' ? -1 : 1;
+      }
+      return (a.days_overdue || 0) - (b.days_overdue || 0) || (a.days_until_due || 0) - (b.days_until_due || 0);
+    });
   }
 
   public async getAccountsPayableAging(): Promise<any> {
@@ -1554,6 +2155,107 @@ export class WebMockDatabaseService {
     console.log('[WebMock] Physical inventory data cleared');
   }
 
+  // ============ RESET DATA METHODS ============
+
+  public async resetTransactionalData(): Promise<{
+    success: boolean;
+    deletedCounts: Record<string, number>;
+    errors: string[];
+  }> {
+    const deletedCounts: Record<string, number> = {};
+
+    // Count records before deleting
+    deletedCounts['transactions'] = transactions.length;
+    deletedCounts['transaction_items'] = 0; // Not tracked separately in mock
+    deletedCounts['purchases'] = purchases.length;
+    deletedCounts['purchase_details'] = purchaseItems.length;
+    deletedCounts['supplier_payments'] = supplierPayments.length;
+    deletedCounts['customer_payments'] = customerPayments.length;
+    deletedCounts['accounts_payable'] = accountsPayable.length;
+    deletedCounts['accounts_receivable'] = accountsReceivable.length;
+    deletedCounts['inventory_movements'] = inventoryMovements.length;
+    deletedCounts['sales_returns'] = salesReturns.length;
+    deletedCounts['sales_return_items'] = salesReturnItems.length;
+    deletedCounts['physical_count_sessions'] = physicalCountSessions.length;
+    deletedCounts['physical_count_details'] = physicalCountDetails.length;
+    deletedCounts['damaged_items_sessions'] = damageSessions.length;
+    deletedCounts['damaged_items_details'] = damageDetails.length;
+    deletedCounts['ejournal'] = eJournalEntries.length;
+    deletedCounts['x_readings'] = 0;
+    deletedCounts['z_readings'] = 0;
+    deletedCounts['end_of_day_records'] = endOfDayRecords.length;
+    deletedCounts['shifts'] = 0;
+    deletedCounts['cash_movements'] = 0;
+    deletedCounts['customer_audit'] = 0;
+
+    // Clear all transactional data
+    transactions.length = 0;
+    purchases.length = 0;
+    purchaseItems.length = 0;
+    supplierPayments.length = 0;
+    customerPayments.length = 0;
+    accountsPayable.length = 0;
+    accountsReceivable.length = 0;
+    inventoryMovements.length = 0;
+    salesReturns.length = 0;
+    salesReturnItems.length = 0;
+    physicalCountSessions.length = 0;
+    physicalCountDetails.length = 0;
+    damageSessions.length = 0;
+    damageDetails.length = 0;
+    eJournalEntries.length = 0;
+    endOfDayRecords.length = 0;
+    purchaseReturns.length = 0;
+    purchaseReturnItems.length = 0;
+
+    // Reset product stock quantities
+    products.forEach(p => { p.stock_quantity = 0; });
+
+    // Reset counters
+    settings['current_invoice_number'] = '0';
+    settings['z_counter'] = '0';
+    settings['current_purchase_number'] = '0';
+    settings['current_payment_number'] = '0';
+    settings['current_damage_session_number'] = '0';
+    settings['current_customer_payment_number'] = '0';
+
+    saveToLocalStorage();
+    console.log('[WebMock] Transactional data reset complete');
+
+    return {
+      success: true,
+      deletedCounts,
+      errors: []
+    };
+  }
+
+  public async getTransactionalDataSummary(): Promise<Record<string, number>> {
+    return {
+      transactions: transactions.length,
+      transaction_items: 0,
+      purchases: purchases.length,
+      purchase_details: purchaseItems.length,
+      supplier_payments: supplierPayments.length,
+      customer_payments: customerPayments.length,
+      accounts_payable: accountsPayable.length,
+      accounts_receivable: accountsReceivable.length,
+      inventory_movements: inventoryMovements.length,
+      sales_returns: salesReturns.length,
+      sales_return_items: salesReturnItems.length,
+      physical_count_sessions: physicalCountSessions.length,
+      physical_count_details: physicalCountDetails.length,
+      damaged_items_sessions: damageSessions.length,
+      damaged_items_details: damageDetails.length,
+      ejournal: eJournalEntries.length,
+      x_readings: 0,
+      z_readings: 0,
+      end_of_day_records: endOfDayRecords.length,
+      shifts: 0,
+      cash_movements: 0,
+      customer_audit: 0
+    };
+  }
+
   // ============ DAMAGED ITEMS MANAGEMENT ============
 
   public async getDamageSessions(limit?: number): Promise<any[]> {
@@ -1673,6 +2375,7 @@ export class WebMockDatabaseService {
       quantity: damageData.damaged_quantity,
       reference_type: 'DAMAGE',
       reference_id: damageData.session_id,
+      reference_number: damageData.session_id,
       notes: `Damaged: ${damageData.damage_reason} - ${damageData.damage_description || 'No description'}`,
       created_by: damageData.recorded_by,
     });
@@ -1696,11 +2399,51 @@ export class WebMockDatabaseService {
   public async cancelDamageSession(sessionId: string, userId: number): Promise<void> {
     const sessionIndex = damageSessions.findIndex(s => s.session_id === sessionId);
     if (sessionIndex !== -1) {
+      // Get all damage details for this session to restore inventory
+      const sessionDetails = damageDetails.filter(d => d.session_id === sessionId);
+
+      // Restore inventory for each damaged item
+      for (const detail of sessionDetails) {
+        const product = products.find(p => p.id === detail.product_id);
+        if (product) {
+          // Capture quantity before restoration
+          const quantityBefore = product.stock_quantity || 0;
+
+          // Restore the damaged quantity back to stock
+          product.stock_quantity = quantityBefore + detail.damaged_quantity;
+          const quantityAfter = product.stock_quantity;
+
+          console.log(`[WebMock] Damage Reversal: Stock restored for ${product.name} +${detail.damaged_quantity} = ${product.stock_quantity}`);
+
+          // Create inventory movement for damage reversal
+          inventoryMovements.push({
+            id: ++inventoryMovementIdCounter,
+            product_id: detail.product_id,
+            product_code: product.code || detail.product_code || '',
+            product_name: product.name || detail.product_name || '',
+            movement_type: 'IN',
+            quantity: detail.damaged_quantity,
+            quantity_before: quantityBefore,
+            quantity_after: quantityAfter,
+            unit_cost: product.cost || detail.unit_cost || 0,
+            total_value: detail.damaged_quantity * (product.cost || detail.unit_cost || 0),
+            reference_type: 'DAMAGE_REVERSAL',
+            reference_id: sessionId,
+            reference_number: sessionId,
+            notes: `Damage session cancelled - stock restored: ${detail.damage_reason}`,
+            created_by: userId,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Mark session as cancelled
       damageSessions[sessionIndex].status = 'CANCELLED';
       damageSessions[sessionIndex].cancelled_at = new Date().toISOString();
       damageSessions[sessionIndex].cancelled_by = userId;
+
       saveToLocalStorage();
-      console.log('[WebMock] Cancelled damage session:', sessionId);
+      console.log('[WebMock] Cancelled damage session:', sessionId, `- Restored ${sessionDetails.length} items`);
     }
   }
 
@@ -1980,17 +2723,29 @@ export class WebMockDatabaseService {
       // INCREASE stock (return item back to inventory)
       const product = products.find(p => p.id === item.product_id);
       if (product) {
-        product.stock_quantity = (product.stock_quantity || 0) + item.quantity;
+        // Capture quantity before
+        const quantityBefore = product.stock_quantity || 0;
+
+        product.stock_quantity = quantityBefore + item.quantity;
+        const quantityAfter = product.stock_quantity;
+
         console.log(`[WebMock] Return: Stock increased for ${product.name} +${item.quantity} = ${product.stock_quantity}`);
 
-        // Create inventory movement for return
+        // Create inventory movement for return with complete data
         inventoryMovements.push({
           id: ++inventoryMovementIdCounter,
           product_id: item.product_id,
+          product_code: product.code || '',
+          product_name: product.name || item.product_name || '',
           movement_type: 'IN',
           quantity: item.quantity,
-          reference_type: 'RETURN',
-          reference_id: returnNumber,
+          quantity_before: quantityBefore,
+          quantity_after: quantityAfter,
+          unit_cost: product.cost || 0,
+          total_value: item.quantity * (product.cost || 0),
+          reference_type: 'SALES_RETURN',
+          reference_id: returnId,
+          reference_number: returnNumber,
           notes: `Sales return: ${item.reason}`,
           created_by: returnData.created_by,
           created_at: new Date().toISOString(),
@@ -2146,17 +2901,29 @@ export class WebMockDatabaseService {
       // DECREASE stock (return item to supplier)
       const product = products.find(p => p.id === item.product_id);
       if (product) {
-        product.stock_quantity = Math.max(0, (product.stock_quantity || 0) - item.quantity);
+        // Capture quantity before
+        const quantityBefore = product.stock_quantity || 0;
+
+        product.stock_quantity = Math.max(0, quantityBefore - item.quantity);
+        const quantityAfter = product.stock_quantity;
+
         console.log(`[WebMock] Purchase Return: Stock decreased for ${product.name} -${item.quantity} = ${product.stock_quantity}`);
 
-        // Create inventory movement for purchase return
+        // Create inventory movement for purchase return with complete data
         inventoryMovements.push({
           id: ++inventoryMovementIdCounter,
           product_id: item.product_id,
+          product_code: product.code || '',
+          product_name: product.name || item.product_name || '',
           movement_type: 'OUT',
           quantity: item.quantity,
+          quantity_before: quantityBefore,
+          quantity_after: quantityAfter,
+          unit_cost: item.unit_cost || product.cost || 0,
+          total_value: item.quantity * (item.unit_cost || product.cost || 0),
           reference_type: 'PURCHASE_RETURN',
-          reference_id: returnNumber,
+          reference_id: returnId,
+          reference_number: returnNumber,
           notes: `Return to supplier: ${item.reason}`,
           created_by: returnData.created_by,
           created_at: new Date().toISOString(),

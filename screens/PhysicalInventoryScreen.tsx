@@ -140,7 +140,9 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     // Check if product already in count list
     const existingItem = countItems.find(item => item.product_id === product.id);
     if (existingItem) {
-      Alert.alert('Already Added', `${product.name} is already in your count list`);
+      // If already in list, just open the count dialog for that item
+      handleCountProduct(existingItem);
+      setSearchQuery(''); // Clear search
       return;
     }
 
@@ -179,8 +181,14 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
         total_items: prev.total_items + 1
       } : null);
 
-      Alert.alert('Added', `${product.name} added to count list`);
-      setSearchQuery(''); // Clear search after adding
+      // Clear search and immediately open count dialog
+      setSearchQuery('');
+
+      // Open the count dialog for the newly added item
+      setSelectedItem(newCountItem);
+      setPhysicalQuantity('');
+      setCountNotes('');
+      setDialogVisible(true);
     } catch (error) {
       console.error('Error adding product to count:', error);
       Alert.alert('Error', 'Failed to add product to count');
@@ -380,52 +388,37 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
 
     try {
       const dbService = getDatabase();
-      const db = dbService.getDatabase();
 
-      await db.withTransactionAsync(async () => {
-        // Update product quantities based on physical count
-        for (const item of countItems) {
-          const finalQuantity = item.status === 'counted' ? item.physical_quantity : item.system_quantity;
-
-          if (item.discrepancy !== 0) {
-            // Update product quantity
-            await db.runAsync(
-              'UPDATE products SET stock_quantity = ? WHERE id = ?',
-              [finalQuantity, item.product_id]
-            );
-
-            // Record inventory movement for discrepancy
-            await db.runAsync(
-              `INSERT INTO inventory_movements (
-                product_id, movement_type, quantity, reference_type,
-                notes, created_by
-              ) VALUES (?, ?, ?, ?, ?, ?)`,
-              [
-                item.product_id,
-                item.discrepancy > 0 ? 'IN' : 'OUT',
-                Math.abs(item.discrepancy),
-                'MANUAL_ADJUSTMENT',
-                `Physical count adjustment by ${user.full_name}: ${item.notes || 'No notes'}`,
-                user.id
-              ]
-            );
-          }
+      // Process each item with discrepancy
+      for (const item of countItems) {
+        if (item.discrepancy !== 0) {
+          // Use recordInventoryMovement to properly track before/after quantities
+          await dbService.recordInventoryMovement({
+            product_id: item.product_id,
+            movement_type: item.discrepancy > 0 ? 'IN' : 'OUT',
+            quantity: Math.abs(item.discrepancy),
+            reference_type: 'PHYSICAL_COUNT',
+            reference_id: undefined,
+            reference_number: currentSession.id,
+            notes: `Physical count by ${user.full_name}: System ${item.system_quantity} → Actual ${item.physical_quantity}. ${item.notes || ''}`.trim(),
+            created_by: user.id
+          });
         }
+      }
 
-        // Update session as completed
-        await dbService.updatePhysicalCountSession(currentSession.id, {
-          status: 'completed',
-          completed_by: user.id
-        });
+      // Update session as completed
+      await dbService.updatePhysicalCountSession(currentSession.id, {
+        status: 'completed',
+        completed_by: user.id
+      });
 
-        // Create eJournal entry for completion
-        await dbService.createEJournalEntry({
-          entry_type: 'SYSTEM',
-          reference_number: currentSession.id,
-          description: `Physical inventory count completed by ${user.full_name} - Total discrepancy value: ₱${currentSession?.total_discrepancy_value.toFixed(2)}`,
-          amount: currentSession?.total_discrepancy_value || 0,
-          cashier_id: user.id
-        });
+      // Create eJournal entry for completion
+      await dbService.createEJournalEntry({
+        entry_type: 'SYSTEM',
+        reference_number: currentSession.id,
+        description: `Physical inventory count completed by ${user.full_name} - Total discrepancy value: ₱${currentSession?.total_discrepancy_value.toFixed(2)}`,
+        amount: currentSession?.total_discrepancy_value || 0,
+        cashier_id: user.id
       });
 
       // Show success message - web compatible

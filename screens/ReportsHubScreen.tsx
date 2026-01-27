@@ -49,8 +49,9 @@ export default function ReportsHubScreen({ navigation }: Props) {
       reports: [
         { title: 'Current Stock Levels', description: 'View all product quantities', icon: 'clipboard-list', screen: 'Products' },
         { title: 'Low Stock Alert', description: 'Products below reorder level', icon: 'alert', screen: 'Products' },
+        { title: 'Zero Inventory', description: 'Products with no stock available', icon: 'alert-circle-outline', screen: 'ZeroInventoryReport' },
         { title: 'Item Ledger', description: 'All inventory movements by product', icon: 'history', screen: 'InventoryMovements' },
-        { title: 'Stock Valuation', description: 'Total inventory value report', icon: 'currency-php', screen: 'Products' },
+        { title: 'Stock Valuation', description: 'Total inventory value report', icon: 'currency-php', screen: 'StockValuationReport' },
         { title: 'Physical Count History', description: 'Past physical count sessions', icon: 'counter', screen: 'Reports' },
         { title: 'Damaged Items Report', description: 'History of damaged inventory', icon: 'package-variant-closed-remove', screen: 'DamagedItemsHistory' },
       ]

@@ -37,7 +37,8 @@ type Props = {
   navigation: SupplierPaymentsScreenNavigationProp;
 };
 
-type PaymentMethod = 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'CREDIT_CARD' | 'ONLINE';
+type PaymentMethod = 'CASH' | 'CHEQUE' | 'OTHERS';
+type OthersType = 'GCASH' | 'MAYA' | 'BANK_TRANSFER' | 'PAYPAL' | 'OTHER';
 
 export default function SupplierPaymentsScreen({ navigation }: Props) {
   const [activeTab, setActiveTab] = useState<'payments' | 'payables' | 'aging'>('payments');
@@ -63,9 +64,16 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
   const [supplierInvoices, setSupplierInvoices] = useState<any[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [paymentMethodMenuVisible, setPaymentMethodMenuVisible] = useState(false);
+  const [othersType, setOthersType] = useState<OthersType>('GCASH');
+  const [othersTypeMenuVisible, setOthersTypeMenuVisible] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
+  // Cheque fields
+  const [chequeNumber, setChequeNumber] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [payeeName, setPayeeName] = useState('');
+  const [chequeDate, setChequeDate] = useState('');
 
   const theme = useTheme();
 
@@ -122,13 +130,11 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
     }
   };
 
-  const getPaymentMethodColor = (method: PaymentMethod) => {
+  const getPaymentMethodColor = (method: string) => {
     switch (method) {
       case 'CASH': return '#4CAF50';
-      case 'CHECK': return '#2196F3';
-      case 'BANK_TRANSFER': return '#9C27B0';
-      case 'CREDIT_CARD': return '#FF5722';
-      case 'ONLINE': return '#607D8B';
+      case 'CHEQUE': return '#2196F3';
+      case 'OTHERS': return '#9C27B0';
       default: return '#9E9E9E';
     }
   };
@@ -138,9 +144,15 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
     setSelectedInvoice(null);
     setSupplierInvoices([]);
     setPaymentMethod('CASH');
+    setOthersType('GCASH');
     setPaymentAmount('');
     setReferenceNumber('');
     setPaymentNotes('');
+    // Reset cheque fields
+    setChequeNumber('');
+    setBankName('');
+    setPayeeName('');
+    setChequeDate('');
     setPaymentDialogVisible(true);
   };
 
@@ -183,22 +195,34 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
       return;
     }
 
-    if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid payment amount');
-      return;
+    // Validate cheque fields when CHEQUE is selected
+    if (paymentMethod === 'CHEQUE') {
+      if (!chequeNumber.trim()) {
+        Alert.alert('Error', 'Please enter cheque number');
+        return;
+      }
+      if (!bankName.trim()) {
+        Alert.alert('Error', 'Please enter bank name');
+        return;
+      }
+      if (!payeeName.trim()) {
+        Alert.alert('Error', 'Please enter payee name');
+        return;
+      }
+      if (!chequeDate.trim()) {
+        Alert.alert('Error', 'Please enter cheque date');
+        return;
+      }
     }
 
-    const amount = parseFloat(paymentAmount);
-    if (amount > selectedInvoice.balance_amount) {
-      Alert.alert('Error', `Payment amount cannot exceed balance of ₱${selectedInvoice.balance_amount.toLocaleString()}`);
-      return;
-    }
+    // Full payment only - no partial payments allowed
+    const amount = selectedInvoice.balance_amount;
 
     try {
       setLoading(true);
       const dbService = getDatabase();
 
-      const paymentData = {
+      const paymentData: any = {
         supplier_id: selectedSupplier.id,
         purchase_id: selectedInvoice.purchase_id,
         payment_method: paymentMethod,
@@ -207,6 +231,19 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
         notes: paymentNotes || undefined,
         created_by: 1 // TODO: Get from user context
       };
+
+      // Add OTHERS sub-type if applicable
+      if (paymentMethod === 'OTHERS') {
+        paymentData.others_type = othersType;
+      }
+
+      // Add cheque fields if applicable
+      if (paymentMethod === 'CHEQUE') {
+        paymentData.cheque_number = chequeNumber;
+        paymentData.bank_name = bankName;
+        paymentData.payee_name = payeeName;
+        paymentData.cheque_date = chequeDate;
+      }
 
       const result = await dbService.createSupplierPayment(paymentData);
 
@@ -589,6 +626,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
               )}
 
               {/* Payment Method Selection */}
+              {/* Payment Method Selection */}
               <Menu
                 visible={paymentMethodMenuVisible}
                 onDismiss={() => setPaymentMethodMenuVisible(false)}
@@ -600,13 +638,13 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                     icon="chevron-down"
                     contentStyle={{ justifyContent: 'flex-start' }}
                   >
-                    {paymentMethod}
+                    Payment Method: {paymentMethod}
                   </Button>
                 }
                 contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
                 style={{ backgroundColor: '#ffffff' }}
               >
-                {(['CASH', 'CHECK', 'BANK_TRANSFER', 'CREDIT_CARD', 'ONLINE'] as PaymentMethod[]).map(method => (
+                {(['CASH', 'CHEQUE', 'OTHERS'] as PaymentMethod[]).map(method => (
                   <Menu.Item
                     key={method}
                     onPress={() => {
@@ -620,14 +658,98 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                 ))}
               </Menu>
 
-              <TextInput
-                label="Payment Amount *"
-                value={paymentAmount}
-                onChangeText={setPaymentAmount}
-                mode="outlined"
-                style={styles.dialogInput}
-                keyboardType="numeric"
-              />
+              {/* OTHERS Sub-type Selection */}
+              {paymentMethod === 'OTHERS' && (
+                <Menu
+                  visible={othersTypeMenuVisible}
+                  onDismiss={() => setOthersTypeMenuVisible(false)}
+                  anchor={
+                    <Button
+                      mode="outlined"
+                      onPress={() => setOthersTypeMenuVisible(true)}
+                      style={styles.dialogInput}
+                      icon="chevron-down"
+                      contentStyle={{ justifyContent: 'flex-start' }}
+                    >
+                      Type: {othersType}
+                    </Button>
+                  }
+                  contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
+                  style={{ backgroundColor: '#ffffff' }}
+                >
+                  {(['GCASH', 'MAYA', 'BANK_TRANSFER', 'PAYPAL', 'OTHER'] as OthersType[]).map(type => (
+                    <Menu.Item
+                      key={type}
+                      onPress={() => {
+                        setOthersType(type);
+                        setOthersTypeMenuVisible(false);
+                      }}
+                      title={type.replace('_', ' ')}
+                      style={{ backgroundColor: '#ffffff' }}
+                      titleStyle={{ color: '#333333' }}
+                    />
+                  ))}
+                </Menu>
+              )}
+
+              {/* Cheque Fields (only show when CHEQUE is selected) */}
+              {paymentMethod === 'CHEQUE' && (
+                <Card style={styles.chequeFieldsCard}>
+                  <Card.Content>
+                    <Title style={styles.chequeFieldsTitle}>Cheque Details</Title>
+                    <TextInput
+                      label="Cheque Number *"
+                      value={chequeNumber}
+                      onChangeText={setChequeNumber}
+                      mode="outlined"
+                      style={styles.dialogInput}
+                    />
+                    <TextInput
+                      label="Bank Name *"
+                      value={bankName}
+                      onChangeText={setBankName}
+                      mode="outlined"
+                      style={styles.dialogInput}
+                    />
+                    <TextInput
+                      label="Payee Name *"
+                      value={payeeName}
+                      onChangeText={setPayeeName}
+                      mode="outlined"
+                      style={styles.dialogInput}
+                      placeholder="Who the cheque is payable to"
+                    />
+                    <TextInput
+                      label="Cheque Date (YYYY-MM-DD) *"
+                      value={chequeDate}
+                      onChangeText={setChequeDate}
+                      mode="outlined"
+                      style={styles.dialogInput}
+                      placeholder="For PDC, enter future date"
+                    />
+                    <Paragraph style={styles.chequeNote}>
+                      Post-dated cheques will be tracked in the PDC screen
+                    </Paragraph>
+                  </Card.Content>
+                </Card>
+              )}
+
+              {/* Payment Amount - Read-only, full balance only */}
+              {selectedInvoice && (
+                <Card style={styles.paymentAmountCard}>
+                  <Card.Content>
+                    <View style={styles.paymentAmountRow}>
+                      <Paragraph style={styles.paymentAmountLabel}>Payment Amount:</Paragraph>
+                      <Paragraph style={styles.paymentAmountValue}>
+                        ₱{selectedInvoice.balance_amount.toLocaleString()}
+                      </Paragraph>
+                    </View>
+                    <Paragraph style={styles.fullPaymentNote}>
+                      Full balance payment only. Partial payments are not allowed.
+                    </Paragraph>
+                  </Card.Content>
+                </Card>
+              )}
 
               <TextInput
                 label="Reference Number"
@@ -635,7 +757,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                 onChangeText={setReferenceNumber}
                 mode="outlined"
                 style={styles.dialogInput}
-                placeholder="Check #, Bank Reference, etc."
+                placeholder="Transaction reference, etc."
               />
 
               <TextInput
@@ -867,5 +989,46 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 8,
     elevation: 2,
+  },
+  chequeFieldsCard: {
+    marginBottom: 16,
+    backgroundColor: '#E8F5E9',
+  },
+  chequeFieldsTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+    marginBottom: 12,
+  },
+  chequeNote: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+    marginTop: 8,
+  },
+  paymentAmountCard: {
+    marginBottom: 16,
+    backgroundColor: '#FFF3E0',
+  },
+  paymentAmountRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  paymentAmountLabel: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#E65100',
+  },
+  paymentAmountValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#E65100',
+  },
+  fullPaymentNote: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+    marginTop: 8,
   },
 });

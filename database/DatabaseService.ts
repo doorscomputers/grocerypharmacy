@@ -958,6 +958,18 @@ export class DatabaseService {
     }
   }
 
+  public async getTransactions(limit?: number): Promise<any[]> {
+    const db = this.getDatabase();
+    const query = `
+      SELECT t.*, u.full_name as cashier_name
+      FROM transactions t
+      LEFT JOIN users u ON t.cashier_id = u.id
+      ORDER BY t.created_at DESC
+      ${limit ? `LIMIT ${limit}` : ''}
+    `;
+    return await db.getAllAsync(query);
+  }
+
   public async getTransactionsByCashier(cashierId: number, limit?: number): Promise<any[]> {
     const db = this.getDatabase();
     const query = `
@@ -1919,6 +1931,126 @@ export class DatabaseService {
     } catch (error) {
       console.error(`Error getting purchase order ${id}:`, error);
       return null;
+    }
+  }
+
+  public async updatePurchaseOrder(
+    purchaseId: number,
+    purchaseData: {
+      supplier_id: number;
+      expected_delivery_date?: string;
+      reference_number?: string;
+      payment_terms?: string;
+      notes?: string;
+      items: Array<{
+        product_id: number;
+        product_code: string;
+        product_name: string;
+        quantity_ordered: number;
+        unit_cost: number;
+        discount_amount?: number;
+        tax_amount?: number;
+      }>;
+    }
+  ): Promise<{ success: boolean; message: string }> {
+    const db = this.getDatabase();
+
+    try {
+      // Verify the purchase order exists and is in DRAFT status
+      const existingPurchase = await db.getFirstAsync<any>(
+        'SELECT id, status FROM purchases WHERE id = ?',
+        [purchaseId]
+      );
+
+      if (!existingPurchase) {
+        return { success: false, message: 'Purchase order not found' };
+      }
+
+      if (existingPurchase.status !== 'DRAFT') {
+        return { success: false, message: 'Only DRAFT purchase orders can be edited' };
+      }
+
+      // Calculate totals
+      let subtotal = 0;
+      let totalTax = 0;
+      let totalDiscount = 0;
+
+      for (const item of purchaseData.items) {
+        const itemTotal = item.quantity_ordered * item.unit_cost;
+        subtotal += itemTotal;
+        totalTax += item.tax_amount || 0;
+        totalDiscount += item.discount_amount || 0;
+      }
+
+      const totalAmount = subtotal + totalTax - totalDiscount;
+
+      await db.withTransactionAsync(async () => {
+        // Update purchase header
+        await db.runAsync(
+          `UPDATE purchases SET
+            supplier_id = ?,
+            expected_delivery_date = ?,
+            reference_number = ?,
+            payment_terms = ?,
+            notes = ?,
+            subtotal = ?,
+            tax_amount = ?,
+            discount_amount = ?,
+            total_amount = ?,
+            updated_at = datetime('now', '+8 hours')
+          WHERE id = ?`,
+          [
+            purchaseData.supplier_id,
+            purchaseData.expected_delivery_date || null,
+            purchaseData.reference_number || null,
+            purchaseData.payment_terms || '30 days',
+            purchaseData.notes || null,
+            subtotal,
+            totalTax,
+            totalDiscount,
+            totalAmount,
+            purchaseId
+          ]
+        );
+
+        // Delete existing purchase details
+        await db.runAsync(
+          'DELETE FROM purchase_details WHERE purchase_id = ?',
+          [purchaseId]
+        );
+
+        // Insert new purchase details
+        for (const item of purchaseData.items) {
+          const itemTotal = item.quantity_ordered * item.unit_cost;
+          const taxAmount = item.tax_amount || 0;
+          const discountAmount = item.discount_amount || 0;
+          const lineTotal = itemTotal + taxAmount - discountAmount;
+
+          await db.runAsync(
+            `INSERT INTO purchase_details (
+              purchase_id, product_id, product_code, product_name,
+              quantity_ordered, quantity_received, unit_cost,
+              discount_amount, tax_amount, total_amount
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+            [
+              purchaseId,
+              item.product_id,
+              item.product_code,
+              item.product_name,
+              item.quantity_ordered,
+              item.unit_cost,
+              discountAmount,
+              taxAmount,
+              lineTotal
+            ]
+          );
+        }
+      });
+
+      return { success: true, message: 'Purchase order updated successfully' };
+    } catch (error) {
+      console.error('Error updating purchase order:', error);
+      return { success: false, message: `Failed to update purchase order: ${error}` };
     }
   }
 
@@ -4016,15 +4148,7 @@ export class DatabaseService {
           ]
         );
 
-        // Return stock to inventory (add back returned quantity)
-        await db.runAsync(
-          'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
-          [item.quantity, item.product_id]
-        );
-      }
-
-      // CRITICAL: Create inventory movements for each returned item
-      for (const item of returnData.items) {
+        // Record inventory movement (this also updates stock quantity)
         await this.recordInventoryMovement({
           product_id: item.product_id,
           movement_type: 'IN',
@@ -4168,13 +4292,7 @@ export class DatabaseService {
          item.quantity, item.unit_price, item.quantity * item.unit_price]
       );
 
-      // Update stock (add back)
-      await db.runAsync(
-        'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
-        [item.quantity, item.product_id]
-      );
-
-      // Create inventory movement
+      // Record inventory movement (this also updates stock quantity)
       await this.recordInventoryMovement({
         product_id: item.product_id,
         movement_type: 'IN',
@@ -4324,13 +4442,7 @@ export class DatabaseService {
          item.quantity, item.unit_cost, item.quantity * item.unit_cost, item.reason]
       );
 
-      // DECREASE stock (return to supplier)
-      await db.runAsync(
-        'UPDATE products SET stock_quantity = CASE WHEN stock_quantity - ? < 0 THEN 0 ELSE stock_quantity - ? END WHERE id = ?',
-        [item.quantity, item.quantity, item.product_id]
-      );
-
-      // Create inventory movement
+      // Record inventory movement (this also updates stock quantity)
       await this.recordInventoryMovement({
         product_id: item.product_id,
         movement_type: 'OUT',
@@ -5184,5 +5296,298 @@ export class DatabaseService {
       console.error('Error saving X-Reading:', error);
       throw error;
     }
+  }
+
+  // ========================================
+  // RESET DATA METHODS
+  // ========================================
+
+  /**
+   * Reset all transactional data while preserving master data.
+   * Master data preserved: Products, Suppliers, Customers, Categories, Brands, Units, Sizes, Users, Settings, Role Permissions
+   * Transactional data deleted: Sales, Purchases, Payments, Inventory Movements, Returns, BIR readings, etc.
+   */
+  public async resetTransactionalData(): Promise<{
+    success: boolean;
+    deletedCounts: Record<string, number>;
+    errors: string[];
+  }> {
+    const db = this.getDatabase();
+    const deletedCounts: Record<string, number> = {};
+    const errors: string[] = [];
+
+    try {
+      console.log('Starting transactional data reset...');
+
+      // Order matters due to foreign key constraints - delete child tables first
+
+      // 1. Sales Returns and Items
+      try {
+        const salesReturnItems = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM sales_return_items');
+        await db.runAsync('DELETE FROM sales_return_items');
+        deletedCounts['sales_return_items'] = salesReturnItems?.count || 0;
+      } catch (e) {
+        errors.push(`sales_return_items: ${e}`);
+      }
+
+      try {
+        const salesReturns = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM sales_returns');
+        await db.runAsync('DELETE FROM sales_returns');
+        deletedCounts['sales_returns'] = salesReturns?.count || 0;
+      } catch (e) {
+        errors.push(`sales_returns: ${e}`);
+      }
+
+      // 2. Transaction Items and Transactions
+      try {
+        const transactionItems = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM transaction_items');
+        await db.runAsync('DELETE FROM transaction_items');
+        deletedCounts['transaction_items'] = transactionItems?.count || 0;
+      } catch (e) {
+        errors.push(`transaction_items: ${e}`);
+      }
+
+      try {
+        const transactions = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM transactions');
+        await db.runAsync('DELETE FROM transactions');
+        deletedCounts['transactions'] = transactions?.count || 0;
+      } catch (e) {
+        errors.push(`transactions: ${e}`);
+      }
+
+      // 3. Purchase Returns, Details, and Purchases
+      try {
+        const purchaseDetails = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM purchase_details');
+        await db.runAsync('DELETE FROM purchase_details');
+        deletedCounts['purchase_details'] = purchaseDetails?.count || 0;
+      } catch (e) {
+        errors.push(`purchase_details: ${e}`);
+      }
+
+      try {
+        const purchases = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM purchases');
+        await db.runAsync('DELETE FROM purchases');
+        deletedCounts['purchases'] = purchases?.count || 0;
+      } catch (e) {
+        errors.push(`purchases: ${e}`);
+      }
+
+      // 4. Supplier Payments and Accounts Payable
+      try {
+        const supplierPayments = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM supplier_payments');
+        await db.runAsync('DELETE FROM supplier_payments');
+        deletedCounts['supplier_payments'] = supplierPayments?.count || 0;
+      } catch (e) {
+        errors.push(`supplier_payments: ${e}`);
+      }
+
+      try {
+        const accountsPayable = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM accounts_payable');
+        await db.runAsync('DELETE FROM accounts_payable');
+        deletedCounts['accounts_payable'] = accountsPayable?.count || 0;
+      } catch (e) {
+        errors.push(`accounts_payable: ${e}`);
+      }
+
+      // 5. Customer Payments and Accounts Receivable
+      try {
+        const customerPayments = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM customer_payments');
+        await db.runAsync('DELETE FROM customer_payments');
+        deletedCounts['customer_payments'] = customerPayments?.count || 0;
+      } catch (e) {
+        errors.push(`customer_payments: ${e}`);
+      }
+
+      try {
+        const accountsReceivable = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM accounts_receivable');
+        await db.runAsync('DELETE FROM accounts_receivable');
+        deletedCounts['accounts_receivable'] = accountsReceivable?.count || 0;
+      } catch (e) {
+        errors.push(`accounts_receivable: ${e}`);
+      }
+
+      // 6. Inventory Movements (Item Ledger)
+      try {
+        const inventoryMovements = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM inventory_movements');
+        await db.runAsync('DELETE FROM inventory_movements');
+        deletedCounts['inventory_movements'] = inventoryMovements?.count || 0;
+      } catch (e) {
+        errors.push(`inventory_movements: ${e}`);
+      }
+
+      // 7. Physical Count Sessions and Details
+      try {
+        const physicalCountDetails = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM physical_count_details');
+        await db.runAsync('DELETE FROM physical_count_details');
+        deletedCounts['physical_count_details'] = physicalCountDetails?.count || 0;
+      } catch (e) {
+        errors.push(`physical_count_details: ${e}`);
+      }
+
+      try {
+        const physicalCountSessions = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM physical_count_sessions');
+        await db.runAsync('DELETE FROM physical_count_sessions');
+        deletedCounts['physical_count_sessions'] = physicalCountSessions?.count || 0;
+      } catch (e) {
+        errors.push(`physical_count_sessions: ${e}`);
+      }
+
+      // 8. Damaged Items Sessions and Details
+      try {
+        const damagedItemsDetails = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM damaged_items_details');
+        await db.runAsync('DELETE FROM damaged_items_details');
+        deletedCounts['damaged_items_details'] = damagedItemsDetails?.count || 0;
+      } catch (e) {
+        errors.push(`damaged_items_details: ${e}`);
+      }
+
+      try {
+        const damagedItemsSessions = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM damaged_items_sessions');
+        await db.runAsync('DELETE FROM damaged_items_sessions');
+        deletedCounts['damaged_items_sessions'] = damagedItemsSessions?.count || 0;
+      } catch (e) {
+        errors.push(`damaged_items_sessions: ${e}`);
+      }
+
+      // 9. BIR Compliance Tables
+      try {
+        const ejournal = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM ejournal');
+        await db.runAsync('DELETE FROM ejournal');
+        deletedCounts['ejournal'] = ejournal?.count || 0;
+      } catch (e) {
+        errors.push(`ejournal: ${e}`);
+      }
+
+      try {
+        const xReadings = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM x_readings');
+        await db.runAsync('DELETE FROM x_readings');
+        deletedCounts['x_readings'] = xReadings?.count || 0;
+      } catch (e) {
+        errors.push(`x_readings: ${e}`);
+      }
+
+      try {
+        const zReadings = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM z_readings');
+        await db.runAsync('DELETE FROM z_readings');
+        deletedCounts['z_readings'] = zReadings?.count || 0;
+      } catch (e) {
+        errors.push(`z_readings: ${e}`);
+      }
+
+      // 10. End of Day and Shift Management
+      try {
+        const endOfDayRecords = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM end_of_day_records');
+        await db.runAsync('DELETE FROM end_of_day_records');
+        deletedCounts['end_of_day_records'] = endOfDayRecords?.count || 0;
+      } catch (e) {
+        errors.push(`end_of_day_records: ${e}`);
+      }
+
+      try {
+        const shifts = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM shifts');
+        await db.runAsync('DELETE FROM shifts');
+        deletedCounts['shifts'] = shifts?.count || 0;
+      } catch (e) {
+        errors.push(`shifts: ${e}`);
+      }
+
+      try {
+        const cashMovements = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM cash_movements');
+        await db.runAsync('DELETE FROM cash_movements');
+        deletedCounts['cash_movements'] = cashMovements?.count || 0;
+      } catch (e) {
+        errors.push(`cash_movements: ${e}`);
+      }
+
+      // 11. Customer Audit Trail
+      try {
+        const customerAudit = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM customer_audit');
+        await db.runAsync('DELETE FROM customer_audit');
+        deletedCounts['customer_audit'] = customerAudit?.count || 0;
+      } catch (e) {
+        errors.push(`customer_audit: ${e}`);
+      }
+
+      // 12. Reset counters in settings
+      try {
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'current_invoice_number'`);
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'z_counter'`);
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'current_purchase_number'`);
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'current_payment_number'`);
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'current_damage_session_number'`);
+        await db.runAsync(`UPDATE settings SET value = '0' WHERE key = 'current_customer_payment_number'`);
+        console.log('Reset all counters to 0');
+      } catch (e) {
+        errors.push(`reset_counters: ${e}`);
+      }
+
+      // 13. Reset product stock quantities to zero
+      try {
+        await db.runAsync('UPDATE products SET stock_quantity = 0');
+        console.log('Reset all product stock quantities to 0');
+      } catch (e) {
+        errors.push(`reset_stock: ${e}`);
+      }
+
+      console.log('Transactional data reset completed!');
+      console.log('Deleted counts:', deletedCounts);
+      if (errors.length > 0) {
+        console.log('Errors encountered:', errors);
+      }
+
+      return {
+        success: errors.length === 0,
+        deletedCounts,
+        errors
+      };
+
+    } catch (error) {
+      console.error('Error during transactional data reset:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get summary of data that will be deleted during reset
+   */
+  public async getTransactionalDataSummary(): Promise<Record<string, number>> {
+    const db = this.getDatabase();
+    const summary: Record<string, number> = {};
+
+    const tables = [
+      'transactions',
+      'transaction_items',
+      'purchases',
+      'purchase_details',
+      'supplier_payments',
+      'customer_payments',
+      'accounts_payable',
+      'accounts_receivable',
+      'inventory_movements',
+      'sales_returns',
+      'sales_return_items',
+      'physical_count_sessions',
+      'physical_count_details',
+      'damaged_items_sessions',
+      'damaged_items_details',
+      'ejournal',
+      'x_readings',
+      'z_readings',
+      'end_of_day_records',
+      'shifts',
+      'cash_movements',
+      'customer_audit'
+    ];
+
+    for (const table of tables) {
+      try {
+        const result = await db.getFirstAsync<{ count: number }>(`SELECT COUNT(*) as count FROM ${table}`);
+        summary[table] = result?.count || 0;
+      } catch (e) {
+        summary[table] = 0;
+      }
+    }
+
+    return summary;
   }
 }

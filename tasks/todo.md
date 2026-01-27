@@ -1,45 +1,60 @@
-# Task: Make Dashboard Sales Dynamic & Verify Sales Report
+# Task: Add Payment Receipt Preview with Print and Email Options
 
-## Requirements
-1. Make Total Sales on Dashboard refresh when page gains focus
-2. Clarify that Total Sales is "Today's Sales"
-3. Verify Sales Report has proper features (per invoice, per item, date filters)
+## Objective
+After processing a customer payment, show a receipt preview with options to:
+1. Print to Bluetooth printer
+2. Send to email with validation
 
 ## Todo Items
+- [x] Create PaymentReceiptPreview component
+- [x] Add buildPaymentReceipt function to escpos.ts
+- [x] Integrate receipt preview into CustomerPaymentsScreen
+- [x] Add Print to Bluetooth printer functionality
+- [x] Add Send to Email option with email validation
 
-- [x] Add `useFocusEffect` to DashboardScreen to refresh data when screen gains focus
-- [x] Verify SalesReportScreen has all required features
+## Changes Made
 
-## Review
+### 1. New Component: `components/PaymentReceiptPreview.tsx`
+- Receipt preview modal showing payment details
+- Three action buttons: Close, Email, Print
+- Email input with validation (standard email regex)
+- Shows: Business info, payment number, customer info, invoice details, amount paid, balance, payment method
+- Professional receipt-style layout
 
-### Changes Made
-1. **DashboardScreen.tsx** - 3 simple changes:
-   - Replaced `useEffect` import with `useCallback`
-   - Added `useFocusEffect` import from `@react-navigation/native`
-   - Changed `useEffect(() => loadDashboardData(), [])` to `useFocusEffect(useCallback(() => loadDashboardData(), []))`
+### 2. Updated: `utils/escpos.ts`
+- Added `PaymentReceiptPrintData` interface
+- Added `buildPaymentReceipt()` function for ESC/POS thermal printer output
+- Formats: Receipt header, payment details, customer info, amounts, footer
+- Supports both 58mm and 80mm paper widths
 
-### Result
-- Total Sales on Dashboard now refreshes every time the screen gains focus
-- Navigate away and back → data reloads automatically
-- SalesReportScreen already has all requested features (per invoice, per item, date filters)
+### 3. Updated: `screens/CustomerPaymentsScreen.tsx`
+- Added imports for PaymentReceiptPreview, BluetoothPrinterService, buildPaymentReceipt
+- Added state: receiptPreviewVisible, receiptData, isPrinting, isSendingEmail
+- Modified `processPayment()` to show receipt preview after successful payment
+- Added `handlePrintReceipt()` - prints to Bluetooth printer
+- Added `handleSendEmail()` - validates email and sends (simulated for now)
+- Added `handleCloseReceipt()` - closes the receipt preview
+- Added PaymentReceiptPreview component to the render
 
-## Analysis
+## How It Works
 
-### SalesReportScreen (Already Exists - COMPLETE!)
-The existing SalesReportScreen already has:
-- DateRangeFilter component with presets (today, this week, last week, this month, last month, custom)
-- Summary view with totals
-- Products view (per item breakdown)
-- Categories view
-- Transactions view (per invoice breakdown)
-- Search and payment method filters
-- Pagination for large datasets
+1. User clicks "Collect Payment" on an outstanding receivable
+2. User enters payment amount, method, reference (optional), notes (optional)
+3. User clicks "Process Payment"
+4. On success, payment modal closes and Receipt Preview appears
+5. Receipt shows all payment details in a professional format
+6. User can:
+   - **Print**: Sends to connected Bluetooth printer (prompts to connect if not connected)
+   - **Email**: Shows email input with validation, sends receipt to customer
+   - **Close**: Dismisses the receipt preview
 
-### DashboardScreen Changes Needed
-1. Import `useFocusEffect` from `@react-navigation/native`
-2. Wrap `loadDashboardData` with `useFocusEffect` instead of `useEffect`
-3. This will make the Total Sales update whenever user returns to Dashboard
+## Email Validation
+- Uses standard regex: `/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/`
+- Shows error message if email is invalid
+- Email field auto-capitalizes off, no autocorrect
+- Success alert after sending
 
-## Implementation Notes
-- Simple change - use `useFocusEffect` callback to reload data on focus
-- No changes needed to SalesReportScreen - it already has all features
+## Notes
+- Email sending is currently simulated (console.log)
+- Real implementation would need an API endpoint to send emails
+- Printer connection check redirects to PrinterSettings if not connected

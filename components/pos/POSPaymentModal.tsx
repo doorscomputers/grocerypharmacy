@@ -48,6 +48,8 @@ interface POSPaymentModalProps {
   }) => void;
   onQuickAddCustomer?: () => void;
   loading?: boolean;
+  initialPaymentMethod?: PaymentMethod;
+  initialCustomer?: Customer | null;
 }
 
 const PAYMENT_METHODS: { key: PaymentMethod; label: string; icon: string }[] = [
@@ -67,6 +69,8 @@ function POSPaymentModal({
   onComplete,
   onQuickAddCustomer,
   loading = false,
+  initialPaymentMethod,
+  initialCustomer,
 }: POSPaymentModalProps) {
   const theme = useTheme();
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
@@ -75,16 +79,16 @@ function POSPaymentModal({
   const [showCustomerList, setShowCustomerList] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
 
-  // Reset state when modal opens
+  // Reset state when modal opens, using initial values if provided
   useEffect(() => {
     if (visible) {
-      setPaymentMethod('CASH');
+      setPaymentMethod(initialPaymentMethod || 'CASH');
       setAmountTendered('');
-      setSelectedCustomer(null);
+      setSelectedCustomer(initialCustomer || null);
       setShowCustomerList(false);
       setCustomerSearch('');
     }
-  }, [visible]);
+  }, [visible, initialPaymentMethod, initialCustomer]);
 
   // Calculate change
   const tenderedAmount = parseFloat(amountTendered) || 0;

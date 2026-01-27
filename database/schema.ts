@@ -330,8 +330,20 @@ export interface DatabaseSchema {
     supplier_id: number;
     purchase_id?: number; // Optional - payment might be for multiple purchases
     payment_date: string;
-    payment_method: 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'CREDIT_CARD' | 'ONLINE';
-    reference_number?: string; // Check number, bank reference, etc.
+    payment_method: 'CASH' | 'CHEQUE' | 'OTHERS';
+    // For OTHERS payment type (Gcash, Maya, Bank Transfer, etc.)
+    others_type?: 'GCASH' | 'MAYA' | 'BANK_TRANSFER' | 'PAYPAL' | 'OTHER';
+    reference_number?: string; // For OTHERS: Gcash ref, Maya ref, etc.
+    // Cheque-specific fields
+    cheque_number?: string;
+    bank_name?: string;
+    payee_name?: string;
+    cheque_date?: string; // Date on the cheque (for post-dated cheques)
+    cheque_status?: 'PENDING' | 'DEPOSITED' | 'CLEARED' | 'BOUNCED';
+    deposited_date?: string;
+    cleared_date?: string;
+    bounced_date?: string;
+    bounced_reason?: 'INSUFFICIENT_FUNDS' | 'ACCOUNT_CLOSED' | 'SIGNATURE_MISMATCH' | 'POST_DATED' | 'STALE_EXPIRED' | 'OTHER';
     amount: number;
     notes?: string;
     created_by: number;
@@ -540,6 +552,23 @@ export interface DatabaseSchema {
     changed_by: number;
     changed_at: string;
   };
+
+  // Device Binding for app protection
+  device_binding: {
+    id: number;
+    device_id: string; // Unique device fingerprint hash
+    license_key: string; // License key used for activation
+    device_name: string;
+    device_brand: string;
+    device_model: string;
+    os_name: string;
+    os_version: string;
+    app_version: string;
+    is_active: boolean;
+    activated_at: string;
+    last_verified_at: string;
+    created_at: string;
+  };
 }
 
 // Type exports for components
@@ -568,6 +597,7 @@ export type SalesReturn = DatabaseSchema['sales_returns'];
 export type SalesReturnItem = DatabaseSchema['sales_return_items'];
 export type CashMovement = DatabaseSchema['cash_movements'];
 export type CustomerAudit = DatabaseSchema['customer_audit'];
+export type DeviceBinding = DatabaseSchema['device_binding'];
 
 // Database initialization script
 export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
@@ -972,11 +1002,10 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
-  // Drop and recreate inventory_movements table to ensure correct schema
-  console.log('Recreating inventory_movements table with correct schema...');
-  await db.execAsync(`DROP TABLE IF EXISTS inventory_movements;`);
+  // Create inventory_movements table if it doesn't exist
+  console.log('Creating inventory_movements table if not exists...');
   await db.execAsync(`
-    CREATE TABLE inventory_movements (
+    CREATE TABLE IF NOT EXISTS inventory_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
       product_code TEXT NOT NULL DEFAULT '',
@@ -997,7 +1026,30 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (created_by) REFERENCES users (id)
     );
   `);
-  console.log('inventory_movements table recreated successfully');
+
+  // Migration: Add missing columns to inventory_movements for existing databases
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN product_code TEXT NOT NULL DEFAULT '';`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN product_name TEXT NOT NULL DEFAULT '';`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN quantity_before INTEGER NOT NULL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN quantity_after INTEGER NOT NULL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN total_value DECIMAL(10,2) NOT NULL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN reference_number TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  console.log('inventory_movements table ready');
 
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -1146,8 +1198,18 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       supplier_id INTEGER NOT NULL,
       purchase_id INTEGER,
       payment_date DATE NOT NULL,
-      payment_method TEXT CHECK (payment_method IN ('CASH', 'CHECK', 'BANK_TRANSFER', 'CREDIT_CARD', 'ONLINE')) DEFAULT 'CASH',
+      payment_method TEXT CHECK (payment_method IN ('CASH', 'CHEQUE', 'OTHERS')) DEFAULT 'CASH',
+      others_type TEXT CHECK (others_type IN ('GCASH', 'MAYA', 'BANK_TRANSFER', 'PAYPAL', 'OTHER')),
       reference_number TEXT,
+      cheque_number TEXT,
+      bank_name TEXT,
+      payee_name TEXT,
+      cheque_date DATE,
+      cheque_status TEXT CHECK (cheque_status IN ('PENDING', 'DEPOSITED', 'CLEARED', 'BOUNCED')) DEFAULT 'PENDING',
+      deposited_date DATE,
+      cleared_date DATE,
+      bounced_date DATE,
+      bounced_reason TEXT CHECK (bounced_reason IN ('INSUFFICIENT_FUNDS', 'ACCOUNT_CLOSED', 'SIGNATURE_MISMATCH', 'POST_DATED', 'STALE_EXPIRED', 'OTHER')),
       amount DECIMAL(12,2) NOT NULL,
       notes TEXT,
       created_by INTEGER NOT NULL,
@@ -1157,6 +1219,38 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (created_by) REFERENCES users (id)
     );
   `);
+
+  // Migration: Add cheque columns to supplier_payments if they don't exist (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN cheque_number TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN bank_name TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN payee_name TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN cheque_date DATE;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN cheque_status TEXT DEFAULT 'PENDING';`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN deposited_date DATE;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN cleared_date DATE;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN bounced_date DATE;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN bounced_reason TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE supplier_payments ADD COLUMN others_type TEXT;`);
+  } catch (e) { /* Column may already exist */ }
 
   // Create accounts_payable table
   await db.execAsync(`
@@ -1409,6 +1503,25 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Create device_binding table for app protection/licensing
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS device_binding (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL UNIQUE,
+      license_key TEXT NOT NULL,
+      device_name TEXT NOT NULL,
+      device_brand TEXT NOT NULL,
+      device_model TEXT NOT NULL,
+      os_name TEXT NOT NULL,
+      os_version TEXT NOT NULL,
+      app_version TEXT NOT NULL,
+      is_active BOOLEAN DEFAULT 1,
+      activated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   // Create indexes
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (transaction_date);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_transactions_invoice ON transactions (invoice_number);');
@@ -1435,6 +1548,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments (supplier_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_purchase ON supplier_payments (purchase_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_date ON supplier_payments (payment_date);');
+  try {
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_cheque_status ON supplier_payments (cheque_status);');
+  } catch (e) { /* Column may not exist in old databases */ }
+  try {
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_cheque_date ON supplier_payments (cheque_date);');
+  } catch (e) { /* Column may not exist in old databases */ }
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_supplier_payments_method ON supplier_payments (payment_method);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_supplier ON accounts_payable (supplier_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_status ON accounts_payable (status);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_accounts_payable_due_date ON accounts_payable (due_date);');
@@ -1480,6 +1600,10 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_customer ON customer_audit (customer_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_changed_by ON customer_audit (changed_by);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_customer_audit_date ON customer_audit (changed_at);');
+
+  // Device binding indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_device_binding_device_id ON device_binding (device_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_device_binding_license_key ON device_binding (license_key);');
 
   // Insert default settings
   await db.execAsync(`

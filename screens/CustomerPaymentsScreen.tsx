@@ -27,6 +27,9 @@ import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Picker } from '@react-native-picker/picker';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import PaymentReceiptPreview, { PaymentReceiptData } from '../components/PaymentReceiptPreview';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
+import { buildPaymentReceipt, PRINTER_WIDTH } from '../utils/escpos';
 
 type CustomerPaymentsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -61,8 +64,15 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
   const [referenceNumber, setReferenceNumber] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
 
+  // Receipt preview state
+  const [receiptPreviewVisible, setReceiptPreviewVisible] = useState(false);
+  const [receiptData, setReceiptData] = useState<PaymentReceiptData | null>(null);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+
   const theme = useTheme();
   const { user } = useAuth();
+  const printerService = BluetoothPrinterService.getInstance();
 
   useEffect(() => {
     loadData();
@@ -159,7 +169,7 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
       setLoading(true);
       const dbService = getDatabase();
 
-      await dbService.processCustomerPayment({
+      const paymentResult = await dbService.processCustomerPayment({
         customer_id: selectedReceivable.customer_id,
         transaction_id: selectedReceivable.transaction_id,
         payment_method: paymentMethod,
@@ -169,8 +179,39 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
         received_by: user!.id
       });
 
-      Alert.alert('Success', 'Payment processed successfully');
+      // Get business settings for receipt
+      const companyName = await dbService.getSetting('company_name') || 'Your Company';
+      const companyAddress = await dbService.getSetting('company_address') || '';
+      const companyTin = await dbService.getSetting('company_tin') || '';
+      const receiptFooter = await dbService.getSetting('receipt_footer') || '';
+
+      // Prepare receipt data
+      const previouslyPaid = selectedReceivable.paid_amount || 0;
+      const balanceAfterPayment = selectedReceivable.balance_amount - amount;
+
+      const newReceiptData: PaymentReceiptData = {
+        businessName: companyName,
+        businessAddress: companyAddress,
+        tin: companyTin,
+        paymentNumber: paymentResult?.payment_number || `PAY${Date.now()}`,
+        paymentDate: new Date(),
+        receivedBy: user?.username || 'Cashier',
+        customerName: selectedReceivable.customer_name || 'Walk-in Customer',
+        customerCode: selectedReceivable.customer_code,
+        invoiceNumber: selectedReceivable.invoice_number,
+        originalAmount: selectedReceivable.original_amount,
+        previouslyPaid: previouslyPaid,
+        amountPaid: amount,
+        balanceAfterPayment: balanceAfterPayment,
+        paymentMethod: paymentMethod,
+        referenceNumber: referenceNumber || undefined,
+        notes: paymentNotes || undefined,
+        footerText: receiptFooter,
+      };
+
+      setReceiptData(newReceiptData);
       setPaymentModalVisible(false);
+      setReceiptPreviewVisible(true);
       await loadData();
     } catch (error) {
       console.error('Error processing payment:', error);
@@ -178,6 +219,91 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePrintReceipt = async () => {
+    if (!receiptData) return;
+
+    if (!printerService.isConnected()) {
+      Alert.alert(
+        'Printer Not Connected',
+        'Would you like to connect to a printer?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Connect', onPress: () => navigation.navigate('PrinterSettings') }
+        ]
+      );
+      return;
+    }
+
+    try {
+      setIsPrinting(true);
+      const printerWidth = printerService.getSettings().printerWidth;
+
+      const receiptBuilder = buildPaymentReceipt({
+        businessName: receiptData.businessName,
+        businessAddress: receiptData.businessAddress,
+        tin: receiptData.tin,
+        paymentNumber: receiptData.paymentNumber,
+        paymentDate: receiptData.paymentDate,
+        receivedBy: receiptData.receivedBy,
+        customerName: receiptData.customerName,
+        customerCode: receiptData.customerCode,
+        invoiceNumber: receiptData.invoiceNumber,
+        originalAmount: receiptData.originalAmount,
+        previouslyPaid: receiptData.previouslyPaid,
+        amountPaid: receiptData.amountPaid,
+        balanceAfterPayment: receiptData.balanceAfterPayment,
+        paymentMethod: receiptData.paymentMethod,
+        referenceNumber: receiptData.referenceNumber,
+        notes: receiptData.notes,
+        footerText: receiptData.footerText,
+      }, printerWidth);
+
+      await printerService.print(receiptBuilder.getBuffer());
+      Alert.alert('Success', 'Receipt printed successfully');
+    } catch (error) {
+      console.error('Print error:', error);
+      Alert.alert('Print Error', 'Failed to print receipt. Please check printer connection.');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  const handleSendEmail = async (email: string) => {
+    if (!receiptData) return;
+
+    try {
+      setIsSendingEmail(true);
+
+      // For now, we'll just simulate sending email
+      // In a real app, you would call an API endpoint to send the email
+      // with the receipt data
+
+      // Simulate API call
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // Log for debugging
+      console.log('Sending payment receipt to:', email);
+      console.log('Receipt data:', receiptData);
+
+      // In a real implementation, you would:
+      // const response = await fetch('your-api/send-receipt-email', {
+      //   method: 'POST',
+      //   body: JSON.stringify({ email, receiptData }),
+      // });
+
+    } catch (error) {
+      console.error('Email error:', error);
+      throw error;
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleCloseReceipt = () => {
+    setReceiptPreviewVisible(false);
+    setReceiptData(null);
   };
 
   const getStatusColor = (status: string) => {
@@ -434,82 +560,97 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
           onDismiss={() => setPaymentModalVisible(false)}
           contentContainerStyle={styles.modalContainer}
         >
-          <Title style={styles.modalTitle}>Collect Payment</Title>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <Title style={styles.modalTitle}>Collect Payment</Title>
 
-          {selectedReceivable && (
-            <View style={styles.modalContent}>
-              <Paragraph style={styles.modalLabel}>Customer: {selectedReceivable.customer_name}</Paragraph>
-              <Paragraph style={styles.modalLabel}>Invoice: {selectedReceivable.invoice_number}</Paragraph>
-              <Paragraph style={styles.modalLabel}>
-                Outstanding Balance: ₱{selectedReceivable.balance_amount?.toFixed(2)}
-              </Paragraph>
+            {selectedReceivable && (
+              <View style={styles.modalContent}>
+                <Paragraph style={styles.modalLabel}>Customer: {selectedReceivable.customer_name}</Paragraph>
+                <Paragraph style={styles.modalLabel}>Invoice: {selectedReceivable.invoice_number}</Paragraph>
+                <Paragraph style={styles.modalLabel}>
+                  Outstanding Balance: ₱{selectedReceivable.balance_amount?.toFixed(2)}
+                </Paragraph>
 
-              <Divider style={styles.divider} />
+                <Divider style={styles.divider} />
 
-              <TextInput
-                label="Payment Amount"
-                value={paymentAmount}
-                onChangeText={setPaymentAmount}
-                mode="outlined"
-                keyboardType="numeric"
-                style={styles.input}
-              />
-
-              <Title style={styles.inputLabel}>Payment Method:</Title>
-              <View style={styles.pickerContainer}>
-                <Picker
-                  selectedValue={paymentMethod}
-                  onValueChange={setPaymentMethod}
-                  style={styles.picker}
-                >
-                  <Picker.Item label="Cash" value="CASH" />
-                  <Picker.Item label="Card" value="CARD" />
-                  <Picker.Item label="Check" value="CHECK" />
-                  <Picker.Item label="Bank Transfer" value="BANK_TRANSFER" />
-                  <Picker.Item label="Online Payment" value="ONLINE" />
-                </Picker>
-              </View>
-
-              <TextInput
-                label="Reference Number (Optional)"
-                value={referenceNumber}
-                onChangeText={setReferenceNumber}
-                mode="outlined"
-                style={styles.input}
-                placeholder="Check #, Bank ref, etc."
-              />
-
-              <TextInput
-                label="Notes (Optional)"
-                value={paymentNotes}
-                onChangeText={setPaymentNotes}
-                mode="outlined"
-                multiline
-                numberOfLines={2}
-                style={styles.input}
-              />
-
-              <View style={styles.modalButtons}>
-                <Button
+                <TextInput
+                  label="Payment Amount"
+                  value={paymentAmount}
+                  onChangeText={setPaymentAmount}
                   mode="outlined"
-                  onPress={() => setPaymentModalVisible(false)}
-                  style={styles.modalButton}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={processPayment}
-                  style={styles.modalButton}
-                  loading={loading}
-                >
-                  Process Payment
-                </Button>
+                  keyboardType="numeric"
+                  style={styles.input}
+                />
+
+                <Title style={styles.inputLabel}>Payment Method:</Title>
+                <View style={styles.pickerContainer}>
+                  <Picker
+                    selectedValue={paymentMethod}
+                    onValueChange={setPaymentMethod}
+                    style={styles.picker}
+                  >
+                    <Picker.Item label="Cash" value="CASH" />
+                    <Picker.Item label="Card" value="CARD" />
+                    <Picker.Item label="Check" value="CHECK" />
+                    <Picker.Item label="Bank Transfer" value="BANK_TRANSFER" />
+                    <Picker.Item label="Online Payment" value="ONLINE" />
+                  </Picker>
+                </View>
+
+                <TextInput
+                  label="Reference Number (Optional)"
+                  value={referenceNumber}
+                  onChangeText={setReferenceNumber}
+                  mode="outlined"
+                  style={styles.input}
+                  placeholder="Check #, Bank ref, etc."
+                />
+
+                <TextInput
+                  label="Notes (Optional)"
+                  value={paymentNotes}
+                  onChangeText={setPaymentNotes}
+                  mode="outlined"
+                  multiline
+                  numberOfLines={2}
+                  style={styles.input}
+                />
+
+                <View style={styles.modalButtons}>
+                  <Button
+                    mode="outlined"
+                    onPress={() => setPaymentModalVisible(false)}
+                    style={styles.modalButton}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={processPayment}
+                    style={styles.modalButton}
+                    loading={loading}
+                  >
+                    Process Payment
+                  </Button>
+                </View>
               </View>
-            </View>
-          )}
+            )}
+          </ScrollView>
         </Modal>
       </Portal>
+
+      {/* Receipt Preview */}
+      {receiptData && (
+        <PaymentReceiptPreview
+          data={receiptData}
+          visible={receiptPreviewVisible}
+          onClose={handleCloseReceipt}
+          onPrint={handlePrintReceipt}
+          onSendEmail={handleSendEmail}
+          isPrinting={isPrinting}
+          isSendingEmail={isSendingEmail}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -691,7 +832,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   modalContent: {
-    flex: 1,
+    paddingBottom: 8,
   },
   modalLabel: {
     fontSize: 14,

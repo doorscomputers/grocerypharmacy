@@ -57,6 +57,8 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const [createDialogVisible, setCreateDialogVisible] = useState(false);
   const [receiveDialogVisible, setReceiveDialogVisible] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState<any>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<number | null>(null);
 
   // Purchase Order Creation
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
@@ -73,6 +75,12 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
+
+  // Edit Item
+  const [editItemDialogVisible, setEditItemDialogVisible] = useState(false);
+  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
+  const [editItemQuantity, setEditItemQuantity] = useState('');
+  const [editItemUnitCost, setEditItemUnitCost] = useState('');
 
   // Quick Add Supplier
   const [quickAddSupplierVisible, setQuickAddSupplierVisible] = useState(false);
@@ -126,7 +134,54 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     setPaymentTerms('30 days');
     setNotes('');
     setPurchaseItems([]);
+    setIsEditing(false);
+    setEditingPurchaseId(null);
     setCreateDialogVisible(true);
+  };
+
+  const openEditDialog = async (purchase: any) => {
+    try {
+      setLoading(true);
+      const dbService = getDatabase();
+      const purchaseDetails = await dbService.getPurchaseOrderById(purchase.id);
+
+      if (!purchaseDetails) {
+        Alert.alert('Error', 'Could not load purchase order details');
+        return;
+      }
+
+      // Find and set the supplier
+      const supplier = suppliers.find(s => s.id === purchaseDetails.supplier_id);
+      setSelectedSupplier(supplier || null);
+
+      // Set header fields
+      setReferenceNumber(purchaseDetails.reference_number || '');
+      setExpectedDeliveryDate(purchaseDetails.expected_delivery_date || '');
+      setPaymentTerms(purchaseDetails.payment_terms || '30 days');
+      setNotes(purchaseDetails.notes || '');
+
+      // Set items
+      const items: PurchaseItem[] = purchaseDetails.items?.map((item: any) => ({
+        product_id: item.product_id,
+        product_code: item.product_code,
+        product_name: item.product_name,
+        quantity_ordered: item.quantity_ordered,
+        unit_cost: item.unit_cost,
+        discount_amount: item.discount_amount || 0,
+        tax_amount: item.tax_amount || 0,
+        total_amount: item.total_amount || (item.quantity_ordered * item.unit_cost),
+      })) || [];
+      setPurchaseItems(items);
+
+      setIsEditing(true);
+      setEditingPurchaseId(purchase.id);
+      setCreateDialogVisible(true);
+    } catch (error) {
+      console.error('Error loading purchase order for edit:', error);
+      Alert.alert('Error', 'Failed to load purchase order for editing');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleQuickAddSupplier = async () => {
@@ -229,11 +284,58 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     setPurchaseItems(purchaseItems.filter(item => item.product_id !== productId));
   };
 
+  const openEditItemDialog = (index: number) => {
+    const item = purchaseItems[index];
+    setEditingItemIndex(index);
+    setEditItemQuantity(item.quantity_ordered.toString());
+    setEditItemUnitCost(item.unit_cost.toString());
+    setEditItemDialogVisible(true);
+  };
+
+  const saveEditedItem = () => {
+    if (editingItemIndex === null) return;
+
+    const qty = parseInt(editItemQuantity);
+    const cost = parseFloat(editItemUnitCost);
+
+    if (isNaN(qty) || qty <= 0) {
+      Alert.alert('Error', 'Quantity must be greater than 0');
+      return;
+    }
+
+    if (isNaN(cost) || cost <= 0) {
+      Alert.alert('Error', 'Unit cost must be greater than 0');
+      return;
+    }
+
+    const updatedItems = [...purchaseItems];
+    const item = updatedItems[editingItemIndex];
+
+    // Find the product to check VAT settings
+    const product = products.find(p => p.id === item.product_id);
+    const taxAmount = product?.is_vat_inclusive ? 0 : cost * qty * 0.12;
+    const totalAmount = (cost * qty) + taxAmount;
+
+    updatedItems[editingItemIndex] = {
+      ...item,
+      quantity_ordered: qty,
+      unit_cost: cost,
+      tax_amount: taxAmount,
+      total_amount: totalAmount
+    };
+
+    setPurchaseItems(updatedItems);
+    setEditItemDialogVisible(false);
+    setEditingItemIndex(null);
+    setEditItemQuantity('');
+    setEditItemUnitCost('');
+  };
+
   const calculatePurchaseTotal = () => {
     return purchaseItems.reduce((total, item) => total + item.total_amount, 0);
   };
 
-  const createPurchaseOrder = async () => {
+  const savePurchaseOrder = async () => {
     if (!selectedSupplier) {
       Alert.alert('Error', 'Please select a supplier');
       return;
@@ -258,24 +360,50 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         items: purchaseItems
       };
 
-      const result = await dbService.createPurchaseOrder(purchaseData);
+      if (isEditing && editingPurchaseId) {
+        // Update existing purchase order
+        const result = await dbService.updatePurchaseOrder(editingPurchaseId, purchaseData);
 
-      Alert.alert(
-        'Success',
-        `Purchase order ${result.purchaseNumber} created successfully`,
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              setCreateDialogVisible(false);
-              loadData();
+        if (result.success) {
+          Alert.alert(
+            'Success',
+            'Purchase order updated successfully',
+            [
+              {
+                text: 'OK',
+                onPress: () => {
+                  setCreateDialogVisible(false);
+                  setIsEditing(false);
+                  setEditingPurchaseId(null);
+                  loadData();
+                }
+              }
+            ]
+          );
+        } else {
+          Alert.alert('Error', result.message);
+        }
+      } else {
+        // Create new purchase order
+        const result = await dbService.createPurchaseOrder(purchaseData);
+
+        Alert.alert(
+          'Success',
+          `Purchase order ${result.purchaseNumber} created successfully`,
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                setCreateDialogVisible(false);
+                loadData();
+              }
             }
-          }
-        ]
-      );
+          ]
+        );
+      }
     } catch (error) {
-      console.error('Error creating purchase order:', error);
-      Alert.alert('Error', 'Failed to create purchase order');
+      console.error('Error saving purchase order:', error);
+      Alert.alert('Error', `Failed to ${isEditing ? 'update' : 'create'} purchase order`);
     } finally {
       setLoading(false);
     }
@@ -377,6 +505,16 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         </View>
 
         <View style={styles.actionButtons}>
+          {item.status === 'DRAFT' && (
+            <Button
+              mode="outlined"
+              onPress={() => openEditDialog(item)}
+              style={styles.actionButton}
+              icon="pencil"
+            >
+              Edit
+            </Button>
+          )}
           <Button
             mode="outlined"
             onPress={() => openReceiveDialog(item)}
@@ -421,14 +559,18 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         label="New Purchase Order"
       />
 
-      {/* Create Purchase Order Dialog */}
+      {/* Create/Edit Purchase Order Dialog */}
       <Portal>
         <Dialog
           visible={createDialogVisible}
-          onDismiss={() => setCreateDialogVisible(false)}
+          onDismiss={() => {
+            setCreateDialogVisible(false);
+            setIsEditing(false);
+            setEditingPurchaseId(null);
+          }}
           style={styles.createDialog}
         >
-          <Dialog.Title>Create Purchase Order</Dialog.Title>
+          <Dialog.Title>{isEditing ? 'Edit Purchase Order' : 'Create Purchase Order'}</Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView style={styles.dialogContent}>
               {/* Supplier Selection with Quick Add */}
@@ -557,7 +699,11 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
               <Title style={styles.sectionTitle}>Items</Title>
 
               {purchaseItems.map((item, index) => (
-                <Card key={index} style={styles.itemCard}>
+                <Card
+                  key={index}
+                  style={styles.itemCard}
+                  onPress={() => openEditItemDialog(index)}
+                >
                   <Card.Content>
                     <View style={styles.itemHeader}>
                       <View style={styles.itemInfo}>
@@ -565,6 +711,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
                         <Paragraph style={styles.itemDetails}>
                           {item.quantity_ordered} × ₱{item.unit_cost.toFixed(2)} = ₱{item.total_amount.toFixed(2)}
                         </Paragraph>
+                        <Paragraph style={styles.tapToEdit}>Tap to edit quantity</Paragraph>
                       </View>
                       <IconButton
                         icon="delete"
@@ -595,9 +742,13 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
             </ScrollView>
           </Dialog.ScrollArea>
           <Dialog.Actions>
-            <Button onPress={() => setCreateDialogVisible(false)}>Cancel</Button>
-            <Button onPress={createPurchaseOrder} loading={loading}>
-              Create Purchase Order
+            <Button onPress={() => {
+              setCreateDialogVisible(false);
+              setIsEditing(false);
+              setEditingPurchaseId(null);
+            }}>Cancel</Button>
+            <Button onPress={savePurchaseOrder} loading={loading}>
+              {isEditing ? 'Update Purchase Order' : 'Create Purchase Order'}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -760,6 +911,56 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
             </Button>
             <Button mode="contained" onPress={handleQuickAddSupplier}>
               Add Supplier
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* Edit Item Dialog */}
+      <Portal>
+        <Dialog
+          visible={editItemDialogVisible}
+          onDismiss={() => {
+            setEditItemDialogVisible(false);
+            setEditingItemIndex(null);
+          }}
+          style={{ maxWidth: 400, alignSelf: 'center', width: '90%' }}
+        >
+          <Dialog.Title>Edit Item</Dialog.Title>
+          <Dialog.Content>
+            {editingItemIndex !== null && purchaseItems[editingItemIndex] && (
+              <>
+                <Paragraph style={styles.editItemName}>
+                  {purchaseItems[editingItemIndex].product_name}
+                </Paragraph>
+                <TextInput
+                  label="Quantity"
+                  value={editItemQuantity}
+                  onChangeText={setEditItemQuantity}
+                  mode="outlined"
+                  style={{ marginBottom: 12 }}
+                  keyboardType="numeric"
+                  autoFocus
+                />
+                <TextInput
+                  label="Unit Cost (₱)"
+                  value={editItemUnitCost}
+                  onChangeText={setEditItemUnitCost}
+                  mode="outlined"
+                  keyboardType="numeric"
+                />
+              </>
+            )}
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => {
+              setEditItemDialogVisible(false);
+              setEditingItemIndex(null);
+            }}>
+              Cancel
+            </Button>
+            <Button mode="contained" onPress={saveEditedItem}>
+              Save
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -949,5 +1150,20 @@ const styles = StyleSheet.create({
   },
   quickDateChip: {
     marginRight: 4,
+  },
+  tapToEdit: {
+    fontSize: 10,
+    color: '#2196F3',
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  editItemName: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 16,
+    padding: 8,
+    backgroundColor: '#E3F2FD',
+    borderRadius: 4,
   },
 });

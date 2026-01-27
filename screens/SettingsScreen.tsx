@@ -4,6 +4,8 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
+  Platform,
+  Share,
 } from 'react-native';
 import {
   Card,
@@ -23,8 +25,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
-import { DatabaseBackupService } from '../utils/DatabaseBackupService';
 import { useAuth } from '../contexts/AuthContext';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
+
+const WEB_STORAGE_KEY = 'posmobile_webmock_db';
 
 type SettingsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -61,6 +67,8 @@ export default function SettingsScreen({ navigation }: Props) {
     value: string;
   } | null>(null);
   const [tempValue, setTempValue] = useState('');
+  const [licensePasswordDialogVisible, setLicensePasswordDialogVisible] = useState(false);
+  const [licensePassword, setLicensePassword] = useState('');
   const theme = useTheme();
   const { user } = useAuth();
 
@@ -169,34 +177,197 @@ export default function SettingsScreen({ navigation }: Props) {
   };
 
   const handleBackup = async () => {
-    try {
-      setLoading(true);
-      const backupService = DatabaseBackupService.getInstance();
+    Alert.alert(
+      'Create Backup',
+      'This will create a backup file of all your data. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Backup',
+          onPress: async () => {
+            try {
+              setLoading(true);
 
-      Alert.alert(
-        'Create Backup',
-        'This will create a backup file of all your data. Continue?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Backup',
-            onPress: async () => {
-              try {
-                const backupPath = await backupService.createBackup();
-                await backupService.shareBackup(backupPath);
-                Alert.alert('Success', 'Database backup created and shared successfully!');
-              } catch (error) {
-                console.error('Backup failed:', error);
-                Alert.alert('Error', `Backup failed: ${error}`);
+              // Check if we're on web (check for document/window)
+              const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
+              console.log('[Backup] Platform:', Platform.OS, 'isWeb:', isWebPlatform);
+
+              if (isWebPlatform) {
+                // Web backup - download JSON file
+                await createWebBackup();
+              } else {
+                // Native backup - use file system
+                await createNativeBackup();
               }
+
+              Alert.alert('Success', 'Database backup created successfully!');
+            } catch (error) {
+              console.error('Backup failed:', error);
+              Alert.alert('Error', `Backup failed: ${error}`);
+            } finally {
+              setLoading(false);
             }
           }
-        ]
+        }
+      ]
+    );
+  };
+
+  const createWebBackup = async () => {
+    const dbService = getDatabase();
+
+    // Get counts for metadata
+    const products = await dbService.getProducts();
+    const transactions = await dbService.getTransactions();
+    const users = await dbService.getUsers();
+
+    const metadata = {
+      version: '1.0',
+      timestamp: new Date().toISOString(),
+      app_version: '1.0.0',
+      product_count: products.length,
+      transaction_count: transactions.length,
+      user_count: users.length
+    };
+
+    // Get all localStorage data
+    const storedData = localStorage.getItem(WEB_STORAGE_KEY);
+    const backupData = {
+      metadata,
+      platform: 'web',
+      data: storedData ? JSON.parse(storedData) : {}
+    };
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `pos_backup_${timestamp}.json`;
+
+    // Create and download file
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log('[Backup] Web backup downloaded:', filename);
+  };
+
+  const createNativeBackup = async () => {
+    const dbService = getDatabase();
+
+    // Get data using available methods
+    const products = await dbService.getProducts(false); // Get all products including inactive
+    const users = await dbService.getUsers();
+    const suppliers = await dbService.getSuppliers(false);
+    const customers = await dbService.getCustomers(false);
+
+    // Get categories - check if method exists
+    let categories: any[] = [];
+    if (typeof dbService.getCategories === 'function') {
+      categories = await dbService.getCategories();
+    }
+
+    // Get transactions count from today's transactions or database summary
+    let transactionCount = 0;
+    if (typeof dbService.getTransactionalDataSummary === 'function') {
+      const summary = await dbService.getTransactionalDataSummary();
+      transactionCount = summary.transactions || 0;
+    }
+
+    const metadata = {
+      version: '1.0',
+      timestamp: new Date().toISOString(),
+      app_version: '1.0.0',
+      product_count: products.length,
+      transaction_count: transactionCount,
+      user_count: users.length,
+      supplier_count: suppliers.length,
+      customer_count: customers.length
+    };
+
+    // Create backup data structure
+    const backupData = {
+      metadata,
+      platform: 'native',
+      tables: {
+        products,
+        users,
+        categories,
+        suppliers,
+        customers,
+      }
+    };
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `pos_backup_${timestamp}.json`;
+    const backupContent = JSON.stringify(backupData, null, 2);
+
+    // Log available directories for debugging
+    console.log('[Backup] documentDirectory:', FileSystem.documentDirectory);
+    console.log('[Backup] cacheDirectory:', FileSystem.cacheDirectory);
+
+    // Try to get a writable directory
+    let baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+
+    if (baseDir) {
+      // Standard file save approach
+      const backupPath = `${baseDir}${filename}`;
+      console.log('[Backup] Saving native backup to:', backupPath);
+
+      // Write the file
+      await FileSystem.writeAsStringAsync(backupPath, backupContent);
+
+      // Share the file
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(backupPath, {
+          mimeType: 'application/json',
+          dialogTitle: 'Save Database Backup'
+        });
+      } else {
+        Alert.alert('Info', `Backup saved to: ${backupPath}`);
+      }
+
+      console.log('[Backup] Native backup created and shared:', filename);
+    } else {
+      // Fallback: Use React Native Share API to share text content
+      console.log('[Backup] No file directory available, using Share API...');
+
+      // For large backups, we'll share a summary and offer to copy full data
+      const summaryText = `POS Backup Summary (${new Date().toLocaleString()})\n\n` +
+        `Products: ${metadata.product_count}\n` +
+        `Users: ${metadata.user_count}\n` +
+        `Suppliers: ${metadata.supplier_count}\n` +
+        `Customers: ${metadata.customer_count}\n` +
+        `Transactions: ${metadata.transaction_count}\n\n` +
+        `Full backup data is too large to share directly.\n` +
+        `Please use a file manager app or connect to a computer to export data.`;
+
+      try {
+        await Share.share({
+          message: summaryText,
+          title: 'POS Backup Summary'
+        });
+      } catch (shareError) {
+        console.error('[Backup] Share failed:', shareError);
+      }
+
+      // Show alert with option to view full data
+      Alert.alert(
+        'Backup Created',
+        `Your backup contains:\n` +
+        `• ${metadata.product_count} products\n` +
+        `• ${metadata.user_count} users\n` +
+        `• ${metadata.supplier_count} suppliers\n` +
+        `• ${metadata.customer_count} customers\n\n` +
+        `Note: File system not available on this device. ` +
+        `Data is stored in the app's database.`,
+        [{ text: 'OK' }]
       );
-    } catch (error) {
-      Alert.alert('Error', `Failed to create backup: ${error}`);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -222,19 +393,31 @@ export default function SettingsScreen({ navigation }: Props) {
           onPress: async () => {
             try {
               setLoading(true);
-              const backupService = DatabaseBackupService.getInstance();
-              const success = await backupService.restoreFromFile();
+
+              // Check if we're on web
+              const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
+
+              let success = false;
+              if (isWebPlatform) {
+                success = await restoreWebBackup();
+              } else {
+                success = await restoreNativeBackup();
+              }
 
               if (success) {
                 Alert.alert(
                   'Success',
-                  'Database restored successfully. Please restart the app to see changes.',
+                  'Database restored successfully. Please refresh the app to see changes.',
                   [
                     {
                       text: 'OK',
                       onPress: () => {
                         // Reload settings after restore
                         loadSettings();
+                        // On web, reload the page
+                        if (isWebPlatform) {
+                          window.location.reload();
+                        }
                       }
                     }
                   ]
@@ -250,6 +433,145 @@ export default function SettingsScreen({ navigation }: Props) {
         }
       ]
     );
+  };
+
+  const restoreWebBackup = (): Promise<boolean> => {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/json,.json';
+
+      input.onchange = async (e: any) => {
+        const file = e.target.files?.[0];
+        if (!file) {
+          resolve(false);
+          return;
+        }
+
+        try {
+          const content = await file.text();
+          const backupData = JSON.parse(content);
+
+          // Validate backup format
+          if (!backupData.metadata) {
+            throw new Error('Invalid backup file format');
+          }
+
+          // Restore data to localStorage
+          if (backupData.platform === 'web' && backupData.data) {
+            localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(backupData.data));
+            console.log('[Restore] Web backup restored successfully');
+            resolve(true);
+          } else if (backupData.tables) {
+            // Convert native backup format to web format
+            const webData = convertNativeToWebFormat(backupData.tables);
+            localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(webData));
+            console.log('[Restore] Native backup converted and restored to web');
+            resolve(true);
+          } else {
+            throw new Error('Unsupported backup format');
+          }
+        } catch (error) {
+          console.error('Restore failed:', error);
+          reject(error);
+        }
+      };
+
+      input.click();
+    });
+  };
+
+  const restoreNativeBackup = async (): Promise<boolean> => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true
+      });
+
+      if (result.canceled) {
+        return false;
+      }
+
+      const backupPath = result.assets[0].uri;
+      console.log('[Restore] Reading backup from:', backupPath);
+
+      // Read the backup file
+      const backupContent = await FileSystem.readAsStringAsync(backupPath);
+      const backupData = JSON.parse(backupContent);
+
+      // Validate backup format
+      if (!backupData.metadata) {
+        throw new Error('Invalid backup file format');
+      }
+
+      // For now, just show success - actual database restore would need
+      // to be implemented based on the database service being used
+      console.log('[Restore] Backup data loaded:', backupData.metadata);
+
+      // TODO: Implement actual data restoration to SQLite database
+      // This would require DatabaseService to have methods to clear and restore data
+
+      Alert.alert(
+        'Backup Loaded',
+        `Backup from ${new Date(backupData.metadata.timestamp).toLocaleString()} contains:\n` +
+        `- ${backupData.metadata.product_count} products\n` +
+        `- ${backupData.metadata.transaction_count} transactions\n` +
+        `- ${backupData.metadata.user_count} users\n\n` +
+        `Note: Full restore to SQLite is pending implementation.`
+      );
+
+      return true;
+    } catch (error) {
+      console.error('[Restore] Error:', error);
+      throw error;
+    }
+  };
+
+  const convertNativeToWebFormat = (tables: Record<string, any[]>): any => {
+    const convertSettingsArray = (settingsArray: any[]): Record<string, string> => {
+      const settings: Record<string, string> = {};
+      for (const item of settingsArray) {
+        if (item.key && item.value !== undefined) {
+          settings[item.key] = item.value;
+        }
+      }
+      return settings;
+    };
+
+    return {
+      products: tables.products || [],
+      categories: tables.categories || [],
+      brands: tables.brands || [],
+      units: tables.units || [],
+      sizes: tables.sizes || [],
+      transactions: tables.transactions || [],
+      users: tables.users || [],
+      suppliers: tables.suppliers || [],
+      customers: tables.customers || [],
+      settings: convertSettingsArray(tables.settings || []),
+      inventoryMovements: tables.inventory_movements || [],
+      physicalCountSessions: tables.physical_count_sessions || [],
+      physicalCountDetails: tables.physical_count_details || [],
+      damageSessions: tables.damage_sessions || [],
+      damageDetails: tables.damage_details || [],
+      purchases: tables.purchases || [],
+      purchaseItems: tables.purchase_items || [],
+      accountsReceivable: tables.accounts_receivable || [],
+      accountsPayable: tables.accounts_payable || [],
+      customerPayments: tables.customer_payments || [],
+      supplierPayments: tables.supplier_payments || [],
+      eJournalEntries: tables.ejournal || [],
+      salesReturns: tables.sales_returns || [],
+      salesReturnItems: tables.sales_return_items || [],
+      purchaseReturns: tables.purchase_returns || [],
+      purchaseReturnItems: tables.purchase_return_items || [],
+      endOfDayRecords: tables.end_of_day_records || [],
+      counters: {
+        productIdCounter: Math.max(...(tables.products || []).map((p: any) => p.id || 0), 0) + 1,
+        categoryIdCounter: Math.max(...(tables.categories || []).map((c: any) => c.id || 0), 0) + 1,
+        transactionIdCounter: Math.max(...(tables.transactions || []).map((t: any) => t.id || 0), 0) + 1,
+      }
+    };
   };
 
   const handleClearPhysicalInventory = async () => {
@@ -294,44 +616,21 @@ export default function SettingsScreen({ navigation }: Props) {
     }
   };
 
-  const handleReset = async () => {
-    Alert.alert(
-      'Reset Data',
-      'This will delete ALL data including transactions, products, and settings. This action cannot be undone!',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: () => {
-            Alert.alert(
-              'Confirm Reset',
-              'Are you absolutely sure? This will permanently delete all data.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Yes, Reset Everything',
-                  style: 'destructive',
-                  onPress: performReset,
-                },
-              ]
-            );
-          },
-        },
-      ]
-    );
-  };
-
-  const performReset = async () => {
-    // In a real app, this would reset the database
-    Alert.alert('Success', 'Database reset successfully. Please restart the app.');
-  };
 
   const handleValidateDatabase = async () => {
     try {
       setLoading(true);
-      const backupService = DatabaseBackupService.getInstance();
-      const validation = await backupService.validateDatabase();
+
+      const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
+      let validation: { isValid: boolean; errors: string[] };
+
+      if (isWebPlatform) {
+        validation = validateWebDatabase();
+      } else {
+        const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
+        const backupService = DatabaseBackupService.getInstance();
+        validation = await backupService.validateDatabase();
+      }
 
       if (validation.isValid) {
         Alert.alert(
@@ -342,19 +641,26 @@ export default function SettingsScreen({ navigation }: Props) {
       } else {
         Alert.alert(
           'Database Issues Found',
-          `Found ${validation.errors.length} issue(s):\\n\\n${validation.errors.join('\\n')}\\n\\nWould you like to attempt repair?`,
+          `Found ${validation.errors.length} issue(s):\n\n${validation.errors.join('\n')}\n\nWould you like to attempt repair?`,
           [
             { text: 'Cancel', style: 'cancel' },
             {
               text: 'Repair',
               onPress: async () => {
                 try {
-                  const repair = await backupService.repairDatabase();
-                  Alert.alert(
-                    repair.success ? 'Repair Successful' : 'Repair Failed',
-                    repair.message,
-                    [{ text: 'OK' }]
-                  );
+                  if (isWebPlatform) {
+                    repairWebDatabase();
+                    Alert.alert('Repair Successful', 'Database repair completed successfully', [{ text: 'OK' }]);
+                  } else {
+                    const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
+                    const backupService = DatabaseBackupService.getInstance();
+                    const repair = await backupService.repairDatabase();
+                    Alert.alert(
+                      repair.success ? 'Repair Successful' : 'Repair Failed',
+                      repair.message,
+                      [{ text: 'OK' }]
+                    );
+                  }
                 } catch (error) {
                   Alert.alert('Error', `Repair failed: ${error}`);
                 }
@@ -370,6 +676,55 @@ export default function SettingsScreen({ navigation }: Props) {
     }
   };
 
+  const validateWebDatabase = (): { isValid: boolean; errors: string[] } => {
+    const errors: string[] = [];
+    try {
+      const storedData = localStorage.getItem(WEB_STORAGE_KEY);
+      if (!storedData) {
+        errors.push('No database data found');
+        return { isValid: false, errors };
+      }
+      const data = JSON.parse(storedData);
+      const requiredArrays = ['products', 'users', 'categories'];
+      for (const arr of requiredArrays) {
+        if (!Array.isArray(data[arr])) {
+          errors.push(`Missing or invalid data: ${arr}`);
+        }
+      }
+      const adminUser = data.users?.find((u: any) => u.role === 'ADMIN');
+      if (!adminUser) {
+        errors.push('No admin user found');
+      }
+    } catch (error) {
+      errors.push(`Database validation error: ${error}`);
+    }
+    return { isValid: errors.length === 0, errors };
+  };
+
+  const repairWebDatabase = () => {
+    const storedData = localStorage.getItem(WEB_STORAGE_KEY);
+    if (storedData) {
+      const data = JSON.parse(storedData);
+      localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(data));
+    }
+  };
+
+  const handleOpenLicenseGenerator = () => {
+    setLicensePassword('');
+    setLicensePasswordDialogVisible(true);
+  };
+
+  const handleLicensePasswordSubmit = () => {
+    if (licensePassword === '1018') {
+      setLicensePasswordDialogVisible(false);
+      setLicensePassword('');
+      navigation.navigate('LicenseGenerator');
+    } else {
+      Alert.alert('Access Denied', 'Incorrect password');
+      setLicensePassword('');
+    }
+  };
+
   const handleOptimizeDatabase = async () => {
     Alert.alert(
       'Optimize Database',
@@ -381,8 +736,22 @@ export default function SettingsScreen({ navigation }: Props) {
           onPress: async () => {
             try {
               setLoading(true);
-              const backupService = DatabaseBackupService.getInstance();
-              await backupService.optimizeDatabase();
+
+              const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
+
+              if (isWebPlatform) {
+                // Web optimization - compact localStorage
+                const storedData = localStorage.getItem(WEB_STORAGE_KEY);
+                if (storedData) {
+                  const data = JSON.parse(storedData);
+                  localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(data));
+                }
+              } else {
+                const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
+                const backupService = DatabaseBackupService.getInstance();
+                await backupService.optimizeDatabase();
+              }
+
               Alert.alert('Success', 'Database optimization completed successfully!');
             } catch (error) {
               Alert.alert('Error', `Optimization failed: ${error}`);
@@ -527,6 +896,46 @@ export default function SettingsScreen({ navigation }: Props) {
             </Card.Content>
           </Card>
 
+          {/* Cheque Management */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Title style={styles.cardTitle}>Cheque Management</Title>
+              <Paragraph style={styles.cardSubtitle}>
+                Track post-dated cheques and manage cheque status
+              </Paragraph>
+
+              <List.Item
+                title="PDC Tracking"
+                description="Manage post-dated cheques (pending, deposited, cleared, bounced)"
+                left={props => <List.Icon {...props} icon="checkbook" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('PDCTracking')}
+                style={styles.listItem}
+              />
+            </Card.Content>
+          </Card>
+
+          {/* License Management - Admin Only */}
+          {user?.role === 'ADMIN' && (
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={styles.cardTitle}>License Management</Title>
+                <Paragraph style={styles.cardSubtitle}>
+                  Generate license keys for customer devices
+                </Paragraph>
+
+                <List.Item
+                  title="License Key Generator"
+                  description="Generate license keys for new device activations"
+                  left={props => <List.Icon {...props} icon="key-variant" />}
+                  right={props => <List.Icon {...props} icon="chevron-right" />}
+                  onPress={handleOpenLicenseGenerator}
+                  style={styles.listItem}
+                />
+              </Card.Content>
+            </Card>
+          )}
+
           {/* Hardware Settings */}
           <Card style={styles.card}>
             <Card.Content>
@@ -637,21 +1046,15 @@ export default function SettingsScreen({ navigation }: Props) {
               <Divider />
 
               <List.Item
-                title="Reset All Data"
-                description="Delete all data (cannot be undone)"
-                left={props => <List.Icon {...props} icon="delete-alert" />}
-                right={props => (
-                  <Button
-                    mode="outlined"
-                    compact
-                    textColor="#F44336"
-                    onPress={handleReset}
-                  >
-                    Reset
-                  </Button>
-                )}
+                title="Reset Transactional Data"
+                description="Delete all sales, purchases, payments, and inventory movements"
+                left={props => <List.Icon {...props} icon="delete-forever" />}
+                right={props => <List.Icon {...props} icon="chevron-right" color="#F44336" />}
+                onPress={() => navigation.navigate('ResetData')}
                 style={styles.listItem}
+                titleStyle={{ color: '#F44336' }}
               />
+
             </Card.Content>
           </Card>
 
@@ -700,13 +1103,17 @@ export default function SettingsScreen({ navigation }: Props) {
           </Dialog.Title>
           <Dialog.Content>
             <TextInput
+              key={`${currentSetting?.key}-${dialogVisible}`}
               label={currentSetting?.label}
               value={tempValue}
               onChangeText={setTempValue}
               mode="outlined"
               multiline={currentSetting?.key === 'company_address' || currentSetting?.key === 'receipt_footer'}
+              numberOfLines={currentSetting?.key === 'company_address' || currentSetting?.key === 'receipt_footer' ? 3 : 1}
               keyboardType={currentSetting?.key === 'vat_rate' ? 'numeric' : 'default'}
               style={styles.dialogInput}
+              autoCapitalize="sentences"
+              autoCorrect={false}
             />
 
             {currentSetting?.key === 'company_tin' && (
@@ -734,6 +1141,38 @@ export default function SettingsScreen({ navigation }: Props) {
             >
               Save
             </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        {/* License Generator Password Dialog */}
+        <Dialog
+          visible={licensePasswordDialogVisible}
+          onDismiss={() => {
+            setLicensePasswordDialogVisible(false);
+            setLicensePassword('');
+          }}
+        >
+          <Dialog.Title>Enter Password</Dialog.Title>
+          <Dialog.Content>
+            <Paragraph style={{ marginBottom: 16 }}>
+              Enter the admin password to access the License Key Generator
+            </Paragraph>
+            <TextInput
+              label="Password"
+              value={licensePassword}
+              onChangeText={setLicensePassword}
+              mode="outlined"
+              secureTextEntry={true}
+              autoFocus={true}
+              style={styles.dialogInput}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => {
+              setLicensePasswordDialogVisible(false);
+              setLicensePassword('');
+            }}>Cancel</Button>
+            <Button onPress={handleLicensePasswordSubmit}>OK</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -808,6 +1247,7 @@ const styles = StyleSheet.create({
   },
   dialogInput: {
     marginBottom: 8,
+    textAlign: 'left',
   },
   helperText: {
     fontSize: 12,

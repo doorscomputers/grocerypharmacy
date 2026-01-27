@@ -17,6 +17,8 @@ if (Platform.OS !== 'web') {
   DatabaseService = require('./database/WebMockDatabaseService').WebMockDatabaseService;
 }
 import { AuthProvider } from './contexts/AuthContext';
+import { DeviceBindingService } from './utils/DeviceBindingService';
+import ActivationScreen from './screens/ActivationScreen';
 
 // Import screens
 import LoginScreen from './screens/LoginScreen';
@@ -60,6 +62,11 @@ import AccountsReceivableReportScreen from './screens/AccountsReceivableReportSc
 import AccountsPayableReportScreen from './screens/AccountsPayableReportScreen';
 import SalesReportScreen from './screens/SalesReportScreen';
 import DeliveredItemsReportScreen from './screens/DeliveredItemsReportScreen';
+import ResetDataScreen from './screens/ResetDataScreen';
+import PDCTrackingScreen from './screens/PDCTrackingScreen';
+import LicenseGeneratorScreen from './screens/LicenseGeneratorScreen';
+import StockValuationReportScreen from './screens/StockValuationReportScreen';
+import ZeroInventoryReportScreen from './screens/ZeroInventoryReportScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -103,6 +110,11 @@ export type RootStackParamList = {
   AccountsPayableReport: undefined;
   SalesReport: undefined;
   DeliveredItemsReport: undefined;
+  ResetData: undefined;
+  PDCTracking: undefined;
+  LicenseGenerator: undefined;
+  StockValuationReport: undefined;
+  ZeroInventoryReport: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -127,6 +139,8 @@ export default function App() {
   const [isDbInitialized, setIsDbInitialized] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [isDeviceActivated, setIsDeviceActivated] = useState(false);
+  const [isCheckingActivation, setIsCheckingActivation] = useState(true);
 
   useEffect(() => {
     console.log('App component mounted, Platform:', Platform.OS);
@@ -146,6 +160,8 @@ export default function App() {
           console.log('[Web] Mock database initialized successfully');
         }
         setIsDbInitialized(true);
+        setIsDeviceActivated(true); // Web doesn't require activation
+        setIsCheckingActivation(false);
         return;
       }
 
@@ -153,6 +169,7 @@ export default function App() {
       if (!DatabaseService) {
         setInitializationError('Database service not available');
         setIsDbInitialized(true);
+        setIsCheckingActivation(false);
         return;
       }
 
@@ -164,6 +181,25 @@ export default function App() {
 
       await dbService.initialize();
       console.log('Database initialized successfully');
+
+      // Initialize DeviceBindingService with database
+      const db = dbService.getDatabase();
+      DeviceBindingService.initialize(db);
+      console.log('DeviceBindingService initialized');
+
+      // Check device activation status
+      console.log('Checking device activation...');
+      const verificationResult = await DeviceBindingService.verifyDevice();
+      console.log('Device verification result:', verificationResult);
+
+      if (verificationResult.isValid) {
+        setIsDeviceActivated(true);
+        console.log('Device is activated');
+      } else {
+        setIsDeviceActivated(false);
+        console.log('Device not activated:', verificationResult.message);
+      }
+      setIsCheckingActivation(false);
 
       // Only initialize sample data if no products exist
       const existingProducts = await dbService.getProducts();
@@ -193,17 +229,34 @@ export default function App() {
 
       // Still set as initialized to show the error screen
       setIsDbInitialized(true);
+      setIsCheckingActivation(false);
     }
   };
 
-  if (!isDbInitialized) {
+  const handleActivationSuccess = async () => {
+    setIsDeviceActivated(true);
+  };
+
+  if (!isDbInitialized || isCheckingActivation) {
     return (
       <SafeAreaProvider>
         <PaperProvider theme={theme}>
           <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background }}>
             <Title>Loading...</Title>
-            <Paragraph>Initializing database...</Paragraph>
+            <Paragraph>{isCheckingActivation ? 'Verifying device...' : 'Initializing database...'}</Paragraph>
           </View>
+        </PaperProvider>
+      </SafeAreaProvider>
+    );
+  }
+
+  // Show activation screen if device is not activated
+  if (!isDeviceActivated && Platform.OS !== 'web') {
+    return (
+      <SafeAreaProvider>
+        <PaperProvider theme={theme}>
+          <ActivationScreen onActivationSuccess={handleActivationSuccess} />
+          <StatusBar style="dark" />
         </PaperProvider>
       </SafeAreaProvider>
     );
@@ -347,6 +400,11 @@ export default function App() {
               options={{ title: 'Supplier Payments' }}
             />
             <Stack.Screen
+              name="PDCTracking"
+              component={PDCTrackingScreen}
+              options={{ title: 'PDC Tracking' }}
+            />
+            <Stack.Screen
               name="DamagedItems"
               component={DamagedItemsScreen}
               options={{ title: 'Damaged Items' }}
@@ -465,6 +523,26 @@ export default function App() {
               name="DeliveredItemsReport"
               component={DeliveredItemsReportScreen}
               options={{ title: 'Delivered Items Report' }}
+            />
+            <Stack.Screen
+              name="ResetData"
+              component={ResetDataScreen}
+              options={{ title: 'Reset Transactional Data' }}
+            />
+            <Stack.Screen
+              name="LicenseGenerator"
+              component={LicenseGeneratorScreen}
+              options={{ title: 'License Key Generator' }}
+            />
+            <Stack.Screen
+              name="StockValuationReport"
+              component={StockValuationReportScreen}
+              options={{ title: 'Stock Valuation Report' }}
+            />
+            <Stack.Screen
+              name="ZeroInventoryReport"
+              component={ZeroInventoryReportScreen}
+              options={{ title: 'Zero Inventory Report' }}
             />
           </Stack.Navigator>
         </NavigationContainer>

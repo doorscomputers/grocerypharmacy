@@ -71,12 +71,14 @@ export default function POSHamburgerMenu({
           label: 'X-Reading (Mid-day)',
           icon: '📋',
           onPress: onXReading,
+          disabled: false,
         },
         {
           id: 'z-reading',
           label: 'Z-Reading (End of Day)',
           icon: '📊',
           onPress: onZReading,
+          disabled: false,
         },
       ],
     },
@@ -88,18 +90,21 @@ export default function POSHamburgerMenu({
           label: 'Cash Count',
           icon: '🧮',
           onPress: onCashCount,
+          disabled: false,
         },
         {
           id: 'cash-fund',
           label: 'Add Cash Fund',
           icon: '💵',
           onPress: onCashFund,
+          disabled: false,
         },
         {
           id: 'petty-cash',
           label: 'Petty Cash Withdrawal',
           icon: '💸',
           onPress: onPettyCash,
+          disabled: false,
         },
       ],
     },
@@ -111,12 +116,14 @@ export default function POSHamburgerMenu({
           label: 'Process Refund',
           icon: '↩️',
           onPress: onRefund,
+          disabled: false,
         },
         {
           id: 'exchange',
           label: 'Exchange Item',
           icon: '🔄',
           onPress: onExchange,
+          disabled: false,
         },
         {
           id: 'void',
@@ -124,6 +131,7 @@ export default function POSHamburgerMenu({
           icon: '❌',
           onPress: onVoid,
           destructive: true,
+          disabled: false,
         },
       ],
     },
@@ -135,6 +143,7 @@ export default function POSHamburgerMenu({
           label: 'Quick Add Customer',
           icon: '👤',
           onPress: onQuickAddCustomer,
+          disabled: false,
         },
       ],
     },
@@ -172,28 +181,14 @@ export default function POSHamburgerMenu({
                 {section.items.map((item, itemIndex) => (
                   <TouchableOpacity
                     key={item.id}
-                    style={[
-                      styles.menuItem,
-                      item.disabled && styles.menuItemDisabled,
-                      item.destructive && styles.menuItemDestructive,
-                    ]}
+                    style={styles.menuItem}
                     onPress={() => handleItemPress(item)}
-                    disabled={item.disabled}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.menuItemIcon}>{item.icon}</Text>
-                    <Text
-                      style={[
-                        styles.menuItemLabel,
-                        item.disabled && styles.menuItemLabelDisabled,
-                        item.destructive && styles.menuItemLabelDestructive,
-                      ]}
-                    >
+                    <Text style={styles.menuItemLabel}>
                       {item.label}
                     </Text>
-                    {item.disabled && (
-                      <Text style={styles.disabledBadge}>N/A</Text>
-                    )}
                   </TouchableOpacity>
                 ))}
                 {sectionIndex < menuSections.length - 1 && (
@@ -251,7 +246,8 @@ const styles = StyleSheet.create({
     color: '#212121',
   },
   scrollView: {
-    maxHeight: 450,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   section: {
     paddingVertical: 8,

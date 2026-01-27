@@ -102,6 +102,10 @@ export default function SalesScreen({ navigation, route }: Props) {
 
   // Local state
   const [customers, setCustomers] = useState<any[]>([]);
+  const [transactionType, setTransactionType] = useState<'CASH' | 'CREDIT'>('CASH');
+  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
   const [paymentVisible, setPaymentVisible] = useState(false);
   const [receiptVisible, setReceiptVisible] = useState(false);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
@@ -195,6 +199,17 @@ export default function SalesScreen({ navigation, route }: Props) {
     }
   };
 
+  // Filter customers for dropdown
+  const filteredCustomers = customers.filter(c => {
+    if (!customerSearch.trim()) return true;
+    const search = customerSearch.toLowerCase();
+    return (
+      c.name?.toLowerCase().includes(search) ||
+      c.phone?.toLowerCase().includes(search) ||
+      c.code?.toLowerCase().includes(search)
+    );
+  });
+
   // Handle barcode scan / search submit
   const handleSearchSubmit = useCallback(() => {
     if (filteredProducts.length === 1) {
@@ -275,10 +290,16 @@ export default function SalesScreen({ navigation, route }: Props) {
 
   // Handle checkout button
   const handleCheckout = useCallback(() => {
-    if (cart.length > 0) {
-      setPaymentVisible(true);
+    if (cart.length === 0) return;
+
+    // For credit sales, require customer selection
+    if (transactionType === 'CREDIT' && !selectedCustomer) {
+      setShowCustomerDropdown(true);
+      return;
     }
-  }, [cart.length]);
+
+    setPaymentVisible(true);
+  }, [cart.length, transactionType, selectedCustomer]);
 
   // Process payment
   const handlePaymentComplete = useCallback(async (data: {
@@ -397,6 +418,11 @@ export default function SalesScreen({ navigation, route }: Props) {
     setReceiptData(null);
     clearCart();
     refreshProducts();
+    // Reset transaction type and customer for next sale
+    setTransactionType('CASH');
+    setSelectedCustomer(null);
+    setShowCustomerDropdown(false);
+    setCustomerSearch('');
     // Re-focus for next customer
     setTimeout(() => searchInputRef.current?.focus(), 100);
   }, [clearCart, refreshProducts]);
@@ -531,6 +557,135 @@ export default function SalesScreen({ navigation, route }: Props) {
 
       {/* ===== TOTALS & CHECKOUT SECTION ===== */}
       <View style={styles.checkoutSection}>
+        {/* Transaction Type Selector */}
+        <View style={styles.transactionTypeRow}>
+          <TouchableOpacity
+            style={[
+              styles.transactionTypeButton,
+              transactionType === 'CASH' && styles.transactionTypeButtonActive,
+            ]}
+            onPress={() => {
+              setTransactionType('CASH');
+              setSelectedCustomer(null);
+              setShowCustomerDropdown(false);
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.transactionTypeIcon}>💵</Text>
+            <Text style={[
+              styles.transactionTypeText,
+              transactionType === 'CASH' && styles.transactionTypeTextActive,
+            ]}>Cash Sale</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.transactionTypeButton,
+              transactionType === 'CREDIT' && styles.transactionTypeCreditActive,
+            ]}
+            onPress={() => setTransactionType('CREDIT')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.transactionTypeIcon}>📋</Text>
+            <Text style={[
+              styles.transactionTypeText,
+              transactionType === 'CREDIT' && styles.transactionTypeCreditTextActive,
+            ]}>Credit Sale</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Customer Selection for Credit Sales */}
+        {transactionType === 'CREDIT' && (
+          <View style={styles.customerSelectionSection}>
+            {selectedCustomer ? (
+              <View style={styles.selectedCustomerRow}>
+                <View style={styles.selectedCustomerInfo}>
+                  <Text style={styles.selectedCustomerName}>👤 {selectedCustomer.name}</Text>
+                  {selectedCustomer.outstanding_balance > 0 && (
+                    <Text style={styles.selectedCustomerBalance}>
+                      Balance: ₱{selectedCustomer.outstanding_balance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                    </Text>
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.changeCustomerBtn}
+                  onPress={() => {
+                    setSelectedCustomer(null);
+                    setShowCustomerDropdown(true);
+                  }}
+                >
+                  <Text style={styles.changeCustomerBtnText}>Change</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.selectCustomerBtn}
+                onPress={() => setShowCustomerDropdown(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.selectCustomerBtnText}>👤 Select Customer (Required)</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Customer Dropdown */}
+            {showCustomerDropdown && (
+              <View style={styles.customerDropdown}>
+                <View style={styles.customerDropdownHeader}>
+                  <RNTextInput
+                    placeholder="Search customer..."
+                    value={customerSearch}
+                    onChangeText={setCustomerSearch}
+                    style={styles.customerSearchInput}
+                  />
+                  <TouchableOpacity
+                    style={styles.quickAddCustomerBtn}
+                    onPress={() => {
+                      setShowCustomerDropdown(false);
+                      setQuickCustomerModalVisible(true);
+                    }}
+                  >
+                    <Text style={styles.quickAddCustomerBtnText}>+ Add</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.closeCustomerDropdownBtn}
+                    onPress={() => {
+                      setShowCustomerDropdown(false);
+                      setCustomerSearch('');
+                    }}
+                  >
+                    <Text style={styles.closeCustomerDropdownBtnText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                <FlatList
+                  data={filteredCustomers.slice(0, 5)}
+                  keyExtractor={item => item.id.toString()}
+                  style={styles.customerDropdownList}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={styles.customerDropdownItem}
+                      onPress={() => {
+                        setSelectedCustomer(item);
+                        setShowCustomerDropdown(false);
+                        setCustomerSearch('');
+                      }}
+                    >
+                      <Text style={styles.customerDropdownName}>{item.name}</Text>
+                      {item.outstanding_balance > 0 && (
+                        <Text style={styles.customerDropdownBalance}>
+                          Bal: ₱{item.outstanding_balance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={
+                    <Text style={styles.noCustomersText}>No customers found</Text>
+                  }
+                />
+              </View>
+            )}
+          </View>
+        )}
+
         {/* Discount Buttons */}
         <View style={styles.discountRow}>
           <TouchableOpacity
@@ -638,6 +793,8 @@ export default function SalesScreen({ navigation, route }: Props) {
           setQuickCustomerModalVisible(true);
         }}
         loading={isProcessing}
+        initialPaymentMethod={transactionType === 'CREDIT' ? 'CHARGE_INVOICE' : 'CASH'}
+        initialCustomer={selectedCustomer}
       />
 
       {/* Discount Modal */}
@@ -836,6 +993,11 @@ export default function SalesScreen({ navigation, route }: Props) {
         onCustomerCreated={(customer) => {
           setQuickCustomerModalVisible(false);
           loadCustomers();
+          // If credit sale, auto-select the newly created customer
+          if (transactionType === 'CREDIT' && customer) {
+            setSelectedCustomer(customer);
+            setShowCustomerDropdown(false);
+          }
         }}
         userId={user?.id || 0}
       />
@@ -1095,5 +1257,179 @@ const styles = StyleSheet.create({
   receiptFooterText: {
     fontSize: 14,
     color: '#616161',
+  },
+
+  // Transaction Type Selector
+  transactionTypeRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+    gap: 8,
+  },
+  transactionTypeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  transactionTypeButtonActive: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#4CAF50',
+  },
+  transactionTypeCreditActive: {
+    backgroundColor: '#FFF3E0',
+    borderColor: '#FF9800',
+  },
+  transactionTypeIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  transactionTypeText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#616161',
+  },
+  transactionTypeTextActive: {
+    color: '#2E7D32',
+  },
+  transactionTypeCreditTextActive: {
+    color: '#E65100',
+  },
+
+  // Customer Selection
+  customerSelectionSection: {
+    marginBottom: 12,
+  },
+  selectCustomerBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FF9800',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+  },
+  selectCustomerBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#E65100',
+  },
+  selectedCustomerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#E8F5E9',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4CAF50',
+  },
+  selectedCustomerInfo: {
+    flex: 1,
+  },
+  selectedCustomerName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2E7D32',
+  },
+  selectedCustomerBalance: {
+    fontSize: 12,
+    color: '#F44336',
+    marginTop: 2,
+  },
+  changeCustomerBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#FFEBEE',
+    borderRadius: 6,
+  },
+  changeCustomerBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#F44336',
+  },
+  customerDropdown: {
+    marginTop: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+  customerDropdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  customerSearchInput: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 6,
+    fontSize: 14,
+  },
+  quickAddCustomerBtn: {
+    marginLeft: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#E3F2FD',
+    borderRadius: 6,
+  },
+  quickAddCustomerBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1976D2',
+  },
+  closeCustomerDropdownBtn: {
+    marginLeft: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  closeCustomerDropdownBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#9E9E9E',
+  },
+  customerDropdownList: {
+    maxHeight: 150,
+  },
+  customerDropdownItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  customerDropdownName: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#212121',
+  },
+  customerDropdownBalance: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#F44336',
+  },
+  noCustomersText: {
+    textAlign: 'center',
+    paddingVertical: 16,
+    color: '#9E9E9E',
+    fontSize: 14,
   },
 });

@@ -40,7 +40,6 @@ export default function DashboardScreen({ navigation }: Props) {
     sales: 0,
     transactions: 0,
     customers: 0,
-    topProduct: 'N/A',
   });
   const [loading, setLoading] = useState(true);
   const theme = useTheme();
@@ -77,7 +76,6 @@ export default function DashboardScreen({ navigation }: Props) {
         sales: totalSales,
         transactions: transactions.filter(t => t.status === 'COMPLETED').length,
         customers: new Set(transactions.map(t => t.customer_name).filter(Boolean)).size,
-        topProduct: 'Sample Product', // Would calculate from transaction_items
       });
     } catch (error) {
       console.error('Error loading dashboard data:', error);
@@ -192,14 +190,6 @@ export default function DashboardScreen({ navigation }: Props) {
             subtitle="Unique"
             color="#FF9800"
             onPress={() => navigation.navigate('Reports')}
-          />
-
-          <DashboardCard
-            title="Top Product"
-            value={todayStats.topProduct}
-            subtitle="Best Seller"
-            color="#9C27B0"
-            onPress={() => navigation.navigate('Products')}
           />
         </View>
 
@@ -364,6 +354,63 @@ export default function DashboardScreen({ navigation }: Props) {
             </Card>
           </View>
         </View>
+
+        {/* Admin Only Section */}
+        {user?.role === 'ADMIN' && (
+          <View style={styles.responsiveQuickActions}>
+            <Title style={[styles.sectionTitle, { color: '#F44336' }]}>Admin Tools</Title>
+
+            <View style={styles.responsiveActionGrid}>
+              {/* User Management */}
+              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('UserManagement')}>
+                <Card.Content style={styles.responsiveActionContent}>
+                  <Title style={[styles.actionTitle, { color: '#3F51B5' }]}>
+                    Users
+                  </Title>
+                  <Paragraph style={styles.actionSubtitle}>
+                    Manage user accounts
+                  </Paragraph>
+                </Card.Content>
+              </Card>
+
+              {/* Permission Management */}
+              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('PermissionManagement')}>
+                <Card.Content style={styles.responsiveActionContent}>
+                  <Title style={[styles.actionTitle, { color: '#009688' }]}>
+                    Permissions
+                  </Title>
+                  <Paragraph style={styles.actionSubtitle}>
+                    Configure role access
+                  </Paragraph>
+                </Card.Content>
+              </Card>
+
+              {/* Reset Transactional Data */}
+              <Card style={[styles.responsiveActionCard, styles.dangerCard]} onPress={() => navigation.navigate('ResetData')}>
+                <Card.Content style={styles.responsiveActionContent}>
+                  <Title style={[styles.actionTitle, { color: '#F44336' }]}>
+                    Reset Data
+                  </Title>
+                  <Paragraph style={styles.actionSubtitle}>
+                    Clear all transactions
+                  </Paragraph>
+                </Card.Content>
+              </Card>
+
+              {/* Database Viewer */}
+              <Card style={styles.responsiveActionCard} onPress={() => navigation.navigate('DatabaseViewer')}>
+                <Card.Content style={styles.responsiveActionContent}>
+                  <Title style={[styles.actionTitle, { color: '#607D8B' }]}>
+                    Database
+                  </Title>
+                  <Paragraph style={styles.actionSubtitle}>
+                    View raw data
+                  </Paragraph>
+                </Card.Content>
+              </Card>
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       <FAB
@@ -498,5 +545,10 @@ const styles = StyleSheet.create({
     margin: 16,
     right: 0,
     bottom: 0,
+  },
+  dangerCard: {
+    borderWidth: 1,
+    borderColor: '#F44336',
+    backgroundColor: '#FFEBEE',
   },
 });
