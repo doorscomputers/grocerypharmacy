@@ -21,6 +21,7 @@ export interface DatabaseSchema {
     name: string;
     description?: string;
     price: number;
+    wholesale_price?: number; // Wholesale price (must be <= retail price)
     cost: number;
     category_id?: number;
     brand_id?: number;
@@ -100,6 +101,10 @@ export interface DatabaseSchema {
     void_reason?: string;
     void_by?: number;
     void_date?: string;
+    // SC/PWD Discount fields (BIR requirement)
+    sc_pwd_id?: string; // Senior Citizen or PWD ID number
+    sc_pwd_name?: string; // Name of SC/PWD for receipt
+    sc_pwd_type?: 'SENIOR' | 'PWD'; // Type of discount applied
     transaction_date: string;
     created_at: string;
     updated_at: string;
@@ -117,6 +122,7 @@ export interface DatabaseSchema {
     discount_amount: number;
     tax_amount: number;
     total_amount: number;
+    price_type: 'retail' | 'wholesale'; // Price type used for this item
     created_at: string;
   };
 
@@ -136,6 +142,7 @@ export interface DatabaseSchema {
     void_amount: number;
     refund_amount: number;
     net_sales: number;
+    cumulative_grand_total: number; // Running total of net_sales across all Z-Readings (BIR requirement)
     reset_counter: number; // Cumulative counter (never resets)
     cashier_id: number;
     created_at: string;
@@ -165,7 +172,7 @@ export interface DatabaseSchema {
   ejournal: {
     id: number;
     transaction_id?: number;
-    entry_type: 'SALE' | 'VOID' | 'REFUND' | 'Z_READING' | 'X_READING' | 'SYSTEM';
+    entry_type: 'SALE' | 'VOID' | 'REFUND' | 'RETURN' | 'PURCHASE_RETURN' | 'PAYMENT' | 'Z_READING' | 'X_READING' | 'SYSTEM';
     reference_number: string;
     description: string;
     amount?: number;
@@ -502,13 +509,13 @@ export interface DatabaseSchema {
   sales_returns: {
     id: number;
     return_number: string;
-    original_transaction_id: number;
-    original_invoice_number: string;
+    original_transaction_id?: number;
+    original_invoice_number?: string;
     customer_id?: number;
     customer_name?: string;
     return_date: string;
     total_amount: number;
-    refund_method: 'CASH' | 'CREDIT' | 'EXCHANGE';
+    refund_method: 'CASH' | 'CREDIT' | 'STORE_CREDIT' | 'EXCHANGE';
     reason: string;
     notes?: string;
     processed_by: number;
@@ -569,6 +576,19 @@ export interface DatabaseSchema {
     last_verified_at: string;
     created_at: string;
   };
+
+  // Reset Operations Log for audit trail
+  reset_operations_log: {
+    id: number;
+    user_id: number;
+    username: string;
+    full_name: string;
+    operation_type: 'TRANSACTIONAL_DATA_RESET' | 'DATABASE_RESTORE' | 'MASTER_DATA_RESET';
+    status: 'ATTEMPTED' | 'SUCCESS' | 'FAILED' | 'DENIED' | 'CANCELLED';
+    records_deleted: number;
+    details?: string; // JSON with additional details
+    created_at: string;
+  };
 }
 
 // Type exports for components
@@ -598,20 +618,36 @@ export type SalesReturnItem = DatabaseSchema['sales_return_items'];
 export type CashMovement = DatabaseSchema['cash_movements'];
 export type CustomerAudit = DatabaseSchema['customer_audit'];
 export type DeviceBinding = DatabaseSchema['device_binding'];
+export type ResetOperationLog = DatabaseSchema['reset_operations_log'];
 
 // Database initialization script
 export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   console.log('Starting database schema initialization...');
 
   try {
-    // Enable foreign keys (skip WAL mode as it can cause issues on some platforms)
+    // Enable WAL mode FIRST - this is the #1 protection against SQLite corruption
+    // WAL (Write-Ahead Logging) allows concurrent reads during writes and
+    // provides better crash recovery than the default rollback journal
+    console.log('Setting PRAGMA journal_mode = WAL...');
+    await db.execAsync('PRAGMA journal_mode = WAL;');
+    console.log('WAL mode enabled successfully');
+
+    // Enable foreign keys
     console.log('Setting PRAGMA foreign_keys = ON...');
     await db.execAsync('PRAGMA foreign_keys = ON;');
     console.log('Foreign keys enabled successfully');
 
+    // Set synchronous mode to NORMAL (good balance of safety and speed)
+    // FULL is safest but slower, NORMAL is recommended for most apps
+    console.log('Setting PRAGMA synchronous = NORMAL...');
+    await db.execAsync('PRAGMA synchronous = NORMAL;');
+    console.log('Synchronous mode set to NORMAL');
+
     // Test that PRAGMAs work
     const fkResult = await db.getFirstAsync('PRAGMA foreign_keys;');
+    const walResult = await db.getFirstAsync('PRAGMA journal_mode;');
     console.log('Foreign keys status:', fkResult);
+    console.log('Journal mode:', walResult);
 
   } catch (pragmaError) {
     console.warn('PRAGMA commands failed, continuing without them:', pragmaError);
@@ -722,6 +758,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       name TEXT NOT NULL,
       description TEXT,
       price DECIMAL(10,2) NOT NULL,
+      wholesale_price DECIMAL(10,2) DEFAULT NULL,
       cost DECIMAL(10,2) NOT NULL DEFAULT 0,
       category_id INTEGER,
       brand_id INTEGER,
@@ -764,6 +801,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   // Add vat_type column for BIR compliance - default to 'vatable'
   try {
     await db.execAsync(`ALTER TABLE products ADD COLUMN vat_type TEXT DEFAULT 'vatable';`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Add wholesale_price column for wholesale pricing feature
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN wholesale_price DECIMAL(10,2) DEFAULT NULL;`);
   } catch (e) { /* Column may already exist */ }
 
   console.log('Creating users table...');
@@ -810,6 +852,9 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       void_reason TEXT,
       void_by INTEGER,
       void_date DATETIME,
+      sc_pwd_id TEXT,
+      sc_pwd_name TEXT,
+      sc_pwd_type TEXT CHECK (sc_pwd_type IN ('SENIOR', 'PWD')),
       transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -827,6 +872,17 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   // Add payment_status column to transactions if it doesn't exist (for existing databases)
   try {
     await db.execAsync(`ALTER TABLE transactions ADD COLUMN payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID';`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Migration: Add SC/PWD discount fields to transactions (BIR requirement)
+  try {
+    await db.execAsync(`ALTER TABLE transactions ADD COLUMN sc_pwd_id TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE transactions ADD COLUMN sc_pwd_name TEXT;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE transactions ADD COLUMN sc_pwd_type TEXT CHECK (sc_pwd_type IN ('SENIOR', 'PWD'));`);
   } catch (e) { /* Column may already exist */ }
 
   // Migration: Fix payment_method CHECK constraint to include CHARGE_INVOICE
@@ -852,67 +908,72 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
         // Temporarily disable foreign keys for safe migration
         await db.execAsync('PRAGMA foreign_keys = OFF;');
 
-        // Create new table with correct constraint
-        await db.execAsync(`
-          CREATE TABLE IF NOT EXISTS transactions_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_number TEXT NOT NULL UNIQUE,
-            invoice_number TEXT NOT NULL UNIQUE,
-            customer_id INTEGER,
-            customer_name TEXT,
-            customer_tin TEXT,
-            customer_address TEXT,
-            subtotal DECIMAL(10,2) NOT NULL,
-            tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-            discount_amount DECIMAL(10,2) DEFAULT 0,
-            total_amount DECIMAL(10,2) NOT NULL,
-            payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE', 'CHARGE_INVOICE')) DEFAULT 'CASH',
-            amount_tendered DECIMAL(10,2) NOT NULL,
-            change_amount DECIMAL(10,2) DEFAULT 0,
-            payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID',
-            cashier_id INTEGER NOT NULL,
-            status TEXT CHECK (status IN ('COMPLETED', 'VOID', 'REFUNDED')) DEFAULT 'COMPLETED',
-            void_reason TEXT,
-            void_by INTEGER,
-            void_date DATETIME,
-            transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (customer_id) REFERENCES customers (id),
-            FOREIGN KEY (cashier_id) REFERENCES users (id),
-            FOREIGN KEY (void_by) REFERENCES users (id)
-          );
-        `);
+        try {
+          // Create new table with correct constraint
+          await db.execAsync(`
+            CREATE TABLE IF NOT EXISTS transactions_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              transaction_number TEXT NOT NULL UNIQUE,
+              invoice_number TEXT NOT NULL UNIQUE,
+              customer_id INTEGER,
+              customer_name TEXT,
+              customer_tin TEXT,
+              customer_address TEXT,
+              subtotal DECIMAL(10,2) NOT NULL,
+              tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+              discount_amount DECIMAL(10,2) DEFAULT 0,
+              total_amount DECIMAL(10,2) NOT NULL,
+              payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE', 'CHARGE_INVOICE')) DEFAULT 'CASH',
+              amount_tendered DECIMAL(10,2) NOT NULL,
+              change_amount DECIMAL(10,2) DEFAULT 0,
+              payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID',
+              cashier_id INTEGER NOT NULL,
+              status TEXT CHECK (status IN ('COMPLETED', 'VOID', 'REFUNDED')) DEFAULT 'COMPLETED',
+              void_reason TEXT,
+              void_by INTEGER,
+              void_date DATETIME,
+              sc_pwd_id TEXT,
+              sc_pwd_name TEXT,
+              sc_pwd_type TEXT CHECK (sc_pwd_type IN ('SENIOR', 'PWD')),
+              transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (customer_id) REFERENCES customers (id),
+              FOREIGN KEY (cashier_id) REFERENCES users (id),
+              FOREIGN KEY (void_by) REFERENCES users (id)
+            );
+          `);
 
-        // Copy data from old table - handle missing columns gracefully
-        await db.execAsync(`
-          INSERT INTO transactions_new
-            (id, transaction_number, invoice_number, customer_id, customer_name, customer_tin,
-             customer_address, subtotal, tax_amount, discount_amount, total_amount, payment_method,
-             amount_tendered, change_amount, payment_status, cashier_id, status, void_reason,
-             void_by, void_date, transaction_date, created_at, updated_at)
-          SELECT
-            id, transaction_number, invoice_number,
-            COALESCE(customer_id, NULL),
-            customer_name, customer_tin, customer_address,
-            subtotal, tax_amount, discount_amount, total_amount, payment_method,
-            amount_tendered, change_amount,
-            COALESCE(payment_status, 'PAID'),
-            cashier_id, status, void_reason, void_by, void_date,
-            transaction_date, created_at, updated_at
-          FROM transactions;
-        `);
+          // Copy data from old table - handle missing columns gracefully
+          await db.execAsync(`
+            INSERT INTO transactions_new
+              (id, transaction_number, invoice_number, customer_id, customer_name, customer_tin,
+               customer_address, subtotal, tax_amount, discount_amount, total_amount, payment_method,
+               amount_tendered, change_amount, payment_status, cashier_id, status, void_reason,
+               void_by, void_date, transaction_date, created_at, updated_at)
+            SELECT
+              id, transaction_number, invoice_number,
+              COALESCE(customer_id, NULL),
+              customer_name, customer_tin, customer_address,
+              subtotal, tax_amount, discount_amount, total_amount, payment_method,
+              amount_tendered, change_amount,
+              COALESCE(payment_status, 'PAID'),
+              cashier_id, status, void_reason, void_by, void_date,
+              transaction_date, created_at, updated_at
+            FROM transactions;
+          `);
 
-        // Drop old table
-        await db.execAsync(`DROP TABLE transactions;`);
+          // Drop old table
+          await db.execAsync(`DROP TABLE transactions;`);
 
-        // Rename new table
-        await db.execAsync(`ALTER TABLE transactions_new RENAME TO transactions;`);
+          // Rename new table
+          await db.execAsync(`ALTER TABLE transactions_new RENAME TO transactions;`);
 
-        // Re-enable foreign keys
-        await db.execAsync('PRAGMA foreign_keys = ON;');
-
-        console.log('✅ Transactions table migrated successfully with CHARGE_INVOICE support');
+          console.log('✅ Transactions table migrated successfully with CHARGE_INVOICE support');
+        } finally {
+          // Always re-enable foreign keys, even if migration fails
+          await db.execAsync('PRAGMA foreign_keys = ON;');
+        }
       } else {
         console.log('✅ Transactions table already supports CHARGE_INVOICE');
       }
@@ -934,11 +995,17 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       discount_amount DECIMAL(10,2) DEFAULT 0,
       tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
       total_amount DECIMAL(10,2) NOT NULL,
+      price_type TEXT DEFAULT 'retail',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products (id)
     );
   `);
+
+  // Add price_type column to transaction_items for existing databases
+  try {
+    await db.execAsync(`ALTER TABLE transaction_items ADD COLUMN price_type TEXT DEFAULT 'retail';`);
+  } catch (e) { /* Column may already exist */ }
 
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS z_readings (
@@ -956,6 +1023,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       void_amount DECIMAL(10,2) DEFAULT 0,
       refund_amount DECIMAL(10,2) DEFAULT 0,
       net_sales DECIMAL(10,2) NOT NULL DEFAULT 0,
+      cumulative_grand_total DECIMAL(12,2) NOT NULL DEFAULT 0,
       reset_counter INTEGER NOT NULL DEFAULT 0,
       cashier_id INTEGER NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -986,11 +1054,74 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Migration: Add cumulative_grand_total to z_readings (BIR requirement)
+  try {
+    await db.execAsync(`ALTER TABLE z_readings ADD COLUMN cumulative_grand_total DECIMAL(12,2) NOT NULL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Migration: Fix ejournal entry_type CHECK constraint to include PAYMENT, RETURN, PURCHASE_RETURN
+  console.log('Checking if ejournal entry_type constraint needs update...');
+  try {
+    const ejournalInfo = await db.getFirstAsync<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='ejournal'"
+    );
+
+    if (ejournalInfo && ejournalInfo.sql) {
+      const createSql = ejournalInfo.sql;
+      // Check if the constraint is missing PAYMENT
+      if (!createSql.includes('PAYMENT')) {
+        console.log('Migrating ejournal table to add PAYMENT, RETURN, PURCHASE_RETURN support...');
+
+        // Temporarily disable foreign keys for safe migration
+        await db.execAsync('PRAGMA foreign_keys = OFF;');
+
+        try {
+          // Create new table with correct constraint
+          await db.execAsync(`
+            CREATE TABLE IF NOT EXISTS ejournal_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              transaction_id INTEGER,
+              entry_type TEXT CHECK (entry_type IN ('SALE', 'VOID', 'REFUND', 'RETURN', 'PURCHASE_RETURN', 'PAYMENT', 'Z_READING', 'X_READING', 'SYSTEM')) NOT NULL,
+              reference_number TEXT NOT NULL,
+              description TEXT NOT NULL,
+              amount DECIMAL(10,2),
+              cashier_id INTEGER NOT NULL,
+              timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (transaction_id) REFERENCES transactions (id),
+              FOREIGN KEY (cashier_id) REFERENCES users (id)
+            );
+          `);
+
+          // Copy data from old table to new table
+          await db.execAsync(`
+            INSERT INTO ejournal_new (id, transaction_id, entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+            SELECT id, transaction_id, entry_type, reference_number, description, amount, cashier_id, timestamp, created_at FROM ejournal;
+          `);
+
+          // Drop old table
+          await db.execAsync('DROP TABLE ejournal;');
+
+          // Rename new table to old name
+          await db.execAsync('ALTER TABLE ejournal_new RENAME TO ejournal;');
+
+          console.log('Ejournal table migrated successfully');
+        } finally {
+          // Always re-enable foreign keys, even if migration fails
+          await db.execAsync('PRAGMA foreign_keys = ON;');
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Migration check/update for ejournal entry_type constraint:', e);
+    // If migration fails, it might be because the table is new or already correct
+  }
+
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS ejournal (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       transaction_id INTEGER,
-      entry_type TEXT CHECK (entry_type IN ('SALE', 'VOID', 'REFUND', 'Z_READING', 'X_READING', 'SYSTEM')) NOT NULL,
+      entry_type TEXT CHECK (entry_type IN ('SALE', 'VOID', 'REFUND', 'RETURN', 'PURCHASE_RETURN', 'PAYMENT', 'Z_READING', 'X_READING', 'SYSTEM')) NOT NULL,
       reference_number TEXT NOT NULL,
       description TEXT NOT NULL,
       amount DECIMAL(10,2),
@@ -1001,6 +1132,121 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (cashier_id) REFERENCES users (id)
     );
   `);
+
+  // Migration for sales_returns table to make original_transaction_id nullable
+  try {
+    const salesReturnsInfo = await db.getFirstAsync<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='sales_returns'"
+    );
+
+    if (salesReturnsInfo && salesReturnsInfo.sql) {
+      const createSql = salesReturnsInfo.sql;
+      // Check if original_transaction_id is NOT NULL or if STORE_CREDIT is missing
+      if (createSql.includes('original_transaction_id INTEGER NOT NULL') || !createSql.includes('STORE_CREDIT')) {
+        console.log('Migrating sales_returns table to make original_transaction_id nullable and add STORE_CREDIT...');
+
+        // Temporarily disable foreign keys for safe migration
+        await db.execAsync('PRAGMA foreign_keys = OFF;');
+
+        try {
+          // Create new table with correct schema
+          await db.execAsync(`
+            CREATE TABLE IF NOT EXISTS sales_returns_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              return_number TEXT NOT NULL UNIQUE,
+              original_transaction_id INTEGER,
+              original_invoice_number TEXT,
+              customer_id INTEGER,
+              customer_name TEXT,
+              return_date DATE NOT NULL,
+              total_amount DECIMAL(12,2) NOT NULL,
+              refund_method TEXT CHECK (refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT', 'EXCHANGE')) DEFAULT 'CASH',
+              reason TEXT NOT NULL,
+              notes TEXT,
+              processed_by INTEGER NOT NULL,
+              status TEXT CHECK (status IN ('COMPLETED', 'CANCELLED')) DEFAULT 'COMPLETED',
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (original_transaction_id) REFERENCES transactions (id),
+              FOREIGN KEY (customer_id) REFERENCES customers (id),
+              FOREIGN KEY (processed_by) REFERENCES users (id)
+            );
+          `);
+
+          // Copy data from old table to new table
+          await db.execAsync(`
+            INSERT INTO sales_returns_new (id, return_number, original_transaction_id, original_invoice_number, customer_id, customer_name, return_date, total_amount, refund_method, reason, notes, processed_by, status, created_at)
+            SELECT id, return_number, original_transaction_id, original_invoice_number, customer_id, customer_name, return_date, total_amount, refund_method, reason, notes, processed_by, status, created_at FROM sales_returns;
+          `);
+
+          // Drop old table
+          await db.execAsync('DROP TABLE sales_returns;');
+
+          // Rename new table to old name
+          await db.execAsync('ALTER TABLE sales_returns_new RENAME TO sales_returns;');
+
+          console.log('sales_returns table migrated successfully');
+        } finally {
+          // Always re-enable foreign keys, even if migration fails
+          await db.execAsync('PRAGMA foreign_keys = ON;');
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Migration check/update for sales_returns table:', e);
+    // If migration fails, it might be because the table is new or already correct
+  }
+
+  // Migration for accounts_receivable table to add CREDIT status
+  try {
+    const arInfo = await db.getFirstAsync<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts_receivable'"
+    );
+
+    if (arInfo && arInfo.sql && !arInfo.sql.includes('CREDIT')) {
+      console.log('Migrating accounts_receivable table to add CREDIT status...');
+
+      await db.execAsync('PRAGMA foreign_keys = OFF;');
+
+      try {
+        await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS accounts_receivable_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL UNIQUE,
+            customer_id INTEGER,
+            customer_name TEXT,
+            invoice_number TEXT NOT NULL,
+            invoice_date DATE NOT NULL,
+            due_date DATE NOT NULL,
+            original_amount DECIMAL(12,2) NOT NULL,
+            paid_amount DECIMAL(12,2) DEFAULT 0,
+            balance_amount DECIMAL(12,2) NOT NULL,
+            status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CREDIT')) DEFAULT 'OUTSTANDING',
+            days_outstanding INTEGER DEFAULT 0,
+            aging_bucket TEXT CHECK (aging_bucket IN ('0-30', '31-60', '61-90', '90+')) DEFAULT '0-30',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (transaction_id) REFERENCES transactions (id),
+            FOREIGN KEY (customer_id) REFERENCES customers (id)
+          );
+        `);
+
+        await db.execAsync(`
+          INSERT INTO accounts_receivable_new (id, transaction_id, customer_id, customer_name, invoice_number, invoice_date, due_date, original_amount, paid_amount, balance_amount, status, days_outstanding, aging_bucket, created_at, updated_at)
+          SELECT id, transaction_id, customer_id, customer_name, invoice_number, invoice_date, due_date, original_amount, paid_amount, balance_amount, status, days_outstanding, aging_bucket, created_at, updated_at FROM accounts_receivable;
+        `);
+
+        await db.execAsync('DROP TABLE accounts_receivable;');
+        await db.execAsync('ALTER TABLE accounts_receivable_new RENAME TO accounts_receivable;');
+
+        console.log('accounts_receivable table migrated successfully');
+      } finally {
+        // Always re-enable foreign keys, even if migration fails
+        await db.execAsync('PRAGMA foreign_keys = ON;');
+      }
+    }
+  } catch (e) {
+    console.warn('Migration check/update for accounts_receivable table:', e);
+  }
 
   // Create inventory_movements table if it doesn't exist
   console.log('Creating inventory_movements table if not exists...');
@@ -1264,13 +1510,53 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       original_amount DECIMAL(12,2) NOT NULL,
       paid_amount DECIMAL(12,2) DEFAULT 0,
       balance_amount DECIMAL(12,2) NOT NULL,
-      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE')) DEFAULT 'OUTSTANDING',
+      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CREDIT')) DEFAULT 'OUTSTANDING',
       days_outstanding INTEGER DEFAULT 0,
       aging_bucket TEXT CHECK (aging_bucket IN ('0-30', '31-60', '61-90', '90+')) DEFAULT '0-30',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE,
       FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+    );
+  `);
+
+  // Create purchase_returns table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS purchase_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_number TEXT NOT NULL UNIQUE,
+      original_purchase_id INTEGER,
+      supplier_id INTEGER NOT NULL,
+      supplier_name TEXT,
+      return_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+      total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+      refund_method TEXT DEFAULT 'CREDIT',
+      reason TEXT,
+      notes TEXT,
+      processed_by INTEGER,
+      status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'CANCELLED')) DEFAULT 'PENDING',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (original_purchase_id) REFERENCES purchases (id),
+      FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
+      FOREIGN KEY (processed_by) REFERENCES users (id)
+    );
+  `);
+
+  // Create purchase_return_items table
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS purchase_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_return_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_name TEXT,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      unit_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
+      total_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
+      reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products (id)
     );
   `);
 
@@ -1327,7 +1613,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       original_amount DECIMAL(12,2) NOT NULL,
       paid_amount DECIMAL(12,2) DEFAULT 0,
       balance_amount DECIMAL(12,2) NOT NULL,
-      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE')) DEFAULT 'OUTSTANDING',
+      status TEXT CHECK (status IN ('OUTSTANDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CREDIT')) DEFAULT 'OUTSTANDING',
       days_outstanding INTEGER DEFAULT 0,
       aging_bucket TEXT CHECK (aging_bucket IN ('0-30', '31-60', '61-90', '90+')) DEFAULT '0-30',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1437,13 +1723,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     CREATE TABLE IF NOT EXISTS sales_returns (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       return_number TEXT NOT NULL UNIQUE,
-      original_transaction_id INTEGER NOT NULL,
-      original_invoice_number TEXT NOT NULL,
+      original_transaction_id INTEGER,
+      original_invoice_number TEXT,
       customer_id INTEGER,
       customer_name TEXT,
       return_date DATE NOT NULL,
       total_amount DECIMAL(12,2) NOT NULL,
-      refund_method TEXT CHECK (refund_method IN ('CASH', 'CREDIT', 'EXCHANGE')) DEFAULT 'CASH',
+      refund_method TEXT CHECK (refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT', 'EXCHANGE')) DEFAULT 'CASH',
       reason TEXT NOT NULL,
       notes TEXT,
       processed_by INTEGER NOT NULL,
@@ -1519,6 +1805,22 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       activated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       last_verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create reset_operations_log table for tracking reset attempts
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS reset_operations_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      operation_type TEXT CHECK (operation_type IN ('TRANSACTIONAL_DATA_RESET', 'DATABASE_RESTORE', 'MASTER_DATA_RESET')) NOT NULL,
+      status TEXT CHECK (status IN ('ATTEMPTED', 'SUCCESS', 'FAILED', 'DENIED', 'CANCELLED')) NOT NULL,
+      records_deleted INTEGER DEFAULT 0,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users (id)
     );
   `);
 
@@ -1605,6 +1907,10 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_device_binding_device_id ON device_binding (device_id);');
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_device_binding_license_key ON device_binding (license_key);');
 
+  // Reset operations log indexes
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_reset_operations_log_user ON reset_operations_log (user_id);');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_reset_operations_log_date ON reset_operations_log (created_at);');
+
   // Insert default settings
   await db.execAsync(`
     INSERT OR IGNORE INTO settings (key, value, description) VALUES
@@ -1615,10 +1921,28 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       ('pos_serial', 'POS000000', 'POS Machine Serial Number'),
       ('accreditation_number', 'ACC000000', 'BIR Accreditation Number'),
       ('vat_rate', '12.00', 'VAT rate percentage'),
-      ('receipt_footer', 'Thank you for your business!', 'Receipt footer message'),
+      ('receipt_footer', 'Thank you for shopping with us! Come Again!!!', 'Receipt footer message'),
       ('z_counter', '0', 'Z-Reading counter (cumulative)'),
       ('current_invoice_series', 'INV', 'Current invoice series prefix'),
       ('current_invoice_number', '1', 'Current invoice number');
+  `);
+
+  // Insert BIR compliance settings (Phase 1 - Critical for legal operation)
+  await db.execAsync(`
+    INSERT OR IGNORE INTO settings (key, value, description) VALUES
+      ('min_number', '', 'Machine Identification Number (MIN) - BIR assigned'),
+      ('ptu_number', '', 'Permit to Use (PTU) Number'),
+      ('ptu_date', '', 'Permit to Use Issue Date'),
+      ('atp_number', '', 'Authority to Print (ATP) Number'),
+      ('atp_date', '', 'Authority to Print Issue Date'),
+      ('accreditation_date', '', 'BIR Accreditation Date'),
+      ('serial_number_from', '00000001', 'Invoice Serial Number Range Start'),
+      ('serial_number_to', '99999999', 'Invoice Serial Number Range End'),
+      ('supplier_name', 'IgoroTech Solutions', 'POS Software Supplier/Developer Name'),
+      ('supplier_address', 'Baguio City, Philippines', 'POS Software Supplier Address'),
+      ('supplier_tin', '000-000-000-000', 'POS Software Supplier TIN'),
+      ('supplier_accreditation', '', 'POS Software Supplier Accreditation Number'),
+      ('cumulative_grand_total', '0', 'Cumulative Grand Total for Z-Readings');
   `);
 
   // Insert default categories
@@ -1688,36 +2012,86 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       ('1kg', '1 kilogram', 23);
   `);
 
-  // Insert default users
+  // Insert default users with proper password hashes (default password: 1122)
   await db.execAsync(`
     INSERT OR IGNORE INTO users (username, full_name, role, password_hash) VALUES
-      ('admin', 'System Administrator', 'ADMIN', '$2b$10$demo_hash_admin'),
-      ('manager', 'Store Manager', 'MANAGER', '$2b$10$demo_hash_manager'),
-      ('cashier', 'Cashier User', 'CASHIER', '$2b$10$demo_hash_cashier');
+      ('admin', 'System Administrator', 'ADMIN', '$simple$AdminSalt1234567$6d4a5ab4'),
+      ('manager', 'Store Manager', 'MANAGER', '$simple$ManagerSalt12345$5d2db5d9'),
+      ('cashier', 'Cashier User', 'CASHIER', '$simple$CashierSalt12345$26740a7d');
+  `);
+
+  // Migration: Update existing users with legacy/demo hashes to proper password hashes
+  // This ensures existing databases get the new secure passwords (default: 1122)
+  // Updates any user that doesn't already have the proper $simple$ hash format
+  await db.execAsync(`
+    UPDATE users SET password_hash = '$simple$AdminSalt1234567$6d4a5ab4'
+    WHERE username = 'admin' AND password_hash NOT LIKE '$simple$%';
+  `);
+  await db.execAsync(`
+    UPDATE users SET password_hash = '$simple$ManagerSalt12345$5d2db5d9'
+    WHERE username = 'manager' AND password_hash NOT LIKE '$simple$%';
+  `);
+  await db.execAsync(`
+    UPDATE users SET password_hash = '$simple$CashierSalt12345$26740a7d'
+    WHERE username = 'cashier' AND password_hash NOT LIKE '$simple$%';
   `);
 
   // Insert default role permissions for MANAGER
+  // Manager has most permissions except MANAGE_USERS, MANAGE_SETTINGS, MANAGE_PERMISSIONS
+  // ACCESS_ADMIN_TOOLS is disabled by default but Admin can enable it
   const managerPermissions = [
-    'VIEW_DASHBOARD', 'CREATE_SALE', 'VIEW_ALL_SALES', 'VIEW_OWN_SALES',
-    'VOID_SALE', 'REFUND_SALE', 'MANAGE_PRODUCTS', 'VIEW_PRODUCTS',
-    'MANAGE_INVENTORY', 'VIEW_REPORTS', 'VIEW_SETTINGS', 'PERFORM_Z_READING',
-    'PERFORM_X_READING', 'VIEW_EJOURNAL', 'MANAGE_PURCHASES', 'MANAGE_SUPPLIERS',
-    'CREATE_PURCHASE_ORDER', 'RECEIVE_PURCHASE', 'MANAGE_SUPPLIER_PAYMENTS',
-    'VIEW_ACCOUNTS_PAYABLE', 'PROCESS_PAYMENTS', 'MANAGE_DAMAGED_ITEMS',
-    'CREATE_DAMAGE_SESSION', 'VIEW_DAMAGE_REPORTS', 'MANAGE_CUSTOMERS',
-    'COLLECT_CUSTOMER_PAYMENTS', 'VIEW_ACCOUNTS_RECEIVABLE', 'CREATE_CHARGE_INVOICE'
+    { permission: 'VIEW_DASHBOARD', enabled: 1 },
+    { permission: 'CREATE_SALE', enabled: 1 },
+    { permission: 'VIEW_ALL_SALES', enabled: 1 },
+    { permission: 'VIEW_OWN_SALES', enabled: 1 },
+    { permission: 'VOID_SALE', enabled: 1 },
+    { permission: 'REFUND_SALE', enabled: 1 },
+    { permission: 'MANAGE_PRODUCTS', enabled: 1 },
+    { permission: 'VIEW_PRODUCTS', enabled: 1 },
+    { permission: 'ADD_PRODUCT', enabled: 1 },
+    { permission: 'EDIT_PRODUCT', enabled: 1 },
+    { permission: 'DELETE_PRODUCT', enabled: 1 },
+    { permission: 'VIEW_PRODUCT_COST', enabled: 1 },
+    { permission: 'MANAGE_INVENTORY', enabled: 1 },
+    { permission: 'VIEW_REPORTS', enabled: 1 },
+    { permission: 'VIEW_SETTINGS', enabled: 1 },
+    { permission: 'PERFORM_Z_READING', enabled: 1 },
+    { permission: 'PERFORM_X_READING', enabled: 1 },
+    { permission: 'VIEW_EJOURNAL', enabled: 1 },
+    { permission: 'MANAGE_PURCHASES', enabled: 1 },
+    { permission: 'MANAGE_SUPPLIERS', enabled: 1 },
+    { permission: 'CREATE_PURCHASE_ORDER', enabled: 1 },
+    { permission: 'RECEIVE_PURCHASE', enabled: 1 },
+    { permission: 'MANAGE_SUPPLIER_PAYMENTS', enabled: 1 },
+    { permission: 'PAY_PAYABLES', enabled: 1 },
+    { permission: 'VIEW_ACCOUNTS_PAYABLE', enabled: 1 },
+    { permission: 'PROCESS_PAYMENTS', enabled: 1 },
+    { permission: 'MANAGE_DAMAGED_ITEMS', enabled: 1 },
+    { permission: 'CREATE_DAMAGE_SESSION', enabled: 1 },
+    { permission: 'VIEW_DAMAGE_REPORTS', enabled: 1 },
+    { permission: 'MANAGE_CUSTOMERS', enabled: 1 },
+    { permission: 'ADD_CUSTOMER', enabled: 1 },
+    { permission: 'EDIT_CUSTOMER', enabled: 1 },
+    { permission: 'DELETE_CUSTOMER', enabled: 1 },
+    { permission: 'COLLECT_CUSTOMER_PAYMENTS', enabled: 1 },
+    { permission: 'VIEW_ACCOUNTS_RECEIVABLE', enabled: 1 },
+    { permission: 'CREATE_CHARGE_INVOICE', enabled: 1 },
+    { permission: 'ACCESS_ADMIN_TOOLS', enabled: 0 },    // Disabled by default, Admin can enable
+    { permission: 'MANAGE_PERMISSIONS', enabled: 0 },   // Admin only - cannot be enabled for Manager
   ];
 
   // Use parameterized queries to prevent SQL injection
-  for (const permission of managerPermissions) {
+  for (const { permission, enabled } of managerPermissions) {
     await db.runAsync(
       `INSERT OR IGNORE INTO role_permissions (role, permission, is_enabled, updated_by)
        VALUES (?, ?, ?, ?)`,
-      ['MANAGER', permission, 1, 1]
+      ['MANAGER', permission, enabled, 1]
     );
   }
 
   // Insert default role permissions for CASHIER
+  // Cashier can: sell, accept deliveries, add customers (no edit), collect receivables, pay payables
+  // Cashier cannot: delete records, void/refund, see cost, edit products/customers
   const cashierPermissions = [
     { permission: 'VIEW_DASHBOARD', enabled: 1 },
     { permission: 'CREATE_SALE', enabled: 1 },
@@ -1727,6 +2101,10 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     { permission: 'REFUND_SALE', enabled: 0 },
     { permission: 'MANAGE_PRODUCTS', enabled: 0 },
     { permission: 'VIEW_PRODUCTS', enabled: 1 },
+    { permission: 'ADD_PRODUCT', enabled: 1 },         // Can add products
+    { permission: 'EDIT_PRODUCT', enabled: 0 },        // Cannot edit products
+    { permission: 'DELETE_PRODUCT', enabled: 0 },      // Cannot delete products
+    { permission: 'VIEW_PRODUCT_COST', enabled: 0 },   // Cannot see cost prices
     { permission: 'MANAGE_INVENTORY', enabled: 0 },
     { permission: 'VIEW_REPORTS', enabled: 0 },
     { permission: 'VIEW_SETTINGS', enabled: 0 },
@@ -1736,17 +2114,24 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     { permission: 'MANAGE_PURCHASES', enabled: 0 },
     { permission: 'MANAGE_SUPPLIERS', enabled: 0 },
     { permission: 'CREATE_PURCHASE_ORDER', enabled: 0 },
-    { permission: 'RECEIVE_PURCHASE', enabled: 0 },
+    { permission: 'RECEIVE_PURCHASE', enabled: 1 },    // Can accept deliveries
     { permission: 'MANAGE_SUPPLIER_PAYMENTS', enabled: 0 },
+    { permission: 'PAY_PAYABLES', enabled: 1 },        // Can pay suppliers
     { permission: 'VIEW_ACCOUNTS_PAYABLE', enabled: 0 },
     { permission: 'PROCESS_PAYMENTS', enabled: 0 },
     { permission: 'MANAGE_DAMAGED_ITEMS', enabled: 0 },
     { permission: 'CREATE_DAMAGE_SESSION', enabled: 0 },
     { permission: 'VIEW_DAMAGE_REPORTS', enabled: 0 },
     { permission: 'MANAGE_CUSTOMERS', enabled: 0 },
+    { permission: 'ADD_CUSTOMER', enabled: 1 },        // Can add customers
+    { permission: 'EDIT_CUSTOMER', enabled: 0 },       // Cannot edit customers
+    { permission: 'DELETE_CUSTOMER', enabled: 0 },     // Cannot delete customers
     { permission: 'COLLECT_CUSTOMER_PAYMENTS', enabled: 1 },
     { permission: 'VIEW_ACCOUNTS_RECEIVABLE', enabled: 0 },
-    { permission: 'CREATE_CHARGE_INVOICE', enabled: 1 }
+    { permission: 'CREATE_CHARGE_INVOICE', enabled: 1 },
+    { permission: 'DELETE_RECORDS', enabled: 0 },       // Cannot delete any records
+    { permission: 'ACCESS_ADMIN_TOOLS', enabled: 0 },   // No admin tools access
+    { permission: 'MANAGE_PERMISSIONS', enabled: 0 }    // No permission management
   ];
 
   // Use parameterized queries to prevent SQL injection
@@ -1890,14 +2275,21 @@ export const updateDamageSessionNumber = async (db: SQLite.SQLiteDatabase, sessi
 };
 
 export const getNextCustomerCode = async (db: SQLite.SQLiteDatabase): Promise<string> => {
-  const result = await db.getFirstAsync<{value: string, series: string}>(
+  const result = await db.getFirstAsync<{value: string | null, series: string | null}>(
     `SELECT
        (SELECT value FROM settings WHERE key = 'current_customer_number') as value,
        (SELECT value FROM settings WHERE key = 'current_customer_series') as series`
   );
 
-  if (!result) {
-    throw new Error('Customer settings not found');
+  if (!result || result.value === null || result.series === null) {
+    // Settings don't exist, create them with defaults
+    await db.execAsync(`
+      INSERT OR IGNORE INTO settings (key, value, description) VALUES
+        ('current_customer_series', 'CUS', 'Current customer code series prefix'),
+        ('current_customer_number', '0', 'Current customer number');
+    `);
+    // Return first customer code
+    return 'CUS001';
   }
 
   const nextNumber = (parseInt(result.value) + 1).toString().padStart(3, '0');

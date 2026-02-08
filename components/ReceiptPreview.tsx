@@ -27,6 +27,23 @@ export interface ReceiptData {
   tin?: string;
   permitNumber?: string;
 
+  // BIR Compliance fields (Phase 1)
+  minNumber?: string; // Machine Identification Number
+  ptuNumber?: string; // Permit to Use Number
+  ptuDate?: string; // Permit to Use Issue Date
+  atpNumber?: string; // Authority to Print Number
+  atpDate?: string; // Authority to Print Issue Date
+  accreditationNumber?: string; // BIR Accreditation Number
+  accreditationDate?: string; // BIR Accreditation Date
+  serialNumberFrom?: string; // Invoice serial range start
+  serialNumberTo?: string; // Invoice serial range end
+
+  // Supplier/Developer info (required on receipt)
+  supplierName?: string;
+  supplierAddress?: string;
+  supplierTin?: string;
+  supplierAccreditation?: string;
+
   // Transaction info
   invoiceNumber: string;
   transactionDate: Date;
@@ -48,6 +65,11 @@ export interface ReceiptData {
   zeroRatedSales?: number;
   vatAmount?: number;
 
+  // SC/PWD Discount (BIR requirement)
+  scPwdId?: string;
+  scPwdName?: string;
+  scPwdType?: 'SENIOR' | 'PWD';
+
   // Payment
   paymentMethod: string;
   amountTendered: number;
@@ -55,6 +77,7 @@ export interface ReceiptData {
 
   // Customer
   customerName?: string;
+  customerTin?: string;
 
   // Footer
   footerText?: string;
@@ -64,6 +87,7 @@ interface ReceiptPreviewProps {
   data: ReceiptData;
   width?: '58mm' | '80mm';
   onPrint?: () => void;
+  onEmail?: () => void;
   onClose?: () => void;
   isPrinting?: boolean;
   showActions?: boolean;
@@ -73,6 +97,7 @@ export default function ReceiptPreview({
   data,
   width = '58mm',
   onPrint,
+  onEmail,
   onClose,
   isPrinting = false,
   showActions = true,
@@ -154,8 +179,29 @@ export default function ReceiptPreview({
             {data.tin ? (
               <Text style={styles.headerText}>TIN: {data.tin}</Text>
             ) : null}
-            {data.permitNumber ? (
-              <Text style={styles.headerText}>Permit No: {data.permitNumber}</Text>
+            {/* BIR Compliance Fields */}
+            {data.minNumber ? (
+              <Text style={styles.headerText}>MIN: {data.minNumber}</Text>
+            ) : null}
+            {data.ptuNumber ? (
+              <Text style={styles.headerText}>
+                PTU No: {data.ptuNumber}{data.ptuDate ? ` (${data.ptuDate})` : ''}
+              </Text>
+            ) : null}
+            {data.atpNumber ? (
+              <Text style={styles.headerText}>
+                ATP No: {data.atpNumber}{data.atpDate ? ` (${data.atpDate})` : ''}
+              </Text>
+            ) : null}
+            {data.accreditationNumber ? (
+              <Text style={styles.headerText}>
+                Accred No: {data.accreditationNumber}{data.accreditationDate ? ` (${data.accreditationDate})` : ''}
+              </Text>
+            ) : null}
+            {data.serialNumberFrom && data.serialNumberTo ? (
+              <Text style={styles.headerText}>
+                S/N: {data.serialNumberFrom} to {data.serialNumberTo}
+              </Text>
             ) : null}
           </View>
 
@@ -229,6 +275,13 @@ export default function ReceiptPreview({
                 `-${formatCurrency(data.discountAmount)}`
               )
             ) : null}
+            {/* SC/PWD Discount Info (BIR requirement) */}
+            {data.scPwdId ? (
+              <>
+                {renderLine(`${data.scPwdType === 'SENIOR' ? 'SC' : 'PWD'} ID:`, data.scPwdId)}
+                {data.scPwdName ? renderLine('Name:', data.scPwdName) : null}
+              </>
+            ) : null}
           </View>
 
           {renderDoubleSeparator()}
@@ -257,11 +310,30 @@ export default function ReceiptPreview({
             {data.footerText ? (
               <Text style={styles.footerText}>{data.footerText}</Text>
             ) : null}
-            <View style={styles.officialReceipt}>
-              <Text style={styles.officialText}>*** THIS SERVES AS YOUR ***</Text>
-              <Text style={styles.officialText}>*** OFFICIAL RECEIPT ***</Text>
-            </View>
           </View>
+
+          {/* BIR Supplier/Developer Info (Required) */}
+          {(data.supplierName || data.supplierTin || data.supplierAccreditation) ? (
+            <>
+              {renderSeparator()}
+              <View style={styles.supplierSection}>
+                <Text style={styles.supplierLabel}>POS Provider:</Text>
+                {data.supplierName ? (
+                  <Text style={styles.supplierText}>{data.supplierName}</Text>
+                ) : null}
+                {data.supplierAddress ? (
+                  <Text style={styles.supplierText}>{data.supplierAddress}</Text>
+                ) : null}
+                {data.supplierTin ? (
+                  <Text style={styles.supplierText}>TIN: {data.supplierTin}</Text>
+                ) : null}
+                {data.supplierAccreditation ? (
+                  <Text style={styles.supplierText}>Accred: {data.supplierAccreditation}</Text>
+                ) : null}
+              </View>
+            </>
+          ) : null}
+
         </View>
       </ScrollView>
 
@@ -275,7 +347,18 @@ export default function ReceiptPreview({
               style={styles.actionButton}
               disabled={isPrinting}
             >
-              Close
+              New Sale
+            </Button>
+          )}
+          {onEmail && (
+            <Button
+              mode="outlined"
+              onPress={onEmail}
+              style={styles.actionButton}
+              disabled={isPrinting}
+              icon="email-outline"
+            >
+              Email
             </Button>
           )}
           {onPrint && (
@@ -287,7 +370,7 @@ export default function ReceiptPreview({
               disabled={isPrinting}
               icon="printer"
             >
-              Print Receipt
+              Print
             </Button>
           )}
         </View>
@@ -439,5 +522,21 @@ const styles = StyleSheet.create({
   actionButton: {
     flex: 1,
     marginHorizontal: 8,
+  },
+  supplierSection: {
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  supplierLabel: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  supplierText: {
+    fontSize: 9,
+    fontFamily: 'monospace',
+    textAlign: 'center',
+    color: '#555',
   },
 });

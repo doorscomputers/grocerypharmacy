@@ -39,13 +39,6 @@ export function hashPassword(password: string): string {
  * Verify a password against a stored hash
  */
 export function verifyPassword(password: string, storedHash: string): boolean {
-  // Handle legacy demo hashes (for backward compatibility)
-  if (storedHash.startsWith('$2b$10$demo_hash_')) {
-    // Legacy format: the password was embedded in the hash
-    // Accept any password for these legacy accounts (demo mode)
-    return true;
-  }
-
   // Handle simple hash format: $simple$salt$hash
   if (storedHash.startsWith('$simple$')) {
     const parts = storedHash.split('$');
@@ -59,7 +52,6 @@ export function verifyPassword(password: string, storedHash: string): boolean {
     return actualHash === expectedHash;
   }
 
-  // For any other format, fall back to demo mode (accept any password)
-  // This handles the mock database which stores plain passwords
-  return true;
+  // No valid hash format found - reject the password
+  return false;
 }

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal as RNModal } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Modal as RNModal, TextInput as RNTextInput } from 'react-native';
 import { Button, Chip, Text, Card, RadioButton } from 'react-native-paper';
 
 export type DatePreset =
@@ -13,7 +13,8 @@ export type DatePreset =
   | 'last_quarter'
   | 'this_year'
   | 'last_year'
-  | 'all_time';
+  | 'all_time'
+  | 'custom';
 
 interface DateRange {
   startDate: Date;
@@ -139,6 +140,15 @@ const getDateRange = (preset: DatePreset): DateRange => {
         label: 'Last Year',
       };
     }
+    case 'custom': {
+      // Custom returns all time as default; actual dates set by user input
+      const veryOldDate = new Date(2000, 0, 1);
+      return {
+        startDate: veryOldDate,
+        endDate: today,
+        label: 'Custom',
+      };
+    }
     case 'all_time':
     default: {
       const veryOldDate = new Date(2000, 0, 1);
@@ -163,18 +173,48 @@ const presetOptions: { value: DatePreset; label: string }[] = [
   { value: 'this_year', label: 'This Year' },
   { value: 'last_year', label: 'Last Year' },
   { value: 'all_time', label: 'All Time' },
+  { value: 'custom', label: 'Custom Range' },
 ];
 
 export default function DateRangeFilter({ onDateChange, selectedPreset: initialPreset }: DateRangeFilterProps) {
   const [selectedPreset, setSelectedPreset] = useState<DatePreset>(initialPreset || 'this_month');
   const [modalVisible, setModalVisible] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [customRange, setCustomRange] = useState<DateRange | null>(null);
 
-  const currentRange = useMemo(() => getDateRange(selectedPreset), [selectedPreset]);
+  const currentRange = useMemo(() => {
+    if (selectedPreset === 'custom' && customRange) {
+      return customRange;
+    }
+    return getDateRange(selectedPreset);
+  }, [selectedPreset, customRange]);
 
   const handlePresetChange = (preset: DatePreset) => {
+    if (preset === 'custom') {
+      setSelectedPreset('custom');
+      // Don't close modal yet - user needs to enter dates
+      return;
+    }
     setSelectedPreset(preset);
     setModalVisible(false);
     const range = getDateRange(preset);
+    onDateChange(range.startDate, range.endDate);
+  };
+
+  const applyCustomRange = () => {
+    const start = new Date(customStartDate);
+    const end = new Date(customEndDate);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return;
+    }
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    if (start > end) return;
+    const range: DateRange = { startDate: start, endDate: end, label: 'Custom' };
+    setCustomRange(range);
+    setSelectedPreset('custom');
+    setModalVisible(false);
     onDateChange(range.startDate, range.endDate);
   };
 
@@ -253,6 +293,35 @@ export default function DateRangeFilter({ onDateChange, selectedPreset: initialP
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
+                {selectedPreset === 'custom' && (
+                  <View style={styles.customDateSection}>
+                    <Text style={styles.customDateLabel}>Start Date (YYYY-MM-DD)</Text>
+                    <RNTextInput
+                      style={styles.customDateInput}
+                      value={customStartDate}
+                      onChangeText={setCustomStartDate}
+                      placeholder="2026-01-01"
+                      keyboardType="default"
+                      autoFocus
+                    />
+                    <Text style={styles.customDateLabel}>End Date (YYYY-MM-DD)</Text>
+                    <RNTextInput
+                      style={styles.customDateInput}
+                      value={customEndDate}
+                      onChangeText={setCustomEndDate}
+                      placeholder="2026-01-31"
+                      keyboardType="default"
+                    />
+                    <Button
+                      mode="contained"
+                      onPress={applyCustomRange}
+                      style={styles.customApplyBtn}
+                      disabled={!customStartDate || !customEndDate}
+                    >
+                      Apply
+                    </Button>
+                  </View>
+                )}
               </Card.Content>
               <Card.Actions>
                 <Button onPress={() => setModalVisible(false)}>Cancel</Button>
@@ -327,6 +396,33 @@ const styles = StyleSheet.create({
   selectedOptionText: {
     color: '#1976D2',
     fontWeight: 'bold',
+  },
+  customDateSection: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  customDateLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+    marginBottom: 4,
+  },
+  customDateInput: {
+    borderWidth: 1,
+    borderColor: '#BDBDBD',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 15,
+    marginBottom: 10,
+    backgroundColor: '#FAFAFA',
+    color: '#212121',
+  },
+  customApplyBtn: {
+    marginTop: 4,
+    backgroundColor: '#1976D2',
   },
 });
 

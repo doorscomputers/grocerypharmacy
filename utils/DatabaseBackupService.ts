@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as SQLite from 'expo-sqlite';
@@ -12,9 +12,21 @@ export interface BackupMetadata {
   product_count: number;
   transaction_count: number;
   user_count: number;
+  supplier_count?: number;
+  customer_count?: number;
+  backup_reason?: string;
+}
+
+export interface BackupInfo {
+  filename: string;
+  filepath: string;
+  timestamp: Date;
+  sizeKB: number;
+  metadata?: BackupMetadata;
 }
 
 const WEB_STORAGE_KEY = 'posmobile_webmock_db';
+const BACKUP_FOLDER_NAME = 'POSBackups';
 
 // Check if running on web platform
 const isWeb = (): boolean => {
@@ -31,6 +43,187 @@ export class DatabaseBackupService {
       DatabaseBackupService.instance = new DatabaseBackupService();
     }
     return DatabaseBackupService.instance;
+  }
+
+  // Get the dedicated backup folder path
+  async getBackupFolderPath(): Promise<string> {
+    if (isWeb()) {
+      return 'downloads'; // Web uses browser downloads
+    }
+
+    const baseDir = FileSystem.documentDirectory;
+    if (!baseDir) {
+      throw new Error('No writable directory available');
+    }
+
+    const backupDir = `${baseDir}${BACKUP_FOLDER_NAME}/`;
+
+    // Create folder if it doesn't exist
+    const dirInfo = await FileSystem.getInfoAsync(backupDir);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(backupDir, { intermediates: true });
+      console.log('[Backup] Created backup folder:', backupDir);
+    }
+
+    return backupDir;
+  }
+
+  // List all backups in the backup folder
+  async listBackups(): Promise<BackupInfo[]> {
+    if (isWeb()) {
+      // Web doesn't have persistent backup storage
+      return [];
+    }
+
+    try {
+      const backupDir = await this.getBackupFolderPath();
+      const files = await FileSystem.readDirectoryAsync(backupDir);
+
+      const backups: BackupInfo[] = [];
+
+      for (const filename of files) {
+        if (filename.endsWith('.json') && filename.startsWith('pos_backup_')) {
+          const filepath = `${backupDir}${filename}`;
+          const fileInfo = await FileSystem.getInfoAsync(filepath, { size: true });
+
+          if (fileInfo.exists) {
+            // Try to read metadata
+            let metadata: BackupMetadata | undefined;
+            try {
+              const content = await FileSystem.readAsStringAsync(filepath);
+              const data = JSON.parse(content);
+              metadata = data.metadata;
+            } catch (e) {
+              // Could not read metadata
+            }
+
+            // Extract timestamp from filename
+            const timestampMatch = filename.match(/pos_backup_(.+)\.json/);
+            let timestamp = new Date();
+            if (timestampMatch) {
+              const dateStr = timestampMatch[1].replace(/-/g, ':').replace('T', ' ');
+              timestamp = new Date(dateStr);
+            }
+
+            backups.push({
+              filename,
+              filepath,
+              timestamp,
+              sizeKB: Math.round((fileInfo.size || 0) / 1024),
+              metadata,
+            });
+          }
+        }
+      }
+
+      // Sort by timestamp, newest first
+      return backups.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    } catch (error) {
+      console.error('[Backup] Error listing backups:', error);
+      return [];
+    }
+  }
+
+  // Delete a backup file
+  async deleteBackup(filepath: string): Promise<boolean> {
+    if (isWeb()) {
+      return false;
+    }
+
+    try {
+      await FileSystem.deleteAsync(filepath, { idempotent: true });
+      console.log('[Backup] Deleted backup:', filepath);
+      return true;
+    } catch (error) {
+      console.error('[Backup] Error deleting backup:', error);
+      return false;
+    }
+  }
+
+  // Create auto-backup before dangerous operations
+  async createAutoBackup(reason: string = 'auto'): Promise<string | null> {
+    console.log('[Backup] Creating auto-backup, reason:', reason);
+    try {
+      if (isWeb()) {
+        // For web, we can't auto-save, so just return null
+        console.log('[Backup] Auto-backup skipped on web platform');
+        return null;
+      }
+
+      const backupDir = await this.getBackupFolderPath();
+      const { DatabaseService } = require('../database/DatabaseService');
+      const dbService = DatabaseService.getInstance();
+      const db = dbService.getDatabase();
+
+      // Get metadata
+      const metadata = await this.getBackupMetadata(db);
+      metadata.backup_reason = reason;
+
+      // Get all table data
+      const tables = await this.getAllTables(db);
+      const backupData = {
+        metadata,
+        platform: 'native',
+        tables: {} as Record<string, any[]>
+      };
+
+      for (const table of tables) {
+        try {
+          const data = await db.getAllAsync(`SELECT * FROM ${table}`);
+          backupData.tables[table] = data;
+        } catch (error) {
+          backupData.tables[table] = [];
+        }
+      }
+
+      // Generate filename with reason prefix
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `pos_backup_${reason}_${timestamp}.json`;
+      const backupPath = `${backupDir}${filename}`;
+
+      await FileSystem.writeAsStringAsync(
+        backupPath,
+        JSON.stringify(backupData, null, 2)
+      );
+
+      console.log('[Backup] Auto-backup created:', backupPath);
+      return backupPath;
+    } catch (error) {
+      console.error('[Backup] Auto-backup failed:', error);
+      return null;
+    }
+  }
+
+  // Clean old auto-backups (keep last N)
+  async cleanOldBackups(keepCount: number = 5): Promise<number> {
+    if (isWeb()) {
+      return 0;
+    }
+
+    try {
+      const backups = await this.listBackups();
+      const autoBackups = backups.filter(b => b.filename.includes('_auto_') || b.filename.includes('_pre-reset_'));
+
+      if (autoBackups.length <= keepCount) {
+        return 0;
+      }
+
+      // Delete oldest auto-backups
+      const toDelete = autoBackups.slice(keepCount);
+      let deletedCount = 0;
+
+      for (const backup of toDelete) {
+        if (await this.deleteBackup(backup.filepath)) {
+          deletedCount++;
+        }
+      }
+
+      console.log('[Backup] Cleaned', deletedCount, 'old auto-backups');
+      return deletedCount;
+    } catch (error) {
+      console.error('[Backup] Error cleaning old backups:', error);
+      return 0;
+    }
   }
 
   // Create a backup of the database
@@ -88,7 +281,7 @@ export class DatabaseBackupService {
     return filename;
   }
 
-  // Native backup - exports SQLite data
+  // Native backup - exports SQLite data to dedicated backup folder
   private async createNativeBackup(): Promise<string> {
     const { DatabaseService } = require('../database/DatabaseService');
     const dbService = DatabaseService.getInstance();
@@ -118,26 +311,23 @@ export class DatabaseBackupService {
       }
     }
 
+    // Get dedicated backup folder
+    const backupDir = await this.getBackupFolderPath();
+
     // Generate filename with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `pos_backup_${timestamp}.json`;
+    const filename = `pos_backup_manual_${timestamp}.json`;
+    const backupPath = `${backupDir}${filename}`;
 
-    // Save to documents directory (with fallback to cache directory)
-    let baseDir = FileSystem.documentDirectory;
-    if (!baseDir) {
-      baseDir = FileSystem.cacheDirectory;
-    }
-    if (!baseDir) {
-      throw new Error('No writable directory available');
-    }
-
-    const backupPath = `${baseDir}${filename}`;
     console.log('[Backup] Saving to:', backupPath);
 
     await FileSystem.writeAsStringAsync(
       backupPath,
       JSON.stringify(backupData, null, 2)
     );
+
+    // Clean old auto-backups (keep last 5)
+    await this.cleanOldBackups(5);
 
     return backupPath;
   }

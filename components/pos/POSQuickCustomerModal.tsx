@@ -68,9 +68,9 @@ export default function POSQuickCustomerModal({
       });
 
       handleClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating customer:', error);
-      Alert.alert('Error', 'Failed to create customer');
+      Alert.alert('Error', error?.message || 'Failed to create customer');
     } finally {
       setIsLoading(false);
     }

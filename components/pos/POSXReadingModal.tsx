@@ -8,14 +8,23 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
 import { DatabaseService } from '../../database/DatabaseService';
+import BluetoothPrinterService from '../../utils/BluetoothPrinterService';
+import { buildXReading, PRINTER_WIDTH } from '../../utils/escpos';
+import {
+  XReadingPdfData,
+  shareXReadingPdf,
+  emailXReadingPdf,
+} from '../../utils/ReceiptPdfService';
 
 interface POSXReadingModalProps {
   visible: boolean;
   onClose: () => void;
   cashierId: number;
+  targetDate?: string;  // Optional date for viewing unterminated session data
 }
 
 interface XReadingData {
@@ -36,6 +45,7 @@ interface XReadingData {
   card_sales: number;
   check_sales: number;
   credit_sales: number;
+  beginning_cash: number;
   cash_fund: number;
   petty_cash: number;
   expected_cash: number;
@@ -45,37 +55,140 @@ export default function POSXReadingModal({
   visible,
   onClose,
   cashierId,
+  targetDate,
 }: POSXReadingModalProps) {
   const [data, setData] = useState<XReadingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isEmailing, setIsEmailing] = useState(false);
+  const [businessInfo, setBusinessInfo] = useState<{
+    name: string;
+    address: string;
+    tin: string;
+  }>({ name: '', address: '', tin: '' });
+  const [cashierName, setCashierName] = useState<string>('');
+
+  // History tab states
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyData, setHistoryData] = useState<any[]>([]);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<any | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [isHistoryPrinting, setIsHistoryPrinting] = useState(false);
+  const [isHistoryExporting, setIsHistoryExporting] = useState(false);
+  const [isHistoryEmailing, setIsHistoryEmailing] = useState(false);
 
   useEffect(() => {
     if (visible) {
-      loadXReadingData();
+      loadAllData();
+      setShowHistory(false);
+      setSelectedHistoryItem(null);
     }
   }, [visible]);
 
-  const loadXReadingData = async () => {
+  useEffect(() => {
+    if (showHistory && visible) {
+      loadHistoryData();
+    }
+  }, [showHistory, visible]);
+
+  const loadHistoryData = async () => {
+    setIsHistoryLoading(true);
+    try {
+      const db = DatabaseService.getInstance();
+      const history = await db.getXReadingHistory(30);
+      setHistoryData(history);
+    } catch (error) {
+      console.error('Error loading X-Reading history:', error);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const loadAllData = async () => {
     setIsLoading(true);
     try {
       const db = DatabaseService.getInstance();
 
-      // Get current shift's start_time to filter data by shift
+      // Check if database is ready before loading
+      if (!db.isReady()) {
+        Alert.alert('Error', 'Database not ready. Please restart the app.');
+        setIsLoading(false);
+        return;
+      }
+
+      // Load all data in parallel
+      await Promise.all([
+        loadXReadingData(),
+        loadBusinessInfo(),
+        loadCashierName(),
+      ]);
+    } catch (error) {
+      console.error('Error loading X-Reading data:', error);
+      Alert.alert('Error', 'Failed to load X-Reading data. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadBusinessInfo = async () => {
+    try {
+      const db = DatabaseService.getInstance();
+      const [name, address, tin] = await Promise.all([
+        db.getSetting('company_name'),
+        db.getSetting('company_address'),
+        db.getSetting('company_tin'),
+      ]);
+      setBusinessInfo({
+        name: name || 'Store',
+        address: address || '',
+        tin: tin || '',
+      });
+    } catch (error) {
+      console.error('Error loading business info:', error);
+      // Error is handled by loadAllData()
+    }
+  };
+
+  const loadCashierName = async () => {
+    try {
+      const db = DatabaseService.getInstance();
+      const user = await db.getUserById(cashierId);
+      if (user) {
+        setCashierName(user.full_name || user.username);
+      }
+    } catch (error) {
+      console.error('Error loading cashier name:', error);
+      // Error is handled by loadAllData()
+    }
+  };
+
+  const loadXReadingData = async () => {
+    try {
+      const db = DatabaseService.getInstance();
+
+      // If targetDate is provided (from unterminated session), use it directly
+      // Filter by cashierId to only show this cashier's transactions
+      if (targetDate) {
+        const xReadingData = await db.getXReadingData(targetDate, undefined, cashierId);
+        setData(xReadingData);
+        return;
+      }
+
+      // Otherwise, get current shift's start_time to filter data by shift
       let shiftStartTime: string | undefined;
       const currentShift = await db.getCurrentShift(cashierId);
       if (currentShift) {
         shiftStartTime = currentShift.start_time;
       }
 
-      // Pass shift start time to get only current shift's data
-      const xReadingData = await db.getXReadingData(undefined, shiftStartTime);
+      // Pass shift start time AND cashierId to get only this cashier's shift data
+      const xReadingData = await db.getXReadingData(undefined, shiftStartTime, cashierId);
       setData(xReadingData);
     } catch (error) {
       console.error('Error loading X-Reading data:', error);
-      Alert.alert('Error', 'Failed to load X-Reading data');
-    } finally {
-      setIsLoading(false);
+      // Error is handled by loadAllData()
     }
   };
 
@@ -90,6 +203,241 @@ export default function POSXReadingModal({
       Alert.alert('Error', 'Failed to save X-Reading');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Get paper width setting
+  const getPaperWidth = (): '58mm' | '80mm' => {
+    const printerService = BluetoothPrinterService.getInstance();
+    const settings = printerService.getSettings();
+    return settings.printerWidth === PRINTER_WIDTH.MM_80 ? '80mm' : '58mm';
+  };
+
+  // Build XReadingPdfData from current data
+  const buildPdfData = (): XReadingPdfData | null => {
+    if (!data) return null;
+    return {
+      businessName: businessInfo.name,
+      businessAddress: businessInfo.address,
+      tin: businessInfo.tin,
+      date: formatDate(data.date),
+      time: data.time,
+      cashierName: cashierName,
+      transaction_count: data.transaction_count,
+      gross_sales: data.gross_sales,
+      discount_amount: data.discount_amount,
+      refund_amount: data.refund_amount,
+      net_sales: data.net_sales,
+      vat_sales: data.vat_sales,
+      vat_amount: data.vat_amount,
+      vat_exempt_sales: data.vat_exempt_sales,
+      zero_rated_sales: data.zero_rated_sales,
+      cash_sales: data.cash_sales,
+      card_sales: data.card_sales,
+      check_sales: data.check_sales,
+      credit_sales: data.credit_sales,
+      void_count: data.void_count,
+      void_amount: data.void_amount,
+      beginning_cash: data.beginning_cash,
+      cash_fund: data.cash_fund,
+      petty_cash: data.petty_cash,
+      expected_cash: data.expected_cash,
+    };
+  };
+
+  // Print to thermal printer
+  const handlePrint = async () => {
+    if (!data) return;
+
+    // Check if BLE is available (not on web)
+    if (Platform.OS === 'web') {
+      Alert.alert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
+      return;
+    }
+
+    const printerService = BluetoothPrinterService.getInstance();
+    if (!printerService.isConnected()) {
+      Alert.alert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
+      return;
+    }
+
+    setIsPrinting(true);
+    try {
+      const settings = printerService.getSettings();
+      const printerWidth = settings.printerWidth;
+
+      const xReadingBuilder = buildXReading(
+        {
+          businessName: businessInfo.name,
+          tin: businessInfo.tin,
+          readingNumber: 0, // X-Reading doesn't track number like Z-Reading
+          cashierName: cashierName || 'Cashier',
+          startTime: new Date(),
+          endTime: new Date(),
+          transactionCount: data.transaction_count,
+          grossSales: data.gross_sales,
+          netSales: data.net_sales,
+          vatAmount: data.vat_amount,
+          discounts: data.discount_amount,
+          voidCount: data.void_count,
+          voidAmount: data.void_amount,
+        },
+        printerWidth
+      );
+
+      await printerService.print(xReadingBuilder);
+      Alert.alert('Success', 'X-Reading printed successfully!');
+    } catch (error) {
+      console.error('Print error:', error);
+      Alert.alert('Print Error', error instanceof Error ? error.message : 'Failed to print');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  // Export to PDF and share
+  const handleExportPdf = async () => {
+    if (!data) return;
+
+    setIsExporting(true);
+    try {
+      const pdfData = buildPdfData();
+      if (!pdfData) throw new Error('No data available');
+
+      const paperWidth = getPaperWidth();
+      await shareXReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Export error:', error);
+      Alert.alert('Export Error', error instanceof Error ? error.message : 'Failed to export PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Send via email
+  const handleEmail = async () => {
+    if (!data) return;
+
+    setIsEmailing(true);
+    try {
+      const pdfData = buildPdfData();
+      if (!pdfData) throw new Error('No data available');
+
+      const paperWidth = getPaperWidth();
+      await emailXReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Email error:', error);
+      Alert.alert('Email Error', error instanceof Error ? error.message : 'Failed to send email');
+    } finally {
+      setIsEmailing(false);
+    }
+  };
+
+  // Build XReadingPdfData from historical record
+  const buildHistoryPdfData = (record: any): XReadingPdfData => {
+    return {
+      businessName: businessInfo.name,
+      businessAddress: businessInfo.address,
+      tin: businessInfo.tin,
+      date: formatDate(record.date),
+      time: record.time,
+      cashierName: record.cashier_name || record.cashier_username || 'Cashier',
+      transaction_count: record.transaction_count || 0,
+      gross_sales: record.gross_sales || 0,
+      discount_amount: record.discount_amount || 0,
+      refund_amount: record.refund_amount || 0,
+      net_sales: record.net_sales || 0,
+      vat_sales: record.vat_sales || 0,
+      vat_amount: record.vat_amount || 0,
+      vat_exempt_sales: record.vat_exempt_sales || 0,
+      zero_rated_sales: record.zero_rated_sales || 0,
+      cash_sales: record.cash_sales || 0,
+      card_sales: record.card_sales || 0,
+      check_sales: record.check_sales || 0,
+      credit_sales: record.credit_sales || 0,
+      void_count: record.void_count || 0,
+      void_amount: record.void_amount || 0,
+      beginning_cash: record.beginning_cash || 0,
+      cash_fund: record.cash_fund || 0,
+      petty_cash: record.petty_cash || 0,
+      expected_cash: record.expected_cash || 0,
+    };
+  };
+
+  // Print historical X-Reading
+  const handleHistoryPrint = async (record: any) => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
+      return;
+    }
+
+    const printerService = BluetoothPrinterService.getInstance();
+    if (!printerService.isConnected()) {
+      Alert.alert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
+      return;
+    }
+
+    setIsHistoryPrinting(true);
+    try {
+      const settings = printerService.getSettings();
+      const printerWidth = settings.printerWidth;
+
+      const xReadingBuilder = buildXReading(
+        {
+          businessName: businessInfo.name,
+          tin: businessInfo.tin,
+          readingNumber: record.id || 0,
+          cashierName: record.cashier_name || record.cashier_username || 'Cashier',
+          startTime: new Date(record.date),
+          endTime: new Date(record.date),
+          transactionCount: record.transaction_count || 0,
+          grossSales: record.gross_sales || 0,
+          netSales: record.net_sales || 0,
+          vatAmount: record.vat_amount || 0,
+          discounts: record.discount_amount || 0,
+          voidCount: record.void_count || 0,
+          voidAmount: record.void_amount || 0,
+        },
+        printerWidth
+      );
+
+      await printerService.print(xReadingBuilder);
+      Alert.alert('Success', 'X-Reading printed successfully!');
+    } catch (error) {
+      console.error('Print error:', error);
+      Alert.alert('Print Error', error instanceof Error ? error.message : 'Failed to print');
+    } finally {
+      setIsHistoryPrinting(false);
+    }
+  };
+
+  // Export historical X-Reading to PDF
+  const handleHistoryExportPdf = async (record: any) => {
+    setIsHistoryExporting(true);
+    try {
+      const pdfData = buildHistoryPdfData(record);
+      const paperWidth = getPaperWidth();
+      await shareXReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Export error:', error);
+      Alert.alert('Export Error', error instanceof Error ? error.message : 'Failed to export PDF');
+    } finally {
+      setIsHistoryExporting(false);
+    }
+  };
+
+  // Email historical X-Reading
+  const handleHistoryEmail = async (record: any) => {
+    setIsHistoryEmailing(true);
+    try {
+      const pdfData = buildHistoryPdfData(record);
+      const paperWidth = getPaperWidth();
+      await emailXReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Email error:', error);
+      Alert.alert('Email Error', error instanceof Error ? error.message : 'Failed to send email');
+    } finally {
+      setIsHistoryEmailing(false);
     }
   };
 
@@ -119,12 +467,146 @@ export default function POSXReadingModal({
           <View style={styles.header}>
             <View>
               <Text style={styles.headerTitle}>X-Reading</Text>
-              <Text style={styles.headerSubtitle}>Mid-Day Inquiry Report</Text>
+              <Text style={styles.headerSubtitle}>{showHistory ? 'History' : 'Mid-Day Inquiry Report'}</Text>
             </View>
-            <IconButton icon="close" size={24} onPress={onClose} />
+            <View style={styles.headerRight}>
+              <TouchableOpacity
+                style={[styles.historyToggle, showHistory && styles.historyToggleActive]}
+                onPress={() => {
+                  setShowHistory(!showHistory);
+                  setSelectedHistoryItem(null);
+                }}
+              >
+                <Text style={[styles.historyToggleText, showHistory && styles.historyToggleTextActive]}>
+                  {showHistory ? 'Current' : 'History'}
+                </Text>
+              </TouchableOpacity>
+              <IconButton icon="close" size={24} iconColor="#FFFFFF" onPress={onClose} />
+            </View>
           </View>
 
-          {isLoading ? (
+          {showHistory ? (
+            // History View
+            isHistoryLoading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#6200EE" />
+                <Text style={styles.loadingText}>Loading history...</Text>
+              </View>
+            ) : (
+              <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+                {historyData.length === 0 ? (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>No X-Reading history yet</Text>
+                    <Text style={styles.emptySubtext}>Save an X-Reading to see it here</Text>
+                  </View>
+                ) : (
+                  historyData.map((record, index) => (
+                    <View key={record.id || index}>
+                      <TouchableOpacity
+                        style={styles.historyItem}
+                        onPress={() => setSelectedHistoryItem(
+                          selectedHistoryItem?.id === record.id ? null : record
+                        )}
+                      >
+                        <View style={styles.historyItemHeader}>
+                          <View>
+                            <Text style={styles.historyItemDate}>{formatDate(record.date)}</Text>
+                            <Text style={styles.historyItemTime}>{record.time}</Text>
+                          </View>
+                          <View style={styles.historyItemRight}>
+                            <Text style={styles.historyItemAmount}>{formatCurrency(record.net_sales || 0)}</Text>
+                            <Text style={styles.historyItemChevron}>
+                              {selectedHistoryItem?.id === record.id ? '▲' : '▼'}
+                            </Text>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Expanded Details */}
+                      {selectedHistoryItem?.id === record.id && (
+                        <View style={styles.historyItemDetails}>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Cashier:</Text>
+                            <Text style={styles.historyDetailValue}>
+                              {record.cashier_name || record.cashier_username || 'Unknown'}
+                            </Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Transactions:</Text>
+                            <Text style={styles.historyDetailValue}>{record.transaction_count || 0}</Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Gross Sales:</Text>
+                            <Text style={styles.historyDetailValue}>{formatCurrency(record.gross_sales || 0)}</Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Discounts:</Text>
+                            <Text style={styles.historyDetailValueRed}>({formatCurrency(record.discount_amount || 0)})</Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Net Sales:</Text>
+                            <Text style={styles.historyDetailValueBold}>{formatCurrency(record.net_sales || 0)}</Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Voids:</Text>
+                            <Text style={styles.historyDetailValueRed}>
+                              {record.void_count || 0} ({formatCurrency(record.void_amount || 0)})
+                            </Text>
+                          </View>
+
+                          {/* Action Buttons */}
+                          <View style={styles.historyActionRow}>
+                            <TouchableOpacity
+                              style={[styles.historyActionBtn, isHistoryPrinting && styles.actionBtnDisabled]}
+                              onPress={() => handleHistoryPrint(record)}
+                              disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                            >
+                              {isHistoryPrinting ? (
+                                <ActivityIndicator size="small" color="#6200EE" />
+                              ) : (
+                                <>
+                                  <Text style={styles.historyActionIcon}>🖨️</Text>
+                                  <Text style={styles.historyActionText}>Print</Text>
+                                </>
+                              )}
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.historyActionBtn, isHistoryExporting && styles.actionBtnDisabled]}
+                              onPress={() => handleHistoryExportPdf(record)}
+                              disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                            >
+                              {isHistoryExporting ? (
+                                <ActivityIndicator size="small" color="#6200EE" />
+                              ) : (
+                                <>
+                                  <Text style={styles.historyActionIcon}>📄</Text>
+                                  <Text style={styles.historyActionText}>PDF</Text>
+                                </>
+                              )}
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.historyActionBtn, isHistoryEmailing && styles.actionBtnDisabled]}
+                              onPress={() => handleHistoryEmail(record)}
+                              disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                            >
+                              {isHistoryEmailing ? (
+                                <ActivityIndicator size="small" color="#6200EE" />
+                              ) : (
+                                <>
+                                  <Text style={styles.historyActionIcon}>📧</Text>
+                                  <Text style={styles.historyActionText}>Email</Text>
+                                </>
+                              )}
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )
+          ) : isLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#6200EE" />
               <Text style={styles.loadingText}>Loading data...</Text>
@@ -221,7 +703,15 @@ export default function POSXReadingModal({
               <View style={styles.sectionHighlight}>
                 <Text style={styles.sectionTitle}>CASH DRAWER</Text>
                 <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Cash Fund Added</Text>
+                  <Text style={styles.rowLabel}>Beginning Cash</Text>
+                  <Text style={styles.rowValue}>{formatCurrency(data.beginning_cash)}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Add: Cash Sales</Text>
+                  <Text style={styles.rowValue}>{formatCurrency(data.cash_sales)}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Add: Cash Fund</Text>
                   <Text style={styles.rowValue}>{formatCurrency(data.cash_fund)}</Text>
                 </View>
                 <View style={styles.row}>
@@ -248,6 +738,52 @@ export default function POSXReadingModal({
               <Text style={styles.errorText}>Failed to load data</Text>
             </View>
           )}
+
+          {/* Action Buttons */}
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={[styles.actionBtn, isPrinting && styles.actionBtnDisabled]}
+              onPress={handlePrint}
+              disabled={isPrinting || isLoading || !data}
+            >
+              {isPrinting ? (
+                <ActivityIndicator size="small" color="#6200EE" />
+              ) : (
+                <>
+                  <Text style={styles.actionBtnIcon}>🖨️</Text>
+                  <Text style={styles.actionBtnText}>Print</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionBtn, isExporting && styles.actionBtnDisabled]}
+              onPress={handleExportPdf}
+              disabled={isExporting || isLoading || !data}
+            >
+              {isExporting ? (
+                <ActivityIndicator size="small" color="#6200EE" />
+              ) : (
+                <>
+                  <Text style={styles.actionBtnIcon}>📄</Text>
+                  <Text style={styles.actionBtnText}>PDF</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionBtn, isEmailing && styles.actionBtnDisabled]}
+              onPress={handleEmail}
+              disabled={isEmailing || isLoading || !data}
+            >
+              {isEmailing ? (
+                <ActivityIndicator size="small" color="#6200EE" />
+              ) : (
+                <>
+                  <Text style={styles.actionBtnIcon}>📧</Text>
+                  <Text style={styles.actionBtnText}>Email</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
 
           {/* Footer */}
           <View style={styles.footer}>
@@ -428,6 +964,38 @@ const styles = StyleSheet.create({
     color: '#1565C0',
     lineHeight: 17,
   },
+  actionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    backgroundColor: '#FAFAFA',
+  },
+  actionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 80,
+  },
+  actionBtnDisabled: {
+    opacity: 0.5,
+  },
+  actionBtnIcon: {
+    fontSize: 20,
+    marginBottom: 4,
+  },
+  actionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6200EE',
+  },
   footer: {
     flexDirection: 'row',
     padding: 16,
@@ -461,5 +1029,135 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  // History styles
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  historyToggle: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    marginRight: 4,
+  },
+  historyToggleActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  historyToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  historyToggleTextActive: {
+    color: '#6200EE',
+  },
+  emptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#757575',
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: '#9E9E9E',
+    marginTop: 4,
+  },
+  historyItem: {
+    backgroundColor: '#FAFAFA',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  historyItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  historyItemDate: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  historyItemTime: {
+    fontSize: 12,
+    color: '#757575',
+    marginTop: 2,
+  },
+  historyItemRight: {
+    alignItems: 'flex-end',
+  },
+  historyItemAmount: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#4CAF50',
+  },
+  historyItemChevron: {
+    fontSize: 10,
+    color: '#9E9E9E',
+    marginTop: 2,
+  },
+  historyItemDetails: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: -4,
+    marginBottom: 8,
+  },
+  historyDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  historyDetailLabel: {
+    fontSize: 13,
+    color: '#616161',
+  },
+  historyDetailValue: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#212121',
+  },
+  historyDetailValueBold: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#212121',
+  },
+  historyDetailValueRed: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#D32F2F',
+  },
+  historyActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  historyActionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 70,
+  },
+  historyActionIcon: {
+    fontSize: 18,
+    marginBottom: 2,
+  },
+  historyActionText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6200EE',
   },
 });

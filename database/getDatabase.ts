@@ -6,6 +6,7 @@
 import { Platform } from 'react-native';
 
 let dbService: any = null;
+let isInitialized = false;
 
 export function getDatabase(): any {
   if (dbService) {
@@ -21,4 +22,20 @@ export function getDatabase(): any {
   }
 
   return dbService;
+}
+
+// Mark database as initialized (called from App.tsx after successful initialization)
+export function markDatabaseInitialized(): void {
+  isInitialized = true;
+}
+
+// Check if database is initialized
+export function isDatabaseInitialized(): boolean {
+  return isInitialized;
+}
+
+// Reset the database service (for testing/reloading)
+export function resetDatabaseService(): void {
+  dbService = null;
+  isInitialized = false;
 }

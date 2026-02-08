@@ -6,6 +6,8 @@ import {
   Platform,
   Alert,
   FlatList,
+  TouchableOpacity,
+  Text,
 } from 'react-native';
 import {
   Card,
@@ -28,6 +30,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'PurchaseReturns'>;
@@ -73,10 +76,20 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
   const [productSearch, setProductSearch] = useState('');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
+  const [supplierSearch, setSupplierSearch] = useState('');
 
   // State for return history
   const [returnHistory, setReturnHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+
+  // History filter states
+  const [dateRange, setDateRange] = useState<{ startDate: Date; endDate: Date }>(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
+  const [filterSupplierId, setFilterSupplierId] = useState<number | null>(null);
+  const [showFilterSupplierModal, setShowFilterSupplierModal] = useState(false);
+  const [filterSupplierSearch, setFilterSupplierSearch] = useState('');
 
   // Loading/error states
   const [loading, setLoading] = useState(false);
@@ -294,6 +307,29 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
     p.name.toLowerCase().includes(productSearch.toLowerCase()) && p.stock_quantity > 0
   );
 
+  const filteredSuppliers = suppliers.filter(s =>
+    s.name.toLowerCase().includes(supplierSearch.toLowerCase())
+  );
+
+  const filteredFilterSuppliers = suppliers.filter(s =>
+    s.name.toLowerCase().includes(filterSupplierSearch.toLowerCase())
+  );
+
+  const handleDateChange = (startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
+  };
+
+  const filteredReturnHistory = returnHistory.filter(ret => {
+    // Date filter
+    const retDate = new Date(ret.created_at || ret.return_date);
+    if (retDate < dateRange.startDate || retDate > dateRange.endDate) return false;
+    // Supplier filter
+    if (filterSupplierId && ret.supplier_id !== filterSupplierId) return false;
+    return true;
+  });
+
   const webContainerStyle = Platform.OS === 'web'
     ? { height: 'calc(100vh - 64px)', overflow: 'hidden' as const }
     : {};
@@ -319,67 +355,64 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
 
         {showHistory ? (
           // Return History View
-          <Card style={styles.card}>
-            <Card.Content>
-              <Title style={styles.sectionTitle}>Return History</Title>
-              {returnHistory.length === 0 ? (
-                <Paragraph style={styles.emptyText}>No purchase returns recorded yet</Paragraph>
-              ) : (
-                returnHistory.map((ret, index) => (
-                  <View key={ret.id || index}>
-                    <List.Item
-                      title={ret.return_number}
-                      description={`${ret.supplier_name} - ₱${(ret.total_amount || 0).toFixed(2)} - ${ret.refund_method}`}
-                      left={props => <List.Icon {...props} icon="truck-delivery" color={theme.colors.primary} />}
-                      right={() => (
-                        <Paragraph style={styles.dateText}>
-                          {new Date(ret.created_at).toLocaleDateString()}
-                        </Paragraph>
-                      )}
-                    />
-                    {index < returnHistory.length - 1 && <Divider />}
-                  </View>
-                ))
-              )}
-            </Card.Content>
-          </Card>
-        ) : (
-          // New Return Form
           <>
-            {/* Lookup Original Purchase */}
+            {/* Date Filter */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Lookup Purchase Order (Optional)</Title>
-                <View style={styles.lookupRow}>
-                  <TextInput
-                    label="Purchase Order Number"
-                    value={purchaseId}
-                    onChangeText={setPurchaseId}
-                    style={styles.lookupInput}
-                    placeholder="e.g., PO-000001"
-                    disabled={!!originalPurchase}
-                  />
-                  <Button
-                    mode="contained"
-                    onPress={lookupPurchase}
-                    loading={lookingUp}
-                    disabled={lookingUp || !!originalPurchase}
-                    style={styles.lookupButton}
-                  >
-                    Lookup
-                  </Button>
-                </View>
-                {originalPurchase && (
-                  <View style={styles.purchaseInfo}>
-                    <Chip icon="check-circle" style={styles.foundChip}>
-                      Found: {originalPurchase.purchase_id}
-                    </Chip>
-                    <Button mode="text" onPress={resetForm}>Clear</Button>
-                  </View>
-                )}
+                <DateRangeFilter
+                  onDateChange={handleDateChange}
+                  selectedPreset="this_month"
+                />
               </Card.Content>
             </Card>
 
+            {/* Supplier Filter */}
+            <Card style={styles.card}>
+              <Card.Content>
+                <Paragraph style={styles.filterLabel}>Supplier:</Paragraph>
+                <TouchableOpacity
+                  style={styles.dropdownButton}
+                  onPress={() => setShowFilterSupplierModal(true)}
+                >
+                  <Text style={styles.dropdownButtonText}>
+                    {filterSupplierId
+                      ? suppliers.find(s => s.id === filterSupplierId)?.name || 'Unknown'
+                      : 'All Suppliers'}
+                  </Text>
+                  <Text style={styles.dropdownChevron}>▼</Text>
+                </TouchableOpacity>
+              </Card.Content>
+            </Card>
+
+            {/* Return History List */}
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={styles.sectionTitle}>Return History</Title>
+                {filteredReturnHistory.length === 0 ? (
+                  <Paragraph style={styles.emptyText}>No purchase returns found</Paragraph>
+                ) : (
+                  filteredReturnHistory.map((ret, index) => (
+                    <View key={ret.id || index}>
+                      <List.Item
+                        title={ret.return_number}
+                        description={`${ret.supplier_name} - ₱${(ret.total_amount || 0).toFixed(2)} - ${ret.refund_method}`}
+                        left={props => <List.Icon {...props} icon="truck-delivery" color={theme.colors.primary} />}
+                        right={() => (
+                          <Paragraph style={styles.dateText}>
+                            {new Date(ret.created_at).toLocaleDateString()}
+                          </Paragraph>
+                        )}
+                      />
+                      {index < filteredReturnHistory.length - 1 && <Divider />}
+                    </View>
+                  ))
+                )}
+              </Card.Content>
+            </Card>
+          </>
+        ) : (
+          // New Return Form
+          <>
             {/* Supplier Selection */}
             <Card style={styles.card}>
               <Card.Content>
@@ -589,12 +622,18 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
       <Portal>
         <Modal
           visible={showSupplierModal}
-          onDismiss={() => setShowSupplierModal(false)}
+          onDismiss={() => { setShowSupplierModal(false); setSupplierSearch(''); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
           <Title style={styles.modalTitle}>Select Supplier</Title>
+          <Searchbar
+            placeholder="Search suppliers..."
+            value={supplierSearch}
+            onChangeText={setSupplierSearch}
+            style={styles.searchBar}
+          />
           <FlatList
-            data={suppliers}
+            data={filteredSuppliers}
             keyExtractor={(item) => String(item.id)}
             style={styles.productList}
             renderItem={({ item }) => (
@@ -603,13 +642,63 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
                 onPress={() => {
                   setSelectedSupplier(item);
                   setShowSupplierModal(false);
+                  setSupplierSearch('');
                 }}
                 right={props => <List.Icon {...props} icon="chevron-right" />}
               />
             )}
             ItemSeparatorComponent={() => <Divider />}
+            ListEmptyComponent={() => (
+              <Paragraph style={styles.emptyText}>No suppliers found</Paragraph>
+            )}
           />
-          <Button onPress={() => setShowSupplierModal(false)} style={styles.modalClose}>
+          <Button onPress={() => { setShowSupplierModal(false); setSupplierSearch(''); }} style={styles.modalClose}>
+            Cancel
+          </Button>
+        </Modal>
+      </Portal>
+
+      {/* Filter Supplier Modal (History) */}
+      <Portal>
+        <Modal
+          visible={showFilterSupplierModal}
+          onDismiss={() => { setShowFilterSupplierModal(false); setFilterSupplierSearch(''); }}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Title style={styles.modalTitle}>Filter by Supplier</Title>
+          <Searchbar
+            placeholder="Search suppliers..."
+            value={filterSupplierSearch}
+            onChangeText={setFilterSupplierSearch}
+            style={styles.searchBar}
+          />
+          <FlatList
+            data={[{ id: 0, name: 'All Suppliers' } as Supplier, ...filteredFilterSuppliers]}
+            keyExtractor={(item) => String(item.id)}
+            style={styles.productList}
+            renderItem={({ item }) => (
+              <List.Item
+                title={item.name}
+                onPress={() => {
+                  setFilterSupplierId(item.id === 0 ? null : item.id);
+                  setShowFilterSupplierModal(false);
+                  setFilterSupplierSearch('');
+                }}
+                left={props => <List.Icon {...props} icon={
+                  (item.id === 0 && filterSupplierId === null) || item.id === filterSupplierId
+                    ? 'check-circle' : 'circle-outline'
+                } color={
+                  (item.id === 0 && filterSupplierId === null) || item.id === filterSupplierId
+                    ? theme.colors.primary : undefined
+                } />}
+              />
+            )}
+            ItemSeparatorComponent={() => <Divider />}
+            ListEmptyComponent={() => (
+              <Paragraph style={styles.emptyText}>No suppliers found</Paragraph>
+            )}
+          />
+          <Button onPress={() => { setShowFilterSupplierModal(false); setFilterSupplierSearch(''); }} style={styles.modalClose}>
             Cancel
           </Button>
         </Modal>
@@ -787,5 +876,31 @@ const styles = StyleSheet.create({
   },
   modalClose: {
     marginTop: 16,
+  },
+  filterLabel: {
+    fontSize: 12,
+    opacity: 0.7,
+    marginBottom: 8,
+  },
+  dropdownButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+  },
+  dropdownButtonText: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
+  },
+  dropdownChevron: {
+    fontSize: 12,
+    color: '#666',
+    marginLeft: 8,
   },
 });

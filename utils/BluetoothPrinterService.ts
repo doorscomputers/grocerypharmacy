@@ -280,6 +280,7 @@ class BluetoothPrinterService {
 
   /**
    * Request Bluetooth permissions (Android)
+   * Compatible with all Android phones and tablets
    */
   async requestPermissions(): Promise<boolean> {
     if (Platform.OS !== 'android') {
@@ -291,33 +292,54 @@ class BluetoothPrinterService {
 
       if (apiLevel >= 31) {
         // Android 12+ permissions
-        const results = await PermissionsAndroid.requestMultiple([
+        const permissionsToRequest = [
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
+        ];
 
-        const allGranted = Object.values(results).every(
-          (result) => result === PermissionsAndroid.RESULTS.GRANTED
+        // Add coarse location for better compatibility with all devices
+        if (PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION) {
+          permissionsToRequest.push(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION);
+        }
+
+        const results = await PermissionsAndroid.requestMultiple(permissionsToRequest);
+
+        // Check only the critical permissions
+        const criticalPermissions = [
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        ];
+
+        const allGranted = criticalPermissions.every(
+          (perm) => results[perm] === PermissionsAndroid.RESULTS.GRANTED
         );
 
         if (!allGranted) {
           Alert.alert(
             'Permissions Required',
-            'Bluetooth and location permissions are required to connect to printers.'
+            'Bluetooth and Location permissions are required to connect to printers.\n\nPlease go to Settings > Apps > IgoroTech POS > Permissions and enable:\n• Nearby devices / Bluetooth\n• Location'
           );
           return false;
         }
       } else {
-        // Android 11 and below
-        const locationPermission = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-        );
+        // Android 11 and below - need both location permissions for all devices
+        const permissionsToRequest = [
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        ];
 
-        if (locationPermission !== PermissionsAndroid.RESULTS.GRANTED) {
+        // Add coarse location for better compatibility
+        if (PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION) {
+          permissionsToRequest.push(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION);
+        }
+
+        const results = await PermissionsAndroid.requestMultiple(permissionsToRequest);
+
+        if (results[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] !== PermissionsAndroid.RESULTS.GRANTED) {
           Alert.alert(
             'Permission Required',
-            'Location permission is required to scan for Bluetooth devices.'
+            'Location permission is required to scan for Bluetooth devices.\n\nPlease go to Settings > Apps > IgoroTech POS > Permissions and enable Location.'
           );
           return false;
         }
@@ -326,6 +348,10 @@ class BluetoothPrinterService {
       return true;
     } catch (error) {
       console.error('Permission request failed:', error);
+      Alert.alert(
+        'Permission Error',
+        'Failed to request Bluetooth permissions. Please grant permissions manually in Settings > Apps > IgoroTech POS > Permissions.'
+      );
       return false;
     }
   }
@@ -357,7 +383,12 @@ class BluetoothPrinterService {
    */
   async startScan(durationMs: number = 10000): Promise<PrinterDevice[]> {
     // Wait for initialization to complete
-    await this.ensureInitialized();
+    try {
+      await this.ensureInitialized();
+    } catch (initError) {
+      console.error('BLE initialization error:', initError);
+      throw new Error('Failed to initialize Bluetooth. Please restart the app and try again.');
+    }
 
     if (!this.isBleAvailable()) {
       throw new Error('Bluetooth is not available on this platform. Please ensure Bluetooth is supported.');
@@ -368,62 +399,108 @@ class BluetoothPrinterService {
     }
 
     // Request permissions first
-    const hasPermission = await this.requestPermissions();
+    let hasPermission = false;
+    try {
+      hasPermission = await this.requestPermissions();
+    } catch (permError) {
+      console.error('Permission request error:', permError);
+      throw new Error('Failed to request Bluetooth permissions. Please grant permissions manually in Settings.');
+    }
+
     if (!hasPermission) {
-      throw new Error('Bluetooth permissions not granted');
+      throw new Error('Bluetooth permissions not granted. Please enable permissions in Settings.');
     }
 
     // Check Bluetooth state
-    const isEnabled = await this.isBluetoothEnabled();
+    let isEnabled = false;
+    try {
+      isEnabled = await this.isBluetoothEnabled();
+    } catch (stateError) {
+      console.error('Bluetooth state check error:', stateError);
+      throw new Error('Could not check Bluetooth state. Please ensure Bluetooth is enabled.');
+    }
+
     if (!isEnabled) {
-      throw new Error('Bluetooth is not enabled');
+      throw new Error('Bluetooth is not enabled. Please turn on Bluetooth and try again.');
     }
 
     this.discoveredDevices.clear();
     this.setState('scanning');
 
     return new Promise((resolve, reject) => {
-      let scanTimeout: NodeJS.Timeout;
+      let scanTimeout: NodeJS.Timeout | null = null;
+      let hasRejected = false;
+
+      const cleanup = () => {
+        if (scanTimeout) {
+          clearTimeout(scanTimeout);
+          scanTimeout = null;
+        }
+      };
 
       try {
         this.bleManager!.startDeviceScan(
           null, // Scan for all devices, filter later
           { allowDuplicates: false },
           (error, device) => {
+            if (hasRejected) return;
+
             if (error) {
               console.error('Scan error:', error);
+              hasRejected = true;
+              cleanup();
               this.setState('error', error.message);
-              reject(error);
+              reject(new Error(`Bluetooth scan failed: ${error.message}`));
               return;
             }
 
             // Show ALL named Bluetooth devices (user can select their printer)
-            if (device && device.name) {
-              console.log('Found BLE device:', device.name, device.id);
+            try {
+              if (device && device.name) {
+                console.log('Found BLE device:', device.name, device.id);
 
-              const printerDevice: PrinterDevice = {
-                id: device.id,
-                name: device.name,
-                rssi: device.rssi,
-                isConnectable: device.isConnectable,
-              };
+                const printerDevice: PrinterDevice = {
+                  id: device.id,
+                  name: device.name,
+                  rssi: device.rssi,
+                  isConnectable: device.isConnectable,
+                };
 
-              this.discoveredDevices.set(device.id, printerDevice);
-              this.deviceFoundListeners.forEach((listener) => listener(printerDevice));
+                this.discoveredDevices.set(device.id, printerDevice);
+                this.deviceFoundListeners.forEach((listener) => {
+                  try {
+                    listener(printerDevice);
+                  } catch (listenerError) {
+                    console.error('Device listener error:', listenerError);
+                  }
+                });
+              }
+            } catch (deviceError) {
+              console.error('Error processing device:', deviceError);
+              // Don't reject - just skip this device
             }
           }
         );
 
         // Stop scanning after duration
         scanTimeout = setTimeout(() => {
-          this.stopScan();
-          this.setState('disconnected');
-          resolve(Array.from(this.discoveredDevices.values()));
+          if (hasRejected) return;
+          try {
+            this.stopScan();
+            this.setState('disconnected');
+            resolve(Array.from(this.discoveredDevices.values()));
+          } catch (stopError) {
+            console.error('Error stopping scan:', stopError);
+            resolve(Array.from(this.discoveredDevices.values()));
+          }
         }, durationMs);
       } catch (error) {
-        clearTimeout(scanTimeout!);
-        this.setState('error', (error as Error).message);
-        reject(error);
+        hasRejected = true;
+        cleanup();
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error('Scan start error:', error);
+        this.setState('error', errorMessage);
+        reject(new Error(`Failed to start Bluetooth scan: ${errorMessage}`));
       }
     });
   }
@@ -482,25 +559,41 @@ class BluetoothPrinterService {
    */
   async connect(deviceId: string): Promise<boolean> {
     // Wait for initialization to complete
-    await this.ensureInitialized();
+    try {
+      await this.ensureInitialized();
+    } catch (initError) {
+      console.error('BLE initialization error during connect:', initError);
+      throw new Error('Failed to initialize Bluetooth. Please restart the app.');
+    }
 
     if (!this.isBleAvailable()) {
       throw new Error('Bluetooth is not available on this platform');
     }
 
     if (!this.bleManager) {
-      throw new Error('BLE Manager not initialized');
+      throw new Error('BLE Manager not initialized. Please restart the app.');
     }
 
-    this.stopScan();
+    // Stop any ongoing scan
+    try {
+      this.stopScan();
+    } catch (stopError) {
+      console.warn('Error stopping scan:', stopError);
+    }
+
     this.setState('connecting');
 
     try {
-      // Connect to device
+      // Connect to device with longer timeout for Xiaomi devices
       console.log('Connecting to device:', deviceId);
       const device = await this.bleManager.connectToDevice(deviceId, {
-        timeout: 10000,
+        timeout: 15000, // Increased timeout for Xiaomi/MIUI
+        autoConnect: false, // Explicit connection for better control
       });
+
+      if (!device) {
+        throw new Error('Failed to connect to device - no device returned');
+      }
 
       // Discover services and characteristics
       console.log('Discovering services...');
@@ -510,8 +603,12 @@ class BluetoothPrinterService {
       const characteristic = await this.findWriteCharacteristic(device);
 
       if (!characteristic) {
-        await device.cancelConnection();
-        throw new Error('Could not find printer write characteristic');
+        try {
+          await device.cancelConnection();
+        } catch (cancelError) {
+          console.warn('Error canceling connection:', cancelError);
+        }
+        throw new Error('Could not find printer write characteristic. This device may not be a compatible printer.');
       }
 
       this.connectedDevice = device;
@@ -520,23 +617,34 @@ class BluetoothPrinterService {
       // Save as last connected printer
       this.settings.lastPrinterId = device.id;
       this.settings.lastPrinterName = device.name;
-      await this.saveSettings();
+      try {
+        await this.saveSettings();
+      } catch (saveError) {
+        console.warn('Error saving printer settings:', saveError);
+      }
 
       // Monitor disconnection
-      device.onDisconnected((error, disconnectedDevice) => {
-        console.log('Device disconnected:', disconnectedDevice?.id, error?.message);
-        this.connectedDevice = null;
-        this.writeCharacteristic = null;
-        this.setState('disconnected', 'Printer disconnected');
-      });
+      try {
+        device.onDisconnected((error, disconnectedDevice) => {
+          console.log('Device disconnected:', disconnectedDevice?.id, error?.message);
+          this.connectedDevice = null;
+          this.writeCharacteristic = null;
+          this.setState('disconnected', 'Printer disconnected');
+        });
+      } catch (monitorError) {
+        console.warn('Error setting up disconnect monitor:', monitorError);
+      }
 
       this.setState('connected');
       console.log('Connected successfully to:', device.name);
       return true;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown connection error';
       console.error('Connection failed:', error);
-      this.setState('error', (error as Error).message);
-      throw error;
+      this.connectedDevice = null;
+      this.writeCharacteristic = null;
+      this.setState('error', errorMessage);
+      throw new Error(`Failed to connect to printer: ${errorMessage}`);
     }
   }
 
@@ -630,27 +738,30 @@ class BluetoothPrinterService {
     }
 
     try {
-      // Convert to base64
-      const base64Data = this.uint8ArrayToBase64(data);
+      // Chunk raw bytes FIRST, then base64-encode each chunk individually.
+      // BLE MTU is typically 20 bytes minimum, but most printers support larger.
+      // We use 512 bytes per chunk for efficiency.
+      const chunkSize = 512;
+      const totalChunks = Math.ceil(data.length / chunkSize);
 
-      // BLE has MTU limits, so we may need to chunk the data
-      const chunkSize = 20; // Conservative BLE MTU
-      const chunks: string[] = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, data.length);
+        const chunk = data.slice(start, end);
 
-      for (let i = 0; i < base64Data.length; i += chunkSize) {
-        chunks.push(base64Data.slice(i, i + chunkSize));
-      }
+        // Base64-encode this chunk individually (produces valid base64)
+        const base64Chunk = this.uint8ArrayToBase64(chunk);
 
-      // Send each chunk
-      for (const chunk of chunks) {
         if (this.writeCharacteristic.isWritableWithResponse) {
-          await this.writeCharacteristic.writeWithResponse(chunk);
+          await this.writeCharacteristic.writeWithResponse(base64Chunk);
         } else {
-          await this.writeCharacteristic.writeWithoutResponse(chunk);
+          await this.writeCharacteristic.writeWithoutResponse(base64Chunk);
         }
 
-        // Small delay between chunks
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        // Small delay between chunks to let printer process
+        if (i < totalChunks - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
       }
 
       return true;
@@ -694,13 +805,27 @@ class BluetoothPrinterService {
 
   /**
    * Helper: Convert Uint8Array to base64
+   * Using a custom implementation for better Android compatibility (btoa may not work on all devices)
    */
   private uint8ArrayToBase64(bytes: Uint8Array): string {
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    const len = bytes.length;
+
+    for (let i = 0; i < len; i += 3) {
+      const byte1 = bytes[i];
+      const byte2 = i + 1 < len ? bytes[i + 1] : 0;
+      const byte3 = i + 2 < len ? bytes[i + 2] : 0;
+
+      const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
+
+      result += base64Chars[(triplet >> 18) & 0x3F];
+      result += base64Chars[(triplet >> 12) & 0x3F];
+      result += i + 1 < len ? base64Chars[(triplet >> 6) & 0x3F] : '=';
+      result += i + 2 < len ? base64Chars[triplet & 0x3F] : '=';
     }
-    return btoa(binary);
+
+    return result;
   }
 
   /**

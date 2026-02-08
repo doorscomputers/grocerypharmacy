@@ -16,6 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder, PRINTER_WIDTH } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'ZeroInventoryReport'>;
@@ -48,6 +50,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [showInactiveProducts, setShowInactiveProducts] = useState(false);
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -130,6 +133,84 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
     return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('ZERO INVENTORY')
+      .println('REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .doubleSeparator();
+
+    // Summary
+    builder
+      .align('left')
+      .bold(true)
+      .println('SUMMARY')
+      .bold(false)
+      .separator()
+      .leftRight('Zero Stock Items:', stats.zeroStockCount.toString())
+      .leftRight('Total Products:', stats.totalProducts.toString())
+      .leftRight('Out of Stock Rate:', `${stats.percentage.toFixed(1)}%`)
+      .leftRight('Lost Potential:', `P${stats.lostPotentialRevenue.toFixed(2)}`)
+      .separator();
+
+    // Category breakdown
+    if (stats.byCategory.length > 0) {
+      builder
+        .bold(true)
+        .println('BY CATEGORY')
+        .bold(false)
+        .separator();
+
+      for (const [category, count] of stats.byCategory) {
+        builder.leftRight(category, count.toString());
+      }
+      builder.separator();
+    }
+
+    // Product list (first 30 items to fit on thermal paper)
+    const printProducts = zeroStockProducts.slice(0, 30);
+    if (printProducts.length > 0) {
+      builder
+        .bold(true)
+        .println('PRODUCTS WITH ZERO STOCK')
+        .bold(false)
+        .separator();
+
+      for (const product of printProducts) {
+        const name = product.name.length > printerWidth - 12
+          ? product.name.substring(0, printerWidth - 14) + '..'
+          : product.name;
+        builder.println(name);
+        builder.leftRight(`  ${product.product_code || '-'}`, `P${(product.selling_price || 0).toFixed(2)}`);
+      }
+
+      if (zeroStockProducts.length > 30) {
+        builder.feed().println(`... and ${zeroStockProducts.length - 30} more items`);
+      }
+    }
+
+    builder
+      .feed()
+      .align('center')
+      .separator()
+      .println('*** END OF REPORT ***')
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
+
   // Paginated products
   const paginatedProducts = useMemo(() => {
     const start = currentPage * itemsPerPage;
@@ -146,10 +227,22 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
         showsVerticalScrollIndicator={true}
       >
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Zero Inventory Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Products with no stock available
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Zero Inventory Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                Products with no stock available
+              </Paragraph>
+            </View>
+            <Button
+              mode="contained"
+              icon="printer"
+              onPress={() => setPrintDialogVisible(true)}
+              compact
+            >
+              Print
+            </Button>
+          </View>
         </View>
 
         {/* Summary Card */}
@@ -334,6 +427,13 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
           </Button>
         </View>
       </ScrollView>
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print Zero Inventory Report"
+        onPrint={buildPrintReport}
+      />
     </SafeAreaView>
   );
 }
@@ -364,6 +464,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,

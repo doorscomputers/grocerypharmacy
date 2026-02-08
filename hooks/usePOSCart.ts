@@ -13,6 +13,7 @@ export interface CartItem {
   tax_rate: number;
   is_vat_inclusive: boolean;
   stock_quantity: number;
+  price_type: 'retail' | 'wholesale';
 }
 
 export interface CartTotals {
@@ -36,12 +37,18 @@ export interface DiscountState {
   // Senior Citizen discount details
   totalCustomers: number;
   seniorCount: number;
+  // BIR Compliance: SC/PWD ID tracking
+  scPwdId?: string;
+  scPwdName?: string;
+  scPwdType?: 'SENIOR' | 'PWD';
 }
 
 interface UsePOSCartReturn {
   cart: CartItem[];
   totals: CartTotals;
   discount: DiscountState;
+  priceType: 'retail' | 'wholesale';
+  setPriceType: (type: 'retail' | 'wholesale') => void;
   addItem: (product: Product) => boolean;
   removeItem: (productId: number) => void;
   updateQuantity: (productId: number, quantity: number) => boolean;
@@ -51,7 +58,7 @@ interface UsePOSCartReturn {
   setDiscountType: (type: DiscountState['type']) => void;
   setDiscountValue: (value: string) => void;
   toggleSeniorCitizen: () => void;
-  setSeniorDiscount: (totalCustomers: number, seniorCount: number) => void;
+  setSeniorDiscount: (totalCustomers: number, seniorCount: number, scPwdInfo?: { id: string; name: string; type: 'SENIOR' | 'PWD' }) => void;
   clearSeniorDiscount: () => void;
   getItemQuantity: (productId: number) => number;
 }
@@ -67,49 +74,62 @@ export function usePOSCart(): UsePOSCartReturn {
     totalCustomers: 1,
     seniorCount: 0,
   });
+  const [priceType, setPriceType] = useState<'retail' | 'wholesale'>('retail');
 
   // Add item to cart
   const addItem = useCallback((product: Product): boolean => {
-    const existingItem = cart.find(item => item.id === product.id);
-    const currentQuantity = existingItem ? existingItem.quantity : 0;
+    // Find existing item with SAME product id AND SAME price type
+    const existingItem = cart.find(item => item.id === product.id && item.price_type === priceType);
+    // Calculate total quantity for this product across all price types (for stock validation)
+    const totalQuantityInCart = cart
+      .filter(item => item.id === product.id)
+      .reduce((sum, item) => sum + item.quantity, 0);
     const availableStock = product.stock_quantity || 0;
 
     // Check stock
-    if (currentQuantity + 1 > availableStock) {
+    if (totalQuantityInCart + 1 > availableStock) {
       Alert.alert(
         'Insufficient Stock',
-        `Only ${availableStock} units of "${product.name}" available.${currentQuantity > 0 ? ` You already have ${currentQuantity} in cart.` : ''}`
+        `Only ${availableStock} units of "${product.name}" available.${totalQuantityInCart > 0 ? ` You already have ${totalQuantityInCart} in cart.` : ''}`
       );
       return false;
     }
 
+    // Determine the price based on priceType
+    const selectedPrice = priceType === 'wholesale' && product.wholesale_price
+      ? product.wholesale_price
+      : product.price;
+
     if (existingItem) {
+      // Increment quantity for existing item with same price type
       setCart(prevCart =>
         prevCart.map(item =>
-          item.id === product.id
+          item.id === product.id && item.price_type === priceType
             ? { ...item, quantity: item.quantity + 1 }
             : item
         )
       );
     } else {
+      // Add new cart item with the current price type
       setCart(prevCart => [
         ...prevCart,
         {
           id: product.id,
           code: product.code,
           name: product.name,
-          price: product.price,
+          price: selectedPrice,
           cost: product.cost || 0,
           quantity: 1,
           vat_type: (product.vat_type || 'vatable') as 'vatable' | 'vat_exempt' | 'zero_rated',
           tax_rate: product.tax_rate,
           is_vat_inclusive: product.is_vat_inclusive,
           stock_quantity: product.stock_quantity,
+          price_type: priceType,
         },
       ]);
     }
     return true;
-  }, [cart]);
+  }, [cart, priceType]);
 
   // Remove item from cart
   const removeItem = useCallback((productId: number): void => {
@@ -159,7 +179,8 @@ export function usePOSCart(): UsePOSCartReturn {
   // Clear cart
   const clearCart = useCallback((): void => {
     setCart([]);
-    setDiscount({ type: 'none', value: '', isSeniorCitizen: false, totalCustomers: 1, seniorCount: 0 });
+    setDiscount({ type: 'none', value: '', isSeniorCitizen: false, totalCustomers: 1, seniorCount: 0, scPwdId: undefined, scPwdName: undefined, scPwdType: undefined });
+    setPriceType('retail');
   }, []);
 
   // Set discount type
@@ -204,8 +225,8 @@ export function usePOSCart(): UsePOSCartReturn {
     }));
   }, []);
 
-  // Set senior citizen discount with customer counts
-  const setSeniorDiscount = useCallback((totalCustomers: number, seniorCount: number): void => {
+  // Set senior citizen discount with customer counts and BIR-required SC/PWD info
+  const setSeniorDiscount = useCallback((totalCustomers: number, seniorCount: number, scPwdInfo?: { id: string; name: string; type: 'SENIOR' | 'PWD' }): void => {
     if (seniorCount > 0 && totalCustomers >= seniorCount) {
       setDiscount({
         type: 'senior',
@@ -213,6 +234,9 @@ export function usePOSCart(): UsePOSCartReturn {
         isSeniorCitizen: true,
         totalCustomers,
         seniorCount,
+        scPwdId: scPwdInfo?.id,
+        scPwdName: scPwdInfo?.name,
+        scPwdType: scPwdInfo?.type,
       });
     }
   }, []);
@@ -225,13 +249,18 @@ export function usePOSCart(): UsePOSCartReturn {
       isSeniorCitizen: false,
       totalCustomers: 1,
       seniorCount: 0,
+      scPwdId: undefined,
+      scPwdName: undefined,
+      scPwdType: undefined,
     });
   }, []);
 
   // Get quantity of specific item in cart
   const getItemQuantity = useCallback((productId: number): number => {
-    const item = cart.find(i => i.id === productId);
-    return item ? item.quantity : 0;
+    // Return total quantity for this product across all price types
+    return cart
+      .filter(i => i.id === productId)
+      .reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
 
   // Calculate totals
@@ -355,6 +384,8 @@ export function usePOSCart(): UsePOSCartReturn {
     cart,
     totals,
     discount,
+    priceType,
+    setPriceType,
     addItem,
     removeItem,
     updateQuantity,

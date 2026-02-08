@@ -49,6 +49,10 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<number | null>(null);
+  const [selectedCustomerName, setSelectedCustomerName] = useState<string>('');
+  const [customerSearchText, setCustomerSearchText] = useState('');
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
   // Date filter
   const [dateRange, setDateRange] = useState(() => {
@@ -328,6 +332,16 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
   };
 
   const filteredReceivables = receivables.filter(receivable => {
+    // Status filter
+    if (statusFilter === 'UNPAID') {
+      if (receivable.status !== 'OUTSTANDING' && receivable.status !== 'OVERDUE' && receivable.status !== 'PARTIALLY_PAID') return false;
+    } else if (statusFilter === 'PAID') {
+      if (receivable.status !== 'PAID') return false;
+    } else if (statusFilter) {
+      if (receivable.status !== statusFilter) return false;
+    }
+
+    // Search filter
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
@@ -431,6 +445,41 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
       case 'receivables':
         return (
           <View style={styles.tabContent}>
+            {/* Status Filter */}
+            <View style={styles.statusFilterContainer}>
+              <Chip
+                selected={statusFilter === null}
+                onPress={() => setStatusFilter(null)}
+                style={styles.statusChipFilter}
+                compact
+              >
+                All
+              </Chip>
+              <Chip
+                selected={statusFilter === 'UNPAID'}
+                onPress={() => setStatusFilter('UNPAID')}
+                style={styles.statusChipFilter}
+                compact
+              >
+                Unpaid
+              </Chip>
+              <Chip
+                selected={statusFilter === 'PAID'}
+                onPress={() => setStatusFilter('PAID')}
+                style={styles.statusChipFilter}
+                compact
+              >
+                Paid
+              </Chip>
+              <Chip
+                selected={statusFilter === 'OVERDUE'}
+                onPress={() => setStatusFilter('OVERDUE')}
+                style={styles.statusChipFilter}
+                compact
+              >
+                Overdue
+              </Chip>
+            </View>
             <Searchbar
               placeholder="Search receivables..."
               onChangeText={setSearchQuery}
@@ -501,28 +550,102 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
       <View style={styles.header}>
         <Title style={styles.headerTitle}>Customer Payments</Title>
 
-        {/* Customer Filter */}
+        {/* Customer Filter - Search as you type */}
         <View style={styles.filterContainer}>
           <Title style={styles.filterLabel}>Filter by Customer:</Title>
-          <View style={styles.pickerContainer}>
-            <Picker
-              selectedValue={selectedCustomer}
-              onValueChange={(value) => setSelectedCustomer(value)}
-              style={styles.picker}
-            >
-              <Picker.Item label="All Customers" value={null} />
-              {customers.map((customer) => (
-                <Picker.Item
-                  key={customer.id}
-                  label={`${customer.code} - ${customer.name}`}
-                  value={customer.id}
+          <View style={styles.customerSearchContainer}>
+            <TextInput
+              mode="outlined"
+              placeholder="Search customer by name or code..."
+              value={selectedCustomer ? selectedCustomerName : customerSearchText}
+              onChangeText={(text) => {
+                if (selectedCustomer) {
+                  // Clear selection when user starts typing again
+                  setSelectedCustomer(null);
+                  setSelectedCustomerName('');
+                }
+                setCustomerSearchText(text);
+                setShowCustomerSuggestions(text.length > 0);
+              }}
+              onFocus={() => {
+                if (customerSearchText.length > 0 && !selectedCustomer) {
+                  setShowCustomerSuggestions(true);
+                }
+              }}
+              style={styles.customerSearchInput}
+              right={selectedCustomer ? (
+                <TextInput.Icon
+                  icon="close"
+                  onPress={() => {
+                    setSelectedCustomer(null);
+                    setSelectedCustomerName('');
+                    setCustomerSearchText('');
+                    setShowCustomerSuggestions(false);
+                  }}
                 />
-              ))}
-            </Picker>
+              ) : undefined}
+            />
+            {showCustomerSuggestions && !selectedCustomer && (
+              <View style={styles.suggestionsContainer}>
+                <ScrollView style={styles.suggestionsList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  <Button
+                    mode="text"
+                    onPress={() => {
+                      setSelectedCustomer(null);
+                      setSelectedCustomerName('');
+                      setCustomerSearchText('');
+                      setShowCustomerSuggestions(false);
+                      loadFilteredData();
+                    }}
+                    style={styles.suggestionItem}
+                    labelStyle={styles.suggestionLabel}
+                  >
+                    All Customers
+                  </Button>
+                  {customers
+                    .filter((c) => {
+                      const searchLower = customerSearchText.toLowerCase();
+                      return (
+                        c.name?.toLowerCase().includes(searchLower) ||
+                        c.code?.toLowerCase().includes(searchLower)
+                      );
+                    })
+                    .slice(0, 20) // Limit to 20 suggestions for performance
+                    .map((customer) => (
+                      <Button
+                        key={customer.id}
+                        mode="text"
+                        onPress={() => {
+                          setSelectedCustomer(customer.id);
+                          setSelectedCustomerName(`${customer.code} - ${customer.name}`);
+                          setCustomerSearchText('');
+                          setShowCustomerSuggestions(false);
+                        }}
+                        style={styles.suggestionItem}
+                        labelStyle={styles.suggestionLabel}
+                      >
+                        {customer.code} - {customer.name}
+                      </Button>
+                    ))}
+                  {customers.filter((c) => {
+                    const searchLower = customerSearchText.toLowerCase();
+                    return (
+                      c.name?.toLowerCase().includes(searchLower) ||
+                      c.code?.toLowerCase().includes(searchLower)
+                    );
+                  }).length === 0 && (
+                    <Paragraph style={styles.noResultsText}>No customers found</Paragraph>
+                  )}
+                </ScrollView>
+              </View>
+            )}
           </View>
           <Button
             mode="outlined"
-            onPress={loadFilteredData}
+            onPress={() => {
+              setShowCustomerSuggestions(false);
+              loadFilteredData();
+            }}
             style={styles.filterButton}
             compact
           >
@@ -675,6 +798,45 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 8,
   },
+  customerSearchContainer: {
+    position: 'relative',
+    zIndex: 1000,
+    marginBottom: 8,
+  },
+  customerSearchInput: {
+    backgroundColor: 'white',
+  },
+  suggestionsContainer: {
+    position: 'absolute',
+    top: 56,
+    left: 0,
+    right: 0,
+    backgroundColor: 'white',
+    borderRadius: 4,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    maxHeight: 200,
+    zIndex: 1001,
+  },
+  suggestionsList: {
+    maxHeight: 200,
+  },
+  suggestionItem: {
+    justifyContent: 'flex-start',
+    paddingVertical: 4,
+  },
+  suggestionLabel: {
+    textAlign: 'left',
+    fontSize: 14,
+  },
+  noResultsText: {
+    padding: 16,
+    textAlign: 'center',
+    opacity: 0.6,
+  },
   pickerContainer: {
     borderWidth: 1,
     borderColor: '#ccc',
@@ -697,6 +859,16 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
+  },
+  statusFilterContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  statusChipFilter: {
+    marginRight: 4,
   },
   dateFilterCard: {
     marginHorizontal: 16,

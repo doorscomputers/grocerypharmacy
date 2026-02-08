@@ -369,13 +369,23 @@ export default function POSExchangeModal({
                 {/* New Items */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Replacement Items</Text>
-                  <TextInput
-                    style={styles.productSearchInput}
-                    value={productSearch}
-                    onChangeText={setProductSearch}
-                    placeholder="Search products to add..."
-                    placeholderTextColor="#9E9E9E"
-                  />
+                  <View style={styles.productSearchWrapper}>
+                    <TextInput
+                      style={styles.productSearchInput}
+                      value={productSearch}
+                      onChangeText={setProductSearch}
+                      placeholder="Search products to add..."
+                      placeholderTextColor="#9E9E9E"
+                    />
+                    {productSearch.length > 0 && (
+                      <TouchableOpacity
+                        style={styles.clearSearchBtn}
+                        onPress={() => setProductSearch('')}
+                      >
+                        <Text style={styles.clearSearchText}>×</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                   {isSearchingProducts && <ActivityIndicator size="small" style={{ marginVertical: 10 }} />}
                   {products.length > 0 && (
                     <View style={styles.productResults}>
@@ -485,7 +495,10 @@ const styles = StyleSheet.create({
   subtotalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 10, marginTop: 8, borderTopWidth: 1, borderTopColor: '#E0E0E0' },
   subtotalLabel: { fontSize: 14, fontWeight: '600', color: '#424242' },
   subtotalValue: { fontSize: 14, fontWeight: '700', color: '#1565C0' },
-  productSearchInput: { fontSize: 16, borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 10, backgroundColor: '#FAFAFA', marginBottom: 8 },
+  productSearchWrapper: { position: 'relative', marginBottom: 8 },
+  productSearchInput: { fontSize: 16, borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 10, paddingRight: 36, backgroundColor: '#FAFAFA' },
+  clearSearchBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', width: 28 },
+  clearSearchText: { fontSize: 20, color: '#757575', fontWeight: '600' },
   productResults: { backgroundColor: '#F5F5F5', borderRadius: 8, marginBottom: 10 },
   productItem: { flexDirection: 'row', justifyContent: 'space-between', padding: 10, borderBottomWidth: 1, borderBottomColor: '#E0E0E0' },
   productItemName: { fontSize: 14, color: '#212121' },

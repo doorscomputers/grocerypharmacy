@@ -5,6 +5,7 @@
  */
 
 import { Category, Brand, Unit, Size, Supplier } from './schema';
+import { verifyPassword } from '../utils/passwordHash';
 
 const STORAGE_KEY = 'posmobile_webmock_db';
 
@@ -36,6 +37,7 @@ let salesReturnItems: any[] = [];
 let purchaseReturns: any[] = [];
 let purchaseReturnItems: any[] = [];
 let endOfDayRecords: any[] = [];
+let resetOperationsLog: any[] = [];
 
 // Auto-increment counters
 let productIdCounter = 1;
@@ -62,6 +64,7 @@ let salesReturnItemIdCounter = 1;
 let purchaseReturnIdCounter = 1;
 let purchaseReturnItemIdCounter = 1;
 let eodIdCounter = 1;
+let resetOperationsLogIdCounter = 1;
 
 // Save all data to localStorage
 function saveToLocalStorage() {
@@ -94,6 +97,7 @@ function saveToLocalStorage() {
       purchaseReturns,
       purchaseReturnItems,
       endOfDayRecords,
+      resetOperationsLog,
       counters: {
         productIdCounter,
         categoryIdCounter,
@@ -119,6 +123,7 @@ function saveToLocalStorage() {
         purchaseReturnIdCounter,
         purchaseReturnItemIdCounter,
         eodIdCounter,
+        resetOperationsLogIdCounter,
       }
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -161,6 +166,7 @@ function loadFromLocalStorage(): boolean {
       purchaseReturns = data.purchaseReturns || [];
       purchaseReturnItems = data.purchaseReturnItems || [];
       endOfDayRecords = data.endOfDayRecords || [];
+      resetOperationsLog = data.resetOperationsLog || [];
 
       if (data.counters) {
         productIdCounter = data.counters.productIdCounter || 1;
@@ -187,8 +193,34 @@ function loadFromLocalStorage(): boolean {
         purchaseReturnIdCounter = data.counters.purchaseReturnIdCounter || 1;
         purchaseReturnItemIdCounter = data.counters.purchaseReturnItemIdCounter || 1;
         eodIdCounter = data.counters.eodIdCounter || 1;
+        resetOperationsLogIdCounter = data.counters.resetOperationsLogIdCounter || 1;
       }
       console.log('[WebMock] Data loaded from localStorage');
+
+      // Validate admin user password - if corrupt, reset to default
+      const adminUser = users.find(u => u.username === 'admin');
+      if (adminUser) {
+        const isValidHash = verifyPassword('1122', adminUser.password_hash);
+        if (!isValidHash) {
+          console.log('[WebMock] Admin password hash is invalid, resetting to default...');
+          adminUser.password_hash = '$simple$AdminSalt1234567$6d4a5ab4';
+          saveToLocalStorage();
+        }
+      } else {
+        // Admin user missing, add default admin
+        console.log('[WebMock] Admin user missing, adding default...');
+        users.push({
+          id: 1,
+          username: 'admin',
+          password_hash: '$simple$AdminSalt1234567$6d4a5ab4',
+          role: 'ADMIN',
+          full_name: 'Administrator',
+          is_active: true,
+          created_at: new Date().toISOString()
+        });
+        saveToLocalStorage();
+      }
+
       return true;
     }
   } catch (e) {
@@ -248,10 +280,11 @@ function initializeSampleData() {
   productIdCounter = 6;
 
   // Users - is_active must be boolean true for TypeScript User type
+  // Default password for all users: 1122
   users = [
-    { id: 1, username: 'admin', password_hash: 'admin123', role: 'ADMIN', full_name: 'Administrator', is_active: true, created_at: new Date().toISOString() },
-    { id: 2, username: 'cashier', password_hash: 'cashier123', role: 'CASHIER', full_name: 'Cashier User', is_active: true, created_at: new Date().toISOString() },
-    { id: 3, username: 'manager', password_hash: 'manager123', role: 'MANAGER', full_name: 'Manager User', is_active: true, created_at: new Date().toISOString() },
+    { id: 1, username: 'admin', password_hash: '$simple$AdminSalt1234567$6d4a5ab4', role: 'ADMIN', full_name: 'Administrator', is_active: true, created_at: new Date().toISOString() },
+    { id: 2, username: 'cashier', password_hash: '$simple$CashierSalt12345$26740a7d', role: 'CASHIER', full_name: 'Cashier User', is_active: true, created_at: new Date().toISOString() },
+    { id: 3, username: 'manager', password_hash: '$simple$ManagerSalt12345$5d2db5d9', role: 'MANAGER', full_name: 'Manager User', is_active: true, created_at: new Date().toISOString() },
   ];
 
   // Suppliers
@@ -274,7 +307,7 @@ function initializeSampleData() {
     'company_tin': '000-000-000-000',
     'vat_rate': '12.00',
     'pos_serial': 'POS000001',
-    'receipt_footer': 'Thank you for your business!',
+    'receipt_footer': 'Thank you for shopping with us! Come Again!!!',
   };
 }
 
@@ -356,6 +389,17 @@ export class WebMockDatabaseService {
   }
 
   public async createProduct(product: any): Promise<number> {
+    // Check for duplicate product name (case-insensitive, includes inactive)
+    const existingName = products.find(p => p.name.toLowerCase() === (product.name || '').trim().toLowerCase());
+    if (existingName) {
+      throw new Error(`Product name "${product.name.trim()}" already exists. Please use a unique name.`);
+    }
+    // Check for duplicate product code (case-insensitive, includes inactive)
+    const existingCode = products.find(p => p.code?.toLowerCase() === (product.code || '').trim().toLowerCase());
+    if (existingCode) {
+      throw new Error(`Product code "${product.code.trim()}" already exists. Please use a unique code.`);
+    }
+
     // Add related names
     const category = categories.find(c => c.id === product.category_id);
     const brand = brands.find(b => b.id === product.brand_id);
@@ -393,6 +437,18 @@ export class WebMockDatabaseService {
   }
 
   public async updateProduct(id: number, product: any): Promise<void> {
+    if (product.name !== undefined) {
+      const existingName = products.find(p => p.name.toLowerCase() === product.name.trim().toLowerCase() && p.id !== id);
+      if (existingName) {
+        throw new Error(`Product name "${product.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
+    if (product.code !== undefined) {
+      const existingCode = products.find(p => p.code?.toLowerCase() === product.code.trim().toLowerCase() && p.id !== id);
+      if (existingCode) {
+        throw new Error(`Product code "${product.code.trim()}" already exists. Please use a unique code.`);
+      }
+    }
     const index = products.findIndex(p => p.id === id);
     if (index !== -1) {
       const category = categories.find(c => c.id === product.category_id);
@@ -446,9 +502,15 @@ export class WebMockDatabaseService {
   }
 
   public async createCategory(category: Partial<Category>): Promise<number> {
+    // Check for duplicate category name (case-insensitive, includes inactive)
+    const existing = categories.find(c => c.name.toLowerCase() === (category.name || '').trim().toLowerCase());
+    if (existing) {
+      throw new Error(`Category "${(category.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+
     const newCategory: Category = {
       id: categoryIdCounter++,
-      name: category.name || '',
+      name: (category.name || '').trim(),
       description: category.description || '',
       is_active: 1,
       created_at: new Date().toISOString(),
@@ -460,11 +522,18 @@ export class WebMockDatabaseService {
   }
 
   public async updateCategory(id: number, category: Partial<Category>): Promise<void> {
+    if (category.name !== undefined) {
+      const existing = categories.find(c => c.name.toLowerCase() === category.name!.trim().toLowerCase() && c.id !== id);
+      if (existing) {
+        throw new Error(`Category "${category.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
     const index = categories.findIndex(c => c.id === id);
     if (index !== -1) {
       categories[index] = {
         ...categories[index],
         ...category,
+        name: category.name ? category.name.trim() : categories[index].name,
         updated_at: new Date().toISOString(),
       };
       saveToLocalStorage();
@@ -492,9 +561,15 @@ export class WebMockDatabaseService {
   }
 
   public async createBrand(brand: Partial<Brand>): Promise<number> {
+    // Check for duplicate brand name (case-insensitive, includes inactive)
+    const existing = brands.find(b => b.name.toLowerCase() === (brand.name || '').trim().toLowerCase());
+    if (existing) {
+      throw new Error(`Brand "${(brand.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+
     const newBrand: Brand = {
       id: brandIdCounter++,
-      name: brand.name || '',
+      name: (brand.name || '').trim(),
       description: brand.description || '',
       is_active: 1,
       created_at: new Date().toISOString(),
@@ -506,11 +581,18 @@ export class WebMockDatabaseService {
   }
 
   public async updateBrand(id: number, brand: Partial<Brand>): Promise<void> {
+    if (brand.name !== undefined) {
+      const existing = brands.find(b => b.name.toLowerCase() === brand.name!.trim().toLowerCase() && b.id !== id);
+      if (existing) {
+        throw new Error(`Brand "${brand.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
     const index = brands.findIndex(b => b.id === id);
     if (index !== -1) {
       brands[index] = {
         ...brands[index],
         ...brand,
+        name: brand.name ? brand.name.trim() : brands[index].name,
         updated_at: new Date().toISOString(),
       };
       saveToLocalStorage();
@@ -538,10 +620,21 @@ export class WebMockDatabaseService {
   }
 
   public async createUnit(unit: Partial<Unit>): Promise<number> {
+    // Check for duplicate unit name (case-insensitive, includes inactive)
+    const existingName = units.find(u => u.name.toLowerCase() === (unit.name || '').trim().toLowerCase());
+    if (existingName) {
+      throw new Error(`Unit "${(unit.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+    // Check for duplicate abbreviation (case-insensitive, includes inactive)
+    const existingAbbr = units.find(u => u.abbreviation.toLowerCase() === (unit.abbreviation || '').trim().toLowerCase());
+    if (existingAbbr) {
+      throw new Error(`Unit abbreviation "${(unit.abbreviation || '').trim()}" already exists. Please use a unique abbreviation.`);
+    }
+
     const newUnit: Unit = {
       id: unitIdCounter++,
-      name: unit.name || '',
-      abbreviation: unit.abbreviation || '',
+      name: (unit.name || '').trim(),
+      abbreviation: (unit.abbreviation || '').trim(),
       description: unit.description || '',
       is_active: 1,
       created_at: new Date().toISOString(),
@@ -553,11 +646,25 @@ export class WebMockDatabaseService {
   }
 
   public async updateUnit(id: number, unit: Partial<Unit>): Promise<void> {
+    if (unit.name !== undefined) {
+      const existingName = units.find(u => u.name.toLowerCase() === unit.name!.trim().toLowerCase() && u.id !== id);
+      if (existingName) {
+        throw new Error(`Unit "${unit.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
+    if (unit.abbreviation !== undefined) {
+      const existingAbbr = units.find(u => u.abbreviation.toLowerCase() === unit.abbreviation!.trim().toLowerCase() && u.id !== id);
+      if (existingAbbr) {
+        throw new Error(`Unit abbreviation "${unit.abbreviation.trim()}" already exists. Please use a unique abbreviation.`);
+      }
+    }
     const index = units.findIndex(u => u.id === id);
     if (index !== -1) {
       units[index] = {
         ...units[index],
         ...unit,
+        name: unit.name ? unit.name.trim() : units[index].name,
+        abbreviation: unit.abbreviation ? unit.abbreviation.trim() : units[index].abbreviation,
         updated_at: new Date().toISOString(),
       };
       saveToLocalStorage();
@@ -585,9 +692,15 @@ export class WebMockDatabaseService {
   }
 
   public async createSize(size: Partial<Size>): Promise<number> {
+    // Check for duplicate size name (case-insensitive, includes inactive)
+    const existing = sizes.find(s => s.name.toLowerCase() === (size.name || '').trim().toLowerCase());
+    if (existing) {
+      throw new Error(`Size "${(size.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+
     const newSize: Size = {
       id: sizeIdCounter++,
-      name: size.name || '',
+      name: (size.name || '').trim(),
       description: size.description || '',
       sort_order: size.sort_order || sizes.length + 1,
       is_active: 1,
@@ -600,11 +713,18 @@ export class WebMockDatabaseService {
   }
 
   public async updateSize(id: number, size: Partial<Size>): Promise<void> {
+    if (size.name !== undefined) {
+      const existing = sizes.find(s => s.name.toLowerCase() === size.name!.trim().toLowerCase() && s.id !== id);
+      if (existing) {
+        throw new Error(`Size "${size.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
     const index = sizes.findIndex(s => s.id === id);
     if (index !== -1) {
       sizes[index] = {
         ...sizes[index],
         ...size,
+        name: size.name ? size.name.trim() : sizes[index].name,
         updated_at: new Date().toISOString(),
       };
       saveToLocalStorage();
@@ -628,11 +748,22 @@ export class WebMockDatabaseService {
     return users.find(u => u.username === username && u.is_active) || null;
   }
 
+  public async getUserById(userId: number): Promise<any | null> {
+    return users.find(u => u.id === userId) || null;
+  }
+
   public async validateUser(username: string, password: string): Promise<any | null> {
-    // For web mock, accept any password
     const user = users.find(u => u.username === username && u.is_active);
     console.log('[WebMock] validateUser:', username, 'found:', user?.username, 'role:', user?.role, 'is_active:', user?.is_active);
-    return user || null;
+
+    if (user && verifyPassword(password, user.password_hash)) {
+      console.log('[WebMock] Password verified successfully');
+      const { password_hash, ...userWithoutPassword } = user;
+      return userWithoutPassword;
+    }
+
+    console.log('[WebMock] Password verification failed');
+    return null;
   }
 
   // Alias for authenticateUser (used by AuthContext)
@@ -653,11 +784,22 @@ export class WebMockDatabaseService {
   }
 
   public async createSupplier(supplier: any): Promise<number> {
+    // Check for duplicate supplier name (case-insensitive, includes inactive)
+    const existingName = suppliers.find(s => s.name.toLowerCase() === (supplier.name || '').trim().toLowerCase());
+    if (existingName) {
+      throw new Error(`Supplier "${(supplier.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+    // Check for duplicate supplier code (case-insensitive, includes inactive)
+    const existingCode = suppliers.find(s => s.code.toLowerCase() === (supplier.code || '').trim().toLowerCase());
+    if (existingCode) {
+      throw new Error(`Supplier code "${(supplier.code || '').trim()}" already exists. Please use a unique code.`);
+    }
+
     const code = `SUP${String(supplierIdCounter).padStart(3, '0')}`;
     const newSupplier: any = {
       id: supplierIdCounter++,
-      code: supplier.code || code,
-      name: supplier.name || '',
+      code: (supplier.code || code).trim(),
+      name: (supplier.name || '').trim(),
       contact_person: supplier.contact_person || '',
       phone: supplier.phone || '',
       email: supplier.email || '',
@@ -678,11 +820,25 @@ export class WebMockDatabaseService {
   }
 
   public async updateSupplier(id: number, supplier: any): Promise<void> {
+    if (supplier.name !== undefined) {
+      const existingName = suppliers.find(s => s.name.toLowerCase() === supplier.name.trim().toLowerCase() && s.id !== id);
+      if (existingName) {
+        throw new Error(`Supplier "${supplier.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
+    if (supplier.code !== undefined) {
+      const existingCode = suppliers.find(s => s.code.toLowerCase() === supplier.code.trim().toLowerCase() && s.id !== id);
+      if (existingCode) {
+        throw new Error(`Supplier code "${supplier.code.trim()}" already exists. Please use a unique code.`);
+      }
+    }
     const index = suppliers.findIndex(s => s.id === id);
     if (index !== -1) {
       suppliers[index] = {
         ...suppliers[index],
         ...supplier,
+        name: supplier.name ? supplier.name.trim() : suppliers[index].name,
+        code: supplier.code ? supplier.code.trim() : suppliers[index].code,
         updated_at: new Date().toISOString(),
       } as Supplier;
       saveToLocalStorage();
@@ -711,11 +867,17 @@ export class WebMockDatabaseService {
   }
 
   public async createCustomer(customer: any): Promise<number> {
+    // Check for duplicate customer name (case-insensitive, includes inactive)
+    const existingName = customers.find(c => c.name.toLowerCase() === (customer.name || '').trim().toLowerCase());
+    if (existingName) {
+      throw new Error(`Customer "${(customer.name || '').trim()}" already exists. Please use a unique name.`);
+    }
+
     const code = `CUST${String(customerIdCounter).padStart(3, '0')}`;
     const newCustomer = {
       id: customerIdCounter++,
       code: customer.code || code,
-      name: customer.name || '',
+      name: (customer.name || '').trim(),
       contact_person: customer.contact_person || '',
       phone: customer.phone || '',
       email: customer.email || '',
@@ -735,11 +897,18 @@ export class WebMockDatabaseService {
   }
 
   public async updateCustomer(id: number, customer: any): Promise<void> {
+    if (customer.name !== undefined) {
+      const existingName = customers.find(c => c.name.toLowerCase() === customer.name.trim().toLowerCase() && c.id !== id);
+      if (existingName) {
+        throw new Error(`Customer "${customer.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
     const index = customers.findIndex(c => c.id === id);
     if (index !== -1) {
       customers[index] = {
         ...customers[index],
         ...customer,
+        name: customer.name ? customer.name.trim() : customers[index].name,
         updated_at: new Date().toISOString(),
       };
       saveToLocalStorage();
@@ -758,6 +927,45 @@ export class WebMockDatabaseService {
   // ============ TRANSACTIONS ============
   public async getTransactions(): Promise<any[]> {
     return [...transactions];
+  }
+
+  public async getTransactionItems(transactionId: number): Promise<any[]> {
+    const txn = transactions.find(t => t.id === transactionId);
+    if (!txn || !txn.items) return [];
+    return txn.items.map((item: any, index: number) => ({
+      id: index + 1,
+      transaction_id: transactionId,
+      product_id: item.product_id,
+      product_code: item.product_code || '',
+      product_name: item.product_name || '',
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+      discount_amount: item.discount_amount || 0,
+      tax_amount: item.tax_amount || 0,
+      total_amount: item.total_amount,
+    }));
+  }
+
+  public async getAllTransactionItems(): Promise<any[]> {
+    const allItems: any[] = [];
+    for (const txn of transactions) {
+      if (!txn.items) continue;
+      txn.items.forEach((item: any, index: number) => {
+        allItems.push({
+          id: allItems.length + 1,
+          transaction_id: txn.id,
+          product_id: item.product_id,
+          product_code: item.product_code || '',
+          product_name: item.product_name || '',
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          discount_amount: item.discount_amount || 0,
+          tax_amount: item.tax_amount || 0,
+          total_amount: item.total_amount,
+        });
+      });
+    }
+    return allItems;
   }
 
   public async getTodayTransactions(): Promise<any[]> {
@@ -2256,6 +2464,68 @@ export class WebMockDatabaseService {
     };
   }
 
+  /**
+   * Log a reset operation attempt for audit trail
+   */
+  public async logResetOperation(params: {
+    userId: number;
+    username: string;
+    fullName: string;
+    operationType: 'TRANSACTIONAL_DATA_RESET' | 'DATABASE_RESTORE' | 'MASTER_DATA_RESET';
+    status: 'ATTEMPTED' | 'SUCCESS' | 'FAILED' | 'DENIED' | 'CANCELLED';
+    recordsDeleted?: number;
+    details?: Record<string, any>;
+  }): Promise<void> {
+    try {
+      const now = new Date();
+      const manilaTime = now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' });
+
+      const newLog = {
+        id: ++resetOperationsLogIdCounter,
+        user_id: params.userId,
+        username: params.username,
+        full_name: params.fullName,
+        operation_type: params.operationType,
+        status: params.status,
+        records_deleted: params.recordsDeleted || 0,
+        details: params.details ? JSON.stringify(params.details) : null,
+        created_at: manilaTime,
+      };
+
+      resetOperationsLog.push(newLog);
+      saveToLocalStorage();
+
+      console.log(`[WebMock ResetLog] ${params.status}: ${params.operationType} by ${params.username}`);
+    } catch (error) {
+      console.error('[WebMock ResetLog] Error logging reset operation:', error);
+    }
+  }
+
+  /**
+   * Get reset operations log for admin viewing
+   */
+  public async getResetOperationsLog(limit: number = 50): Promise<Array<{
+    id: number;
+    user_id: number;
+    username: string;
+    full_name: string;
+    operation_type: string;
+    status: string;
+    records_deleted: number;
+    details: string | null;
+    created_at: string;
+  }>> {
+    try {
+      const sorted = [...resetOperationsLog].sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      return sorted.slice(0, limit);
+    } catch (error) {
+      console.error('[WebMock ResetLog] Error getting reset operations log:', error);
+      return [];
+    }
+  }
+
   // ============ DAMAGED ITEMS MANAGEMENT ============
 
   public async getDamageSessions(limit?: number): Promise<any[]> {
@@ -2662,6 +2932,16 @@ export class WebMockDatabaseService {
       t.transaction_number === transactionNumber && t.status === 'COMPLETED'
     );
     return transaction || null;
+  }
+
+  // Get recent transactions for return lookup (last 30 days)
+  public async getRecentTransactionsForReturn(): Promise<any[]> {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    return transactions
+      .filter(t => t.status === 'COMPLETED' && new Date(t.created_at) >= thirtyDaysAgo)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }
 
   public async processSalesReturn(returnData: {
@@ -3157,5 +3437,281 @@ export class WebMockDatabaseService {
         return null;
       }
     };
+  }
+
+  // ==================== DATABASE HEALTH & CORRUPTION PREVENTION ====================
+
+  /**
+   * Enable corruption prevention settings (no-op for web mock)
+   */
+  public async enableCorruptionPrevention(): Promise<void> {
+    console.log('[WebMock] Corruption prevention enabled (web mock)');
+  }
+
+  /**
+   * Check database health (web mock version)
+   */
+  public async checkDatabaseHealth(): Promise<{
+    isHealthy: boolean;
+    walMode: boolean;
+    synchronousMode: string;
+    integrityOk: boolean;
+    foreignKeyViolations: number;
+    freePageCount: number;
+    totalPages: number;
+    issues: string[];
+  }> {
+    const issues: string[] = [];
+
+    try {
+      // Check localStorage data
+      const storedData = localStorage.getItem('posmobile_webmock_db');
+      if (!storedData) {
+        issues.push('No database data found in localStorage');
+      } else {
+        // Verify data can be parsed
+        const data = JSON.parse(storedData);
+        if (!Array.isArray(data.products)) issues.push('Products data corrupted');
+        if (!Array.isArray(data.users)) issues.push('Users data corrupted');
+      }
+    } catch (error) {
+      issues.push(`Data validation error: ${error}`);
+    }
+
+    return {
+      isHealthy: issues.length === 0,
+      walMode: true, // Simulated
+      synchronousMode: 'FULL', // Simulated
+      integrityOk: issues.length === 0,
+      foreignKeyViolations: 0,
+      freePageCount: 0,
+      totalPages: 0,
+      issues,
+    };
+  }
+
+  /**
+   * Perform integrity check (web mock version)
+   */
+  public async performIntegrityCheck(): Promise<{ passed: boolean; details: string }> {
+    try {
+      const storedData = localStorage.getItem('posmobile_webmock_db');
+      if (storedData) {
+        JSON.parse(storedData);
+        return { passed: true, details: 'ok' };
+      }
+      return { passed: false, details: 'No data found' };
+    } catch (error) {
+      return { passed: false, details: `Parse error: ${error}` };
+    }
+  }
+
+  /**
+   * Force WAL checkpoint (no-op for web mock)
+   */
+  public async checkpointWAL(): Promise<{ success: boolean; pagesCheckpointed: number }> {
+    return { success: true, pagesCheckpointed: 0 };
+  }
+
+  /**
+   * Optimize database (web mock - compact localStorage)
+   */
+  public async optimizeDatabase(): Promise<void> {
+    try {
+      const storedData = localStorage.getItem('posmobile_webmock_db');
+      if (storedData) {
+        const data = JSON.parse(storedData);
+        localStorage.setItem('posmobile_webmock_db', JSON.stringify(data));
+      }
+      console.log('[WebMock] Database optimization completed');
+    } catch (error) {
+      console.error('[WebMock] Database optimization error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Attempt automatic database repair (web mock - always succeeds)
+   */
+  public async attemptDatabaseRepair(): Promise<{
+    success: boolean;
+    repairSteps: { step: string; success: boolean; message: string }[];
+    finalHealthCheck: {
+      isHealthy: boolean;
+      integrityOk: boolean;
+      issues: string[];
+    };
+  }> {
+    console.log('[WebMock] Database repair (simulated)');
+    return {
+      success: true,
+      repairSteps: [
+        { step: 'Enable WAL Mode', success: true, message: 'Simulated' },
+        { step: 'Rebuild Indexes', success: true, message: 'Simulated' },
+        { step: 'Vacuum Database', success: true, message: 'Simulated' },
+      ],
+      finalHealthCheck: {
+        isHealthy: true,
+        integrityOk: true,
+        issues: [],
+      },
+    };
+  }
+
+  /**
+   * Quick repair (web mock - always succeeds)
+   */
+  public async quickRepair(): Promise<{ success: boolean; message: string }> {
+    console.log('[WebMock] Quick repair (simulated)');
+    return { success: true, message: 'Quick repair successful (simulated)' };
+  }
+
+  /**
+   * Verify admin password for sensitive operations
+   */
+  public async verifyAdminPassword(password: string): Promise<boolean> {
+    try {
+      const admin = users.find(u => u.role === 'ADMIN');
+      if (!admin || !admin.password_hash) {
+        return false;
+      }
+
+      const { verifyPassword } = require('../utils/passwordHash');
+      return verifyPassword(password, admin.password_hash);
+    } catch (error) {
+      console.error('[WebMock] Error verifying admin password:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get database info (web mock version)
+   */
+  public async getDatabaseInfo(): Promise<{
+    pageSize: number;
+    pageCount: number;
+    estimatedSizeKB: number;
+    walEnabled: boolean;
+  }> {
+    try {
+      const storedData = localStorage.getItem('posmobile_webmock_db');
+      const sizeBytes = storedData ? new Blob([storedData]).size : 0;
+
+      return {
+        pageSize: 4096,
+        pageCount: Math.ceil(sizeBytes / 4096),
+        estimatedSizeKB: Math.round(sizeBytes / 1024),
+        walEnabled: true, // Simulated
+      };
+    } catch (error) {
+      return {
+        pageSize: 0,
+        pageCount: 0,
+        estimatedSizeKB: 0,
+        walEnabled: false,
+      };
+    }
+  }
+
+  // ==================== BIR eSALES REPORT ====================
+
+  /**
+   * Get eSales report data for BIR submission (web mock version)
+   */
+  public async getESalesReportData(year: number, month: number): Promise<{
+    tin: string;
+    branch: string;
+    month: string;
+    year: string;
+    min: string;
+    lastOR: string;
+    vatableSales: number;
+    vatZeroRatedSales: number;
+    vatExemptSales: number;
+    otherPercentageTaxSales: number;
+  }> {
+    try {
+      // Format month with leading zero
+      const monthStr = month.toString().padStart(2, '0');
+      const yearStr = year.toString();
+
+      // Build date range for the month
+      const startDate = new Date(year, month - 1, 1);
+      const endDate = new Date(year, month, 1);
+
+      // Get TIN from settings
+      const tinSetting = settings.find(s => s.key === 'tin');
+      const tin = tinSetting?.value?.replace(/-/g, '') || '000000000000';
+
+      // Get Branch from settings (default to "000" for main branch)
+      const branchSetting = settings.find(s => s.key === 'branch_code');
+      const branch = branchSetting?.value || '000';
+
+      // Get MIN (Machine Identification Number) from settings
+      const minSetting = settings.find(s => s.key === 'min_number');
+      const min = minSetting?.value || '';
+
+      // Filter transactions for the month
+      const monthTransactions = transactions.filter(t => {
+        if (t.status !== 'COMPLETED') return false;
+        const txnDate = new Date(t.transaction_date || t.created_at);
+        return txnDate >= startDate && txnDate < endDate;
+      });
+
+      // Get last invoice number
+      const sortedTxns = [...monthTransactions].sort((a, b) => {
+        const dateA = new Date(a.transaction_date || a.created_at).getTime();
+        const dateB = new Date(b.transaction_date || b.created_at).getTime();
+        return dateB - dateA;
+      });
+      const lastOR = sortedTxns[0]?.invoice_number || '';
+
+      // Calculate sales by VAT type
+      let vatableSales = 0;
+      let vatZeroRatedSales = 0;
+      let vatExemptSales = 0;
+
+      // Get transaction IDs for the month
+      const txnIds = new Set(monthTransactions.map(t => t.id));
+
+      // Process transaction items
+      for (const item of transactionItems) {
+        if (!txnIds.has(item.transaction_id)) continue;
+
+        // Find product to get vat_type
+        const product = products.find(p => p.id === item.product_id);
+        const vatType = (product as any)?.vat_type || 'vatable';
+        const amount = item.total_amount || 0;
+
+        switch (vatType) {
+          case 'vatable':
+            // For vatable sales, get VAT-exclusive amount (assuming 12% VAT included)
+            vatableSales += amount / 1.12;
+            break;
+          case 'zero_rated':
+            vatZeroRatedSales += amount;
+            break;
+          case 'vat_exempt':
+            vatExemptSales += amount;
+            break;
+        }
+      }
+
+      return {
+        tin,
+        branch,
+        month: monthStr,
+        year: yearStr,
+        min,
+        lastOR,
+        vatableSales: Math.round(vatableSales * 100) / 100,
+        vatZeroRatedSales: Math.round(vatZeroRatedSales * 100) / 100,
+        vatExemptSales: Math.round(vatExemptSales * 100) / 100,
+        otherPercentageTaxSales: 0,
+      };
+    } catch (error) {
+      console.error('[WebMock] Error getting eSales report data:', error);
+      throw error;
+    }
   }
 }

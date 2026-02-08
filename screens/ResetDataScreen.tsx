@@ -25,6 +25,8 @@ import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { ScreenGuard } from '../components/RoleGuard';
+import { DatabaseBackupService } from '../utils/DatabaseBackupService';
+import { Platform } from 'react-native';
 
 type ResetDataScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -68,6 +70,9 @@ export default function ResetDataScreen({ navigation }: Props) {
   const [dataSummary, setDataSummary] = useState<DataSummary | null>(null);
   const [dialogVisible, setDialogVisible] = useState(false);
   const [confirmationText, setConfirmationText] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [verifyingPassword, setVerifyingPassword] = useState(false);
   const [resetting, setResetting] = useState(false);
   const theme = useTheme();
   const { user } = useAuth();
@@ -107,6 +112,42 @@ export default function ResetDataScreen({ navigation }: Props) {
 
     setDialogVisible(true);
     setConfirmationText('');
+    setAdminPassword('');
+    setPasswordError('');
+  };
+
+  // Helper to log reset operations
+  const logResetOperation = async (
+    status: 'ATTEMPTED' | 'SUCCESS' | 'FAILED' | 'DENIED' | 'CANCELLED',
+    recordsDeleted: number = 0,
+    details?: Record<string, any>
+  ) => {
+    if (!user) return;
+    try {
+      const dbService = getDatabase();
+      await dbService.logResetOperation({
+        userId: user.id,
+        username: user.username,
+        fullName: user.full_name,
+        operationType: 'TRANSACTIONAL_DATA_RESET',
+        status,
+        recordsDeleted,
+        details,
+      });
+    } catch (error) {
+      console.error('[Reset] Error logging operation:', error);
+    }
+  };
+
+  const handleCancelDialog = async () => {
+    // Log cancellation if user had started the process
+    if (confirmationText.length > 0 || adminPassword.length > 0) {
+      await logResetOperation('CANCELLED', 0, { reason: 'User cancelled dialog' });
+    }
+    setDialogVisible(false);
+    setConfirmationText('');
+    setAdminPassword('');
+    setPasswordError('');
   };
 
   const handleConfirmReset = async () => {
@@ -115,8 +156,53 @@ export default function ResetDataScreen({ navigation }: Props) {
       return;
     }
 
+    if (!adminPassword.trim()) {
+      setPasswordError('Please enter your admin password');
+      return;
+    }
+
+    // Verify admin password first
+    setVerifyingPassword(true);
+    setPasswordError('');
+    try {
+      const dbService = getDatabase();
+      const isValidPassword = await dbService.verifyAdminPassword(adminPassword);
+
+      if (!isValidPassword) {
+        setPasswordError('Incorrect admin password');
+        setVerifyingPassword(false);
+        // Log denied access
+        await logResetOperation('DENIED', 0, { reason: 'Invalid admin password' });
+        return;
+      }
+    } catch (error) {
+      setPasswordError('Error verifying password');
+      setVerifyingPassword(false);
+      await logResetOperation('FAILED', 0, { reason: 'Password verification error', error: String(error) });
+      return;
+    }
+    setVerifyingPassword(false);
+
+    // Log that reset was attempted
+    await logResetOperation('ATTEMPTED', 0, { totalRecords: getTotalRecords() });
+
     setResetting(true);
     try {
+      // Create auto-backup before reset (native only)
+      const isWebPlatform = Platform.OS === 'web';
+      let backupPath: string | null = null;
+
+      if (!isWebPlatform) {
+        try {
+          const backupService = DatabaseBackupService.getInstance();
+          backupPath = await backupService.createAutoBackup('pre-reset');
+          console.log('[Reset] Auto-backup created:', backupPath);
+        } catch (backupError) {
+          console.warn('[Reset] Auto-backup failed:', backupError);
+          // Continue with reset even if backup fails
+        }
+      }
+
       const dbService = getDatabase();
       const result = await dbService.resetTransactionalData();
 
@@ -125,9 +211,15 @@ export default function ResetDataScreen({ navigation }: Props) {
 
       if (result.success) {
         const totalDeleted = Object.values(result.deletedCounts).reduce((sum: number, count: number) => sum + count, 0);
+        // Log successful reset
+        await logResetOperation('SUCCESS', totalDeleted, {
+          deletedCounts: result.deletedCounts,
+          backupCreated: !!backupPath
+        });
+        const backupMsg = backupPath ? '\n\nA backup was created before the reset.' : '';
         Alert.alert(
           'Reset Complete',
-          `Successfully deleted ${totalDeleted} records.\n\nAll transactional data has been cleared. Master data (Products, Suppliers, Customers, Categories, etc.) has been preserved.\n\nStock quantities have been reset to zero.`,
+          `Successfully deleted ${totalDeleted} records.\n\nAll transactional data has been cleared. Master data (Products, Suppliers, Customers, Categories, etc.) has been preserved.\n\nStock quantities have been reset to zero.${backupMsg}`,
           [
             {
               text: 'OK',
@@ -138,6 +230,13 @@ export default function ResetDataScreen({ navigation }: Props) {
           ]
         );
       } else {
+        const totalDeleted = Object.values(result.deletedCounts).reduce((sum: number, count: number) => sum + count, 0);
+        // Log partial success (completed with warnings)
+        await logResetOperation('SUCCESS', totalDeleted, {
+          deletedCounts: result.deletedCounts,
+          errors: result.errors,
+          hasWarnings: true
+        });
         Alert.alert(
           'Reset Completed with Warnings',
           `Reset completed but encountered some errors:\n\n${result.errors.join('\n')}\n\nMost data was cleared successfully.`,
@@ -153,6 +252,8 @@ export default function ResetDataScreen({ navigation }: Props) {
       }
     } catch (error) {
       console.error('Error resetting data:', error);
+      // Log failed reset
+      await logResetOperation('FAILED', 0, { error: String(error) });
       Alert.alert('Error', `Failed to reset data: ${error}`);
     } finally {
       setResetting(false);
@@ -358,7 +459,7 @@ export default function ResetDataScreen({ navigation }: Props) {
 
         {/* Confirmation Dialog */}
         <Portal>
-          <Dialog visible={dialogVisible} onDismiss={() => !resetting && setDialogVisible(false)}>
+          <Dialog visible={dialogVisible} onDismiss={() => !resetting && handleCancelDialog()}>
             <Dialog.Title style={styles.dialogTitle}>
               Confirm Data Reset
             </Dialog.Title>
@@ -379,20 +480,39 @@ export default function ResetDataScreen({ navigation }: Props) {
                 placeholder={`Type ${CONFIRMATION_TEXT} here`}
                 autoCapitalize="characters"
                 style={styles.confirmInput}
-                disabled={resetting}
+                disabled={resetting || verifyingPassword}
               />
+              <Paragraph style={[styles.dialogText, { marginTop: 16 }]}>
+                Enter your admin password:
+              </Paragraph>
+              <TextInput
+                mode="outlined"
+                value={adminPassword}
+                onChangeText={(text) => {
+                  setAdminPassword(text);
+                  setPasswordError('');
+                }}
+                placeholder="Admin password"
+                secureTextEntry
+                style={styles.confirmInput}
+                disabled={resetting || verifyingPassword}
+                error={!!passwordError}
+              />
+              {passwordError ? (
+                <Paragraph style={styles.errorText}>{passwordError}</Paragraph>
+              ) : null}
             </Dialog.Content>
             <Dialog.Actions>
               <Button
-                onPress={() => setDialogVisible(false)}
-                disabled={resetting}
+                onPress={handleCancelDialog}
+                disabled={resetting || verifyingPassword}
               >
                 Cancel
               </Button>
               <Button
                 onPress={handleConfirmReset}
-                loading={resetting}
-                disabled={resetting || confirmationText !== CONFIRMATION_TEXT}
+                loading={resetting || verifyingPassword}
+                disabled={resetting || verifyingPassword || confirmationText !== CONFIRMATION_TEXT || !adminPassword.trim()}
                 textColor="#F44336"
               >
                 Reset All Data
@@ -522,5 +642,10 @@ const styles = StyleSheet.create({
   },
   confirmInput: {
     marginTop: 12,
+  },
+  errorText: {
+    color: '#F44336',
+    fontSize: 12,
+    marginTop: 4,
   },
 });

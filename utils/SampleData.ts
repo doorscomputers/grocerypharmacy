@@ -140,7 +140,7 @@ export const initializeSampleData = async () => {
     await dbService.updateSetting('bir_permit', 'FP-123456789-000');
     await dbService.updateSetting('pos_serial', 'POS2024001');
     await dbService.updateSetting('accreditation_number', 'ACC2024001');
-    await dbService.updateSetting('receipt_footer', 'Salamat sa inyong pagbili!\nVisit us again soon!');
+    await dbService.updateSetting('receipt_footer', 'Thank you for shopping with us! Come Again!!!');
 
     console.log('Sample data initialized successfully');
   } catch (error) {

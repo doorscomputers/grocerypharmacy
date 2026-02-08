@@ -200,7 +200,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
   };
 
   return (
-    <RoleGuard permission="MANAGE_USERS">
+    <RoleGuard permission="MANAGE_PERMISSIONS">
       <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.header}>
           <Title style={styles.title}>Permission Management</Title>

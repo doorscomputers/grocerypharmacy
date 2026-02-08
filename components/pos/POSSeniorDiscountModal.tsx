@@ -12,6 +12,12 @@ import {
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
 
+interface ScPwdInfo {
+  id: string;
+  name: string;
+  type: 'SENIOR' | 'PWD';
+}
+
 interface POSSeniorDiscountModalProps {
   visible: boolean;
   subtotal: number;
@@ -19,7 +25,8 @@ interface POSSeniorDiscountModalProps {
   currentTotalCustomers: number;
   currentSeniorCount: number;
   isSeniorApplied: boolean;
-  onApply: (totalCustomers: number, seniorCount: number) => void;
+  currentScPwdInfo?: ScPwdInfo;
+  onApply: (totalCustomers: number, seniorCount: number, scPwdInfo?: ScPwdInfo) => void;
   onClear: () => void;
   onClose: () => void;
 }
@@ -31,12 +38,17 @@ export default function POSSeniorDiscountModal({
   currentTotalCustomers,
   currentSeniorCount,
   isSeniorApplied,
+  currentScPwdInfo,
   onApply,
   onClear,
   onClose,
 }: POSSeniorDiscountModalProps) {
   const [totalCustomers, setTotalCustomers] = useState('1');
   const [seniorCount, setSeniorCount] = useState('1');
+  // BIR Compliance: SC/PWD ID and Name capture
+  const [scPwdId, setScPwdId] = useState('');
+  const [scPwdName, setScPwdName] = useState('');
+  const [discountType, setDiscountType] = useState<'SENIOR' | 'PWD'>('SENIOR');
 
   // Initialize with current values when modal opens
   useEffect(() => {
@@ -44,12 +56,20 @@ export default function POSSeniorDiscountModal({
       if (isSeniorApplied) {
         setTotalCustomers(currentTotalCustomers.toString());
         setSeniorCount(currentSeniorCount.toString());
+        if (currentScPwdInfo) {
+          setScPwdId(currentScPwdInfo.id);
+          setScPwdName(currentScPwdInfo.name);
+          setDiscountType(currentScPwdInfo.type);
+        }
       } else {
         setTotalCustomers('1');
         setSeniorCount('1');
+        setScPwdId('');
+        setScPwdName('');
+        setDiscountType('SENIOR');
       }
     }
-  }, [visible, isSeniorApplied, currentTotalCustomers, currentSeniorCount]);
+  }, [visible, isSeniorApplied, currentTotalCustomers, currentSeniorCount, currentScPwdInfo]);
 
   const handleApply = () => {
     const total = parseInt(totalCustomers) || 0;
@@ -74,7 +94,25 @@ export default function POSSeniorDiscountModal({
       return;
     }
 
-    onApply(total, seniors);
+    // BIR Compliance: Validate SC/PWD ID (required for BIR)
+    if (!scPwdId.trim()) {
+      Alert.alert('ID Required', `Please enter the ${discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} ID number for BIR compliance.`);
+      return;
+    }
+
+    // BIR Compliance: Validate SC/PWD Name (required for BIR)
+    if (!scPwdName.trim()) {
+      Alert.alert('Name Required', `Please enter the ${discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} name for BIR compliance.`);
+      return;
+    }
+
+    const scPwdInfo: ScPwdInfo = {
+      id: scPwdId.trim(),
+      name: scPwdName.trim(),
+      type: discountType,
+    };
+
+    onApply(total, seniors, scPwdInfo);
     onClose();
   };
 
@@ -243,6 +281,69 @@ export default function POSSeniorDiscountModal({
                 ]}>+</Text>
               </TouchableOpacity>
             </View>
+          </View>
+
+          {/* BIR Compliance: Discount Type Selector */}
+          <View style={styles.inputSection}>
+            <Text style={styles.inputLabel}>Discount Type (BIR Required)</Text>
+            <View style={styles.typeSelector}>
+              <TouchableOpacity
+                style={[
+                  styles.typeButton,
+                  discountType === 'SENIOR' && styles.typeButtonActive,
+                ]}
+                onPress={() => setDiscountType('SENIOR')}
+                activeOpacity={0.7}
+              >
+                <Text style={[
+                  styles.typeButtonText,
+                  discountType === 'SENIOR' && styles.typeButtonTextActive,
+                ]}>Senior Citizen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.typeButton,
+                  discountType === 'PWD' && styles.typeButtonActive,
+                ]}
+                onPress={() => setDiscountType('PWD')}
+                activeOpacity={0.7}
+              >
+                <Text style={[
+                  styles.typeButtonText,
+                  discountType === 'PWD' && styles.typeButtonTextActive,
+                ]}>PWD</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* BIR Compliance: SC/PWD ID Input */}
+          <View style={styles.inputSection}>
+            <Text style={styles.inputLabel}>
+              {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} ID Number *
+            </Text>
+            <TextInput
+              style={styles.textInputField}
+              value={scPwdId}
+              onChangeText={setScPwdId}
+              placeholder={`Enter ${discountType === 'SENIOR' ? 'OSCA' : 'PWD'} ID Number`}
+              placeholderTextColor="#9E9E9E"
+              autoCapitalize="characters"
+            />
+          </View>
+
+          {/* BIR Compliance: SC/PWD Name Input */}
+          <View style={styles.inputSection}>
+            <Text style={styles.inputLabel}>
+              {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} Name *
+            </Text>
+            <TextInput
+              style={styles.textInputField}
+              value={scPwdName}
+              onChangeText={setScPwdName}
+              placeholder="Enter full name as shown on ID"
+              placeholderTextColor="#9E9E9E"
+              autoCapitalize="words"
+            />
           </View>
 
           {/* Calculation Preview */}
@@ -531,5 +632,42 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  // BIR Compliance: Type selector styles
+  typeSelector: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  typeButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    borderWidth: 2,
+    borderColor: '#E0E0E0',
+    alignItems: 'center',
+  },
+  typeButtonActive: {
+    backgroundColor: '#E3F2FD',
+    borderColor: '#2196F3',
+  },
+  typeButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#757575',
+  },
+  typeButtonTextActive: {
+    color: '#1976D2',
+  },
+  // BIR Compliance: Text input field styles
+  textInputField: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: '#212121',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
 });

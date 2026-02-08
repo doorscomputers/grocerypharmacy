@@ -35,39 +35,10 @@ export default function StartShiftDialog({
   onCancel,
 }: StartShiftDialogProps) {
   const theme = useTheme();
-  const [beginningCash, setBeginningCash] = useState<string>('0');
+  const [beginningCash, setBeginningCash] = useState<string>('');
   const [loading, setLoading] = useState(false);
-  const [suggestedCash, setSuggestedCash] = useState<number>(0);
-
-  useEffect(() => {
-    if (visible) {
-      loadSuggestedCash();
-    }
-  }, [visible, userId]);
-
-  const loadSuggestedCash = async () => {
-    try {
-      const dbService = DatabaseService.getInstance();
-
-      // Get last closed shift's ending cash
-      const lastShift = await dbService.getLastClosedShift(userId);
-      if (lastShift?.ending_cash) {
-        setSuggestedCash(lastShift.ending_cash);
-        setBeginningCash(String(lastShift.ending_cash));
-        return;
-      }
-
-      // Fall back to beginning_cash setting
-      const savedCash = await dbService.getSetting('beginning_cash');
-      if (savedCash) {
-        const amount = parseFloat(savedCash);
-        setSuggestedCash(amount);
-        setBeginningCash(savedCash);
-      }
-    } catch (error) {
-      console.error('Error loading suggested cash:', error);
-    }
-  };
+  // NOTE: Each day starts fresh - cashier enters their own beginning cash
+  // No suggestions from previous day's ending cash
 
   const handleStartShift = async () => {
     const cashAmount = parseFloat(beginningCash) || 0;
@@ -93,10 +64,6 @@ export default function StartShiftDialog({
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleUseSuggested = () => {
-    setBeginningCash(String(suggestedCash));
   };
 
   return (
@@ -129,19 +96,8 @@ export default function StartShiftDialog({
                 onChangeText={setBeginningCash}
                 keyboardType="decimal-pad"
                 placeholder="0.00"
-                selectTextOnFocus
               />
 
-              {suggestedCash > 0 && (
-                <TouchableOpacity
-                  style={styles.suggestedButton}
-                  onPress={handleUseSuggested}
-                >
-                  <Text style={styles.suggestedText}>
-                    Use previous shift's cash: ₱{formatCurrency(suggestedCash)}
-                  </Text>
-                </TouchableOpacity>
-              )}
             </View>
           </View>
 
@@ -237,18 +193,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
     color: '#212121',
-  },
-  suggestedButton: {
-    marginTop: 12,
-    padding: 12,
-    backgroundColor: '#E3F2FD',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  suggestedText: {
-    fontSize: 14,
-    color: '#1976D2',
-    fontWeight: '500',
   },
   actions: {
     flexDirection: 'row',

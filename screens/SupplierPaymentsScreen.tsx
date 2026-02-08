@@ -41,7 +41,7 @@ type PaymentMethod = 'CASH' | 'CHEQUE' | 'OTHERS';
 type OthersType = 'GCASH' | 'MAYA' | 'BANK_TRANSFER' | 'PAYPAL' | 'OTHER';
 
 export default function SupplierPaymentsScreen({ navigation }: Props) {
-  const [activeTab, setActiveTab] = useState<'payments' | 'payables' | 'aging'>('payments');
+  const [activeTab, setActiveTab] = useState<'payments' | 'payables' | 'aging'>('payables');
   const [payments, setPayments] = useState<any[]>([]);
   const [filteredPayments, setFilteredPayments] = useState<any[]>([]);
   const [accountsPayable, setAccountsPayable] = useState<any[]>([]);
@@ -520,9 +520,10 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
 
       <FAB
         icon="plus"
-        style={styles.fab}
+        style={[styles.fab, { backgroundColor: theme.colors.primary }]}
         onPress={openPaymentDialog}
         label="New Payment"
+        color="#FFFFFF"
       />
 
       {/* Create Payment Dialog */}
@@ -953,7 +954,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   dialogContent: {
     maxHeight: 450,

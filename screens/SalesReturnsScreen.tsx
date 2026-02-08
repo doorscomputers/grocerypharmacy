@@ -28,6 +28,9 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
+import ReturnReceiptPreview, { ReturnReceiptData } from '../components/ReturnReceiptPreview';
+import { buildReturnReceipt } from '../utils/escpos';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'SalesReturns'>;
@@ -45,7 +48,8 @@ interface ReturnItem {
 interface Product {
   id: number;
   name: string;
-  selling_price: number;
+  code?: string;
+  price: number;
   stock_quantity: number;
 }
 
@@ -78,9 +82,23 @@ export default function SalesReturnsScreen({ navigation }: Props) {
   const [returnHistory, setReturnHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
+  // State for transaction lookup modal
+  const [showTransactionModal, setShowTransactionModal] = useState(false);
+  const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+  const [transactionSearch, setTransactionSearch] = useState('');
+
   // Loading/error states
   const [loading, setLoading] = useState(false);
   const [lookingUp, setLookingUp] = useState(false);
+
+  // Receipt preview state
+  const [showReceiptPreview, setShowReceiptPreview] = useState(false);
+  const [receiptData, setReceiptData] = useState<ReturnReceiptData | null>(null);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+
+  // Printer service
+  const printerService = BluetoothPrinterService.getInstance();
 
   useEffect(() => {
     loadData();
@@ -89,35 +107,64 @@ export default function SalesReturnsScreen({ navigation }: Props) {
   const loadData = async () => {
     try {
       const dbService = getDatabase();
-      const [productsData, customersData, returnsData] = await Promise.all([
+      const [productsData, customersData, returnsData, receivablesData] = await Promise.all([
         dbService.getProducts(),
         dbService.getCustomers(),
         dbService.getSalesReturns(),
+        dbService.getAccountsReceivable(),
       ]);
       setProducts(productsData);
-      setCustomers(customersData);
+
+      // Calculate total AR balance per customer from accounts receivable
+      const customerBalances: Record<number, number> = {};
+      receivablesData.forEach((ar: any) => {
+        if (ar.customer_id && ar.balance_amount > 0) {
+          customerBalances[ar.customer_id] = (customerBalances[ar.customer_id] || 0) + ar.balance_amount;
+        }
+      });
+
+      // Merge AR balance into customer data
+      const customersWithBalance = customersData.map((customer: any) => ({
+        ...customer,
+        balance: customerBalances[customer.id] || 0,
+      }));
+
+      setCustomers(customersWithBalance);
       setReturnHistory(returnsData);
     } catch (error) {
       console.error('Error loading data:', error);
     }
   };
 
-  const lookupTransaction = async () => {
-    if (!transactionNumber.trim()) {
-      showAlert('Error', 'Please enter a transaction number');
-      return;
-    }
-
+  const openTransactionLookup = async () => {
     setLookingUp(true);
     try {
       const dbService = getDatabase();
-      const transaction = await dbService.getTransactionForReturn(transactionNumber.trim());
+      const transactions = await dbService.getRecentTransactionsForReturn();
+      setRecentTransactions(transactions);
+      setTransactionSearch('');
+      setShowTransactionModal(true);
+    } catch (error) {
+      console.error('Error loading recent transactions:', error);
+      showAlert('Error', 'Failed to load recent transactions');
+    } finally {
+      setLookingUp(false);
+    }
+  };
 
-      if (transaction) {
-        setOriginalTransaction(transaction);
+  const selectTransaction = async (transaction: any) => {
+    setShowTransactionModal(false);
+    setLookingUp(true);
+    try {
+      const dbService = getDatabase();
+      const fullTransaction = await dbService.getTransactionForReturn(transaction.transaction_number);
+
+      if (fullTransaction) {
+        setTransactionNumber(transaction.transaction_number);
+        setOriginalTransaction(fullTransaction);
         // Pre-populate return items from transaction
-        if (transaction.items && transaction.items.length > 0) {
-          const items = transaction.items.map((item: any) => ({
+        if (fullTransaction.items && fullTransaction.items.length > 0) {
+          const items = fullTransaction.items.map((item: any) => ({
             product_id: item.product_id,
             product_name: item.product_name || item.name,
             quantity: 0, // Start with 0, user selects what to return
@@ -129,19 +176,19 @@ export default function SalesReturnsScreen({ navigation }: Props) {
         }
 
         // Set customer if exists
-        if (transaction.customer_id) {
-          const customer = customers.find(c => c.id === transaction.customer_id);
+        if (fullTransaction.customer_id) {
+          const customer = customers.find(c => c.id === fullTransaction.customer_id);
           if (customer) {
             setSelectedCustomer(customer);
             setRefundMethod('CREDIT'); // Default to credit for credit customers
           }
         }
       } else {
-        showAlert('Not Found', 'Transaction not found or not eligible for return');
+        showAlert('Error', 'Could not load transaction details');
       }
     } catch (error) {
-      console.error('Error looking up transaction:', error);
-      showAlert('Error', 'Failed to look up transaction');
+      console.error('Error selecting transaction:', error);
+      showAlert('Error', 'Failed to load transaction');
     } finally {
       setLookingUp(false);
     }
@@ -159,7 +206,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
       product_name: product.name,
       quantity: 1,
       max_quantity: 999, // No limit for manual returns
-      unit_price: product.selling_price,
+      unit_price: product.price || 0,
       reason: '',
     }]);
     setShowProductModal(false);
@@ -179,6 +226,15 @@ export default function SalesReturnsScreen({ navigation }: Props) {
     setReturnItems(returnItems.map(item => {
       if (item.product_id === productId) {
         return { ...item, reason };
+      }
+      return item;
+    }));
+  };
+
+  const updateItemPrice = (productId: number, price: number) => {
+    setReturnItems(returnItems.map(item => {
+      if (item.product_id === productId) {
+        return { ...item, unit_price: Math.max(0, price) };
       }
       return item;
     }));
@@ -254,15 +310,41 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             created_by: user?.id || 1,
           });
 
-          showAlert(
-            'Return Processed',
-            `Return ${result.returnNumber} processed successfully!\n\nTotal Refund: ₱${total.toFixed(2)}\nMethod: ${refundMethod}`,
-            () => {
-              // Reset form
-              resetForm();
-              loadData(); // Reload history
-            }
-          );
+          // Fetch business settings for receipt
+          const businessName = await dbService.getSetting('business_name') || 'Store';
+          const businessAddress = await dbService.getSetting('business_address') || '';
+          const businessPhone = await dbService.getSetting('business_phone') || '';
+          const tin = await dbService.getSetting('tin') || '';
+          const footerText = await dbService.getSetting('receipt_footer') || '';
+
+          // Prepare receipt data
+          const receiptItems = itemsToReturn.map(item => ({
+            productName: item.product_name,
+            quantity: item.quantity,
+            unitPrice: item.unit_price,
+            total: item.quantity * item.unit_price,
+            reason: item.reason,
+          }));
+
+          const newReceiptData: ReturnReceiptData = {
+            businessName,
+            businessAddress,
+            businessPhone,
+            tin,
+            returnNumber: result.returnNumber,
+            returnDate: new Date(),
+            processedBy: user?.full_name || user?.username || 'Cashier',
+            originalTransactionNumber: originalTransaction?.transaction_number || transactionNumber || undefined,
+            customerName: selectedCustomer?.name,
+            items: receiptItems,
+            totalAmount: total,
+            refundMethod: refundMethod,
+            notes: notes || undefined,
+            footerText,
+          };
+
+          setReceiptData(newReceiptData);
+          setShowReceiptPreview(true);
         } catch (error) {
           console.error('Error processing return:', error);
           showAlert('Error', 'Failed to process return');
@@ -282,9 +364,99 @@ export default function SalesReturnsScreen({ navigation }: Props) {
     setNotes('');
   };
 
-  const filteredProducts = products.filter(p =>
-    p.name.toLowerCase().includes(productSearch.toLowerCase())
-  );
+  const handleCloseReceiptPreview = () => {
+    setShowReceiptPreview(false);
+    setReceiptData(null);
+    resetForm();
+    loadData(); // Reload history
+  };
+
+  const handlePrintReceipt = async () => {
+    if (!receiptData) return;
+
+    if (!printerService.isConnected()) {
+      showAlert('Printer Not Connected', 'Please connect to a Bluetooth printer first in Printer Settings.');
+      return;
+    }
+
+    setIsPrinting(true);
+    try {
+      const printerWidth = printerService.getSettings().printerWidth;
+      const builder = buildReturnReceipt({
+        businessName: receiptData.businessName,
+        businessAddress: receiptData.businessAddress,
+        businessPhone: receiptData.businessPhone,
+        tin: receiptData.tin,
+        returnNumber: receiptData.returnNumber,
+        returnDate: receiptData.returnDate,
+        processedBy: receiptData.processedBy,
+        originalTransactionNumber: receiptData.originalTransactionNumber,
+        customerName: receiptData.customerName,
+        items: receiptData.items,
+        totalAmount: receiptData.totalAmount,
+        refundMethod: receiptData.refundMethod,
+        notes: receiptData.notes,
+        footerText: receiptData.footerText,
+      }, printerWidth);
+
+      const data = builder.build();
+      await printerService.print(data);
+      showAlert('Success', 'Receipt printed successfully!');
+    } catch (error) {
+      console.error('Print error:', error);
+      showAlert('Print Error', 'Failed to print receipt. Please try again.');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  const handleSendEmail = async (email: string) => {
+    if (!receiptData) return;
+
+    setIsSendingEmail(true);
+    try {
+      // For now, just simulate email sending
+      // In a real implementation, this would call an API to send the email
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.log(`Sending return receipt to: ${email}`);
+      // showAlert is handled in the component
+    } catch (error) {
+      console.error('Email error:', error);
+      throw error;
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const filteredProducts = (() => {
+    if (!productSearch.trim()) return products;
+
+    const query = productSearch.toLowerCase().trim();
+
+    // First try exact code/barcode match
+    const exactMatch = products.filter(p =>
+      (p.code || '').toLowerCase() === query
+    );
+    if (exactMatch.length > 0) {
+      return exactMatch;
+    }
+
+    // Otherwise do contains search on name and code/barcode
+    return products.filter(p => {
+      const name = (p.name || '').toLowerCase();
+      const code = (p.code || '').toLowerCase();
+      return name.includes(query) || code.includes(query);
+    });
+  })();
+
+  const filteredTransactions = recentTransactions.filter(t => {
+    const searchLower = transactionSearch.toLowerCase();
+    const customerName = t.customer_full_name || t.customer_name || 'Walk-in';
+    return (
+      t.transaction_number.toLowerCase().includes(searchLower) ||
+      customerName.toLowerCase().includes(searchLower)
+    );
+  });
 
   const webContainerStyle = Platform.OS === 'web'
     ? { height: 'calc(100vh - 64px)', overflow: 'hidden' as const }
@@ -350,10 +522,11 @@ export default function SalesReturnsScreen({ navigation }: Props) {
                     style={styles.lookupInput}
                     placeholder="e.g., TXN-000001"
                     disabled={!!originalTransaction}
+                    editable={false}
                   />
                   <Button
                     mode="contained"
-                    onPress={lookupTransaction}
+                    onPress={openTransactionLookup}
                     loading={lookingUp}
                     disabled={lookingUp || !!originalTransaction}
                     style={styles.lookupButton}
@@ -427,7 +600,6 @@ export default function SalesReturnsScreen({ navigation }: Props) {
                     <View key={item.product_id} style={styles.returnItem}>
                       <View style={styles.itemHeader}>
                         <Paragraph style={styles.itemName}>{item.product_name}</Paragraph>
-                        <Paragraph style={styles.itemPrice}>₱{item.unit_price.toFixed(2)}</Paragraph>
                         <IconButton
                           icon="delete"
                           size={20}
@@ -459,8 +631,19 @@ export default function SalesReturnsScreen({ navigation }: Props) {
                           )}
                         </View>
 
+                        <View style={styles.priceControl}>
+                          <Paragraph style={styles.priceLabel}>@ ₱</Paragraph>
+                          <TextInput
+                            value={String(item.unit_price || 0)}
+                            onChangeText={(text) => updateItemPrice(item.product_id, parseFloat(text) || 0)}
+                            keyboardType="numeric"
+                            style={styles.priceInput}
+                            dense
+                          />
+                        </View>
+
                         <Paragraph style={styles.itemTotal}>
-                          = ₱{(item.quantity * item.unit_price).toFixed(2)}
+                          = ₱{((item.quantity || 0) * (item.unit_price || 0)).toFixed(2)}
                         </Paragraph>
                       </View>
 
@@ -493,7 +676,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
                   </View>
                   <View style={styles.radioRow}>
                     <RadioButton.Item
-                      label={`Apply to Customer Balance${selectedCustomer ? ` (₱${selectedCustomer.balance.toFixed(2)})` : ''}`}
+                      label={`Apply to Customer Balance${selectedCustomer ? ` (₱${(selectedCustomer.balance || 0).toFixed(2)})` : ''}`}
                       value="CREDIT"
                       disabled={!selectedCustomer}
                     />
@@ -549,7 +732,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
         >
           <Title style={styles.modalTitle}>Select Product</Title>
           <Searchbar
-            placeholder="Search products..."
+            placeholder="Search by name or barcode..."
             value={productSearch}
             onChangeText={setProductSearch}
             style={styles.searchBar}
@@ -561,7 +744,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             renderItem={({ item }) => (
               <List.Item
                 title={item.name}
-                description={`₱${item.selling_price.toFixed(2)} | Stock: ${item.stock_quantity}`}
+                description={`${item.code ? `${item.code} | ` : ''}₱${(item.price || 0).toFixed(2)} | Stock: ${item.stock_quantity || 0}`}
                 onPress={() => addProductToReturn(item)}
                 right={props => <List.Icon {...props} icon="plus-circle" />}
               />
@@ -619,6 +802,68 @@ export default function SalesReturnsScreen({ navigation }: Props) {
           </Button>
         </Modal>
       </Portal>
+
+      {/* Transaction Lookup Modal */}
+      <Portal>
+        <Modal
+          visible={showTransactionModal}
+          onDismiss={() => setShowTransactionModal(false)}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Title style={styles.modalTitle}>Select Transaction (Last 30 Days)</Title>
+          <Searchbar
+            placeholder="Search by transaction # or customer..."
+            value={transactionSearch}
+            onChangeText={setTransactionSearch}
+            style={styles.searchBar}
+          />
+          <FlatList
+            data={filteredTransactions}
+            keyExtractor={(item) => String(item.id)}
+            style={styles.productList}
+            renderItem={({ item }) => {
+              const customerName = item.customer_full_name || item.customer_name || 'Walk-in';
+              const dateStr = new Date(item.created_at).toLocaleDateString('en-PH', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              return (
+                <List.Item
+                  title={item.transaction_number}
+                  description={`${customerName} | ₱${(item.total_amount || 0).toFixed(2)} | ${dateStr}`}
+                  onPress={() => selectTransaction(item)}
+                  right={props => <List.Icon {...props} icon="chevron-right" />}
+                />
+              );
+            }}
+            ItemSeparatorComponent={() => <Divider />}
+            ListEmptyComponent={
+              <Paragraph style={styles.emptyText}>
+                No transactions found in the last 30 days
+              </Paragraph>
+            }
+          />
+          <Button onPress={() => setShowTransactionModal(false)} style={styles.modalClose}>
+            Cancel
+          </Button>
+        </Modal>
+      </Portal>
+
+      {/* Return Receipt Preview */}
+      {receiptData && (
+        <ReturnReceiptPreview
+          data={receiptData}
+          visible={showReceiptPreview}
+          onClose={handleCloseReceiptPreview}
+          onPrint={handlePrintReceipt}
+          onSendEmail={handleSendEmail}
+          isPrinting={isPrinting}
+          isSendingEmail={isSendingEmail}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -726,6 +971,19 @@ const styles = StyleSheet.create({
   maxQty: {
     marginLeft: 8,
     opacity: 0.6,
+  },
+  priceControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  priceLabel: {
+    fontSize: 14,
+    opacity: 0.7,
+  },
+  priceInput: {
+    width: 70,
+    textAlign: 'right',
   },
   itemTotal: {
     fontWeight: 'bold',

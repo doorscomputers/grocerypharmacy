@@ -131,7 +131,7 @@ export default function LoginScreen({ navigation }: Props) {
 
               <View style={styles.demoInfo}>
                 <Paragraph style={styles.demoText}>
-                  Demo Login: username "admin"
+                  Default: admin / 1122
                 </Paragraph>
               </View>
 

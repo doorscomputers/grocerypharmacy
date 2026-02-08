@@ -35,6 +35,7 @@ export { WebMockDatabaseService } from './WebMockDatabaseService';
 export class DatabaseService {
   private static instance: DatabaseService;
   private db: any = null;
+  private initializationPromise: Promise<void> | null = null;  // Lock to prevent multiple init
 
   private constructor() {}
 
@@ -46,10 +47,31 @@ export class DatabaseService {
   }
 
   public async initialize(): Promise<void> {
-    if (!this.db) {
-      console.log('Initializing database...');
+    // If already initialized, return immediately
+    if (this.db) {
+      return;
+    }
 
-      try {
+    // If initialization is already in progress, wait for it
+    if (this.initializationPromise) {
+      console.log('Database initialization already in progress, waiting...');
+      return this.initializationPromise;
+    }
+
+    // Start initialization with a lock
+    this.initializationPromise = this.doInitialize();
+
+    try {
+      await this.initializationPromise;
+    } finally {
+      this.initializationPromise = null;
+    }
+  }
+
+  private async doInitialize(): Promise<void> {
+    console.log('Initializing database...');
+
+    try {
         // Check if we're on a supported platform
         const Platform = require('react-native').Platform;
         if (Platform.OS === 'web') {
@@ -58,25 +80,65 @@ export class DatabaseService {
 
         console.log('Platform check passed, opening database...');
         this.db = await SQLite.openDatabaseAsync('pos_database.db');
-        console.log('Database opened successfully');
 
-        // Test basic database functionality first
-        await this.testBasicDatabaseOperations();
-        console.log('Basic database operations test passed');
+        // Verify database object is valid
+        if (!this.db) {
+          throw new Error('Failed to open database - returned null');
+        }
+        console.log('Database opened successfully, type:', typeof this.db);
 
-        // Initialize full schema
-        await initializeDatabase(this.db);
-        console.log('Full database schema initialized successfully');
+        // Wait for native handle to be ready
+        console.log('Waiting for native database handle...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Try direct schema initialization without test
+        // Some devices have issues with the test query but work fine with real operations
+        let schemaInitialized = false;
+        const initAttempts = [0, 3000, 5000]; // immediate, then retry with delays
+
+        for (let i = 0; i < initAttempts.length; i++) {
+          if (i > 0) {
+            console.log(`Retrying schema initialization after ${initAttempts[i]}ms...`);
+            await new Promise(resolve => setTimeout(resolve, initAttempts[i]));
+          }
+
+          try {
+            // Initialize full schema directly
+            await initializeDatabase(this.db);
+            console.log('Full database schema initialized successfully');
+            schemaInitialized = true;
+            break;
+          } catch (err) {
+            console.warn(`Schema initialization attempt ${i + 1} failed:`, err);
+
+            // On NullPointerException, try re-opening the database
+            if (err && String(err).includes('NullPointerException')) {
+              console.log('NullPointerException detected, attempting to re-open database...');
+              try {
+                this.db = await SQLite.openDatabaseAsync('pos_database.db');
+                console.log('Database re-opened, waiting 2s...');
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              } catch (reopenErr) {
+                console.error('Failed to re-open database:', reopenErr);
+              }
+            }
+          }
+        }
+
+        if (!schemaInitialized) {
+          throw new Error('Failed to initialize database schema after multiple attempts');
+        }
 
         // Verify critical tables exist
         await this.verifyCriticalTables();
         console.log('Critical tables verified - initialization complete');
 
       } catch (error) {
+        // Reset db so retries can re-open and try again
+        this.db = null;
         console.error('Database initialization failed:', error);
-        throw error; // Don't fallback, let the error surface properly
+        throw error;
       }
-    }
   }
 
   // Test the most basic database operations to ensure SQLite is working
@@ -188,11 +250,28 @@ export class DatabaseService {
     }
   }
 
-  public getDatabase(): SQLite.SQLiteDatabase {
+  public getDatabase(): any {
     if (!this.db) {
-      throw new Error('Database not initialized. Call initialize() first.');
+      console.error('Database access attempted before initialization!');
+      throw new Error('Database not initialized. Call initialize() first. Please restart the app.');
     }
     return this.db;
+  }
+
+  // Check if database is ready
+  public isReady(): boolean {
+    return this.db !== null;
+  }
+
+  // Simple connection check - does NOT auto-reinitialize to avoid race conditions
+  public async ensureConnection(): Promise<void> {
+    // If database is not initialized, just return - App.tsx handles initialization
+    if (!this.db) {
+      console.warn('Database not initialized yet');
+      return;
+    }
+    // Database exists, assume it's working - don't test with queries
+    // as this can cause NullPointerException cascades
   }
 
   // ========================================
@@ -327,6 +406,24 @@ export class DatabaseService {
   }) {
     const db = this.getDatabase();
     try {
+      // Check for duplicate product name (case-insensitive, includes inactive)
+      const existingName = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(name) = LOWER(?)',
+        [product.name.trim()]
+      );
+      if (existingName) {
+        throw new Error(`Product name "${product.name.trim()}" already exists. Please use a unique name.`);
+      }
+
+      // Check for duplicate product code (case-insensitive, includes inactive)
+      const existingCode = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(code) = LOWER(?)',
+        [product.code.trim()]
+      );
+      if (existingCode) {
+        throw new Error(`Product code "${product.code.trim()}" already exists. Please use a unique code.`);
+      }
+
       // Determine tax_rate based on vat_type
       const vatType = product.vat_type || 'vatable';
       const taxRate = vatType === 'vatable' ? (product.tax_rate || 12.00) : 0;
@@ -506,6 +603,10 @@ export class DatabaseService {
     amount_tendered: number;
     change_amount?: number;
     cashier_id: number;
+    // BIR Compliance: SC/PWD discount info
+    sc_pwd_id?: string;
+    sc_pwd_name?: string;
+    sc_pwd_type?: 'SENIOR' | 'PWD';
     items: Array<{
       product_id: number;
       product_code: string;
@@ -515,6 +616,7 @@ export class DatabaseService {
       discount_amount?: number;
       tax_amount: number;
       total_amount: number;
+      price_type?: 'retail' | 'wholesale';
     }>;
   }) {
     const db = this.getDatabase();
@@ -532,8 +634,9 @@ export class DatabaseService {
         `INSERT INTO transactions (
           transaction_number, invoice_number, customer_id, customer_name, customer_tin, customer_address,
           subtotal, tax_amount, discount_amount, total_amount, payment_method,
-          amount_tendered, change_amount, payment_status, cashier_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          amount_tendered, change_amount, payment_status, cashier_id,
+          sc_pwd_id, sc_pwd_name, sc_pwd_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           transactionNumber,
           invoiceNumber,
@@ -549,7 +652,10 @@ export class DatabaseService {
           transaction.amount_tendered,
           transaction.change_amount || 0,
           paymentStatus,
-          transaction.cashier_id
+          transaction.cashier_id,
+          transaction.sc_pwd_id || null,
+          transaction.sc_pwd_name || null,
+          transaction.sc_pwd_type || null
         ]
       );
 
@@ -560,8 +666,8 @@ export class DatabaseService {
         await db.runAsync(
           `INSERT INTO transaction_items (
             transaction_id, product_id, product_code, product_name,
-            quantity, unit_price, discount_amount, tax_amount, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            quantity, unit_price, discount_amount, tax_amount, total_amount, price_type
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             transactionId,
             item.product_id,
@@ -571,7 +677,8 @@ export class DatabaseService {
             item.unit_price,
             item.discount_amount || 0,
             item.tax_amount,
-            item.total_amount
+            item.total_amount,
+            item.price_type || 'retail'
           ]
         );
 
@@ -646,19 +753,21 @@ export class DatabaseService {
   }
 
   // BIR Compliance operations
-  public async generateZReading(cashier_id: number): Promise<any> {
+  public async generateZReading(cashier_id: number, targetDate?: string): Promise<any> {
     const db = this.getDatabase();
 
-    const today = new Date().toISOString().split('T')[0];
+    // Use target date if provided (for closing unterminated sessions), otherwise use today
+    const dateToClose = targetDate || new Date().toISOString().split('T')[0];
+    console.log('[generateZReading] Generating Z-Reading for date:', dateToClose, 'cashier:', cashier_id);
 
-    // Check if Z-Reading already exists for today
+    // Check if Z-Reading already exists for this date
     const existingReading = await db.getFirstAsync(
       'SELECT * FROM z_readings WHERE date = ?',
-      [today]
+      [dateToClose]
     );
 
     if (existingReading) {
-      throw new Error('Z-Reading already generated for today');
+      throw new Error(`Z-Reading already generated for ${dateToClose}`);
     }
 
     // Get current Z-Reading counter
@@ -670,7 +779,7 @@ export class DatabaseService {
     const currentCounter = parseInt(counterResult?.value || '0');
     const nextCounter = currentCounter + 1;
 
-    // Calculate sales data for today
+    // Calculate sales data for the target date filtered by cashier
     const salesData = await db.getFirstAsync<{
       gross_sales: number;
       vat_amount: number;
@@ -689,22 +798,30 @@ export class DatabaseService {
          MIN(invoice_number) as start_invoice,
          MAX(invoice_number) as end_invoice
        FROM transactions
-       WHERE DATE(transaction_date) = ?`,
-      [today]
+       WHERE DATE(transaction_date) = ? AND cashier_id = ?`,
+      [dateToClose, cashier_id]
     );
 
     const vat_sales = salesData?.gross_sales ? (salesData.gross_sales / 1.12) : 0;
+
+    // BIR Compliance: Get previous cumulative grand total
+    const prevCumulativeResult = await db.getFirstAsync<{value: string}>(
+      'SELECT value FROM settings WHERE key = ?',
+      ['cumulative_grand_total']
+    );
+    const prevCumulativeGrandTotal = parseFloat(prevCumulativeResult?.value || '0');
+    const newCumulativeGrandTotal = prevCumulativeGrandTotal + (salesData?.net_sales || 0);
 
     // Create Z-Reading record
     const result = await db.runAsync(
       `INSERT INTO z_readings (
         reading_number, date, start_invoice_number, end_invoice_number,
         gross_sales, vat_sales, vat_amount, discount_amount, void_amount, net_sales,
-        reset_counter, cashier_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cumulative_grand_total, reset_counter, cashier_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         nextCounter,
-        today,
+        dateToClose,
         salesData?.start_invoice || '',
         salesData?.end_invoice || '',
         salesData?.gross_sales || 0,
@@ -713,15 +830,23 @@ export class DatabaseService {
         salesData?.discount_amount || 0,
         salesData?.void_amount || 0,
         salesData?.net_sales || 0,
+        newCumulativeGrandTotal,
         nextCounter,
         cashier_id
       ]
     );
+    console.log('[generateZReading] Z-Reading created with ID:', result.lastInsertRowId, 'for date:', dateToClose);
 
     // Update Z-Reading counter
     await db.runAsync(
       'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
       [nextCounter.toString(), 'z_counter']
+    );
+
+    // BIR Compliance: Update cumulative grand total
+    await db.runAsync(
+      'UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+      [newCumulativeGrandTotal.toFixed(2), 'cumulative_grand_total']
     );
 
     // Add eJournal entry
@@ -733,9 +858,10 @@ export class DatabaseService {
 
     return {
       reading_number: nextCounter,
-      date: today,
+      date: dateToClose,
       ...salesData,
       vat_sales,
+      cumulative_grand_total: newCumulativeGrandTotal,
       reset_counter: nextCounter
     };
   }
@@ -807,13 +933,57 @@ export class DatabaseService {
     };
   }
 
-  // User authentication
-  public async authenticateUser(username: string, password: string) {
+  // Check for unterminated sales sessions (days with sales but no Z-Reading or End of Day record)
+  public async getUnterminatedSalesDates(): Promise<{ date: string; transaction_count: number; total_sales: number }[]> {
     const db = this.getDatabase();
 
+    // Get Philippine timezone date for today (UTC+8)
+    const now = new Date();
+    const phOffset = 8 * 60; // Philippines is UTC+8 (8 hours * 60 minutes)
+    const localOffset = now.getTimezoneOffset(); // Local timezone offset in minutes (negative for east of UTC)
+    const phTime = new Date(now.getTime() + (phOffset + localOffset) * 60000);
+    const today = phTime.toISOString().split('T')[0];
+
+    console.log('[getUnterminatedSalesDates] Checking for unterminated sessions before:', today);
+
+    // Find dates with transactions but no Z-Reading AND no End of Day record
+    // Use DATE() on both sides to ensure consistent comparison
+    const results = await db.getAllAsync<{ sale_date: string; transaction_count: number; total_sales: number }>(
+      `SELECT
+        DATE(transaction_date) as sale_date,
+        COUNT(*) as transaction_count,
+        COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_amount ELSE 0 END), 0) as total_sales
+      FROM transactions
+      WHERE DATE(transaction_date) < ?
+        AND DATE(transaction_date) NOT IN (SELECT DATE(date) FROM z_readings)
+        AND DATE(transaction_date) NOT IN (SELECT DATE(date) FROM end_of_day_records WHERE status = 'COMPLETED')
+      GROUP BY DATE(transaction_date)
+      ORDER BY sale_date ASC`,
+      [today]
+    );
+
+    console.log('[getUnterminatedSalesDates] Found unterminated dates:', results.map(r => r.sale_date));
+
+    return results.map(r => ({
+      date: r.sale_date,
+      transaction_count: r.transaction_count,
+      total_sales: r.total_sales
+    }));
+  }
+
+  // User authentication
+  public async authenticateUser(username: string, password: string) {
     console.log('🔐 Authentication attempt:');
     console.log('  Username:', username);
     console.log('  Password provided:', password ? 'Yes' : 'No');
+
+    // First verify database is ready
+    if (!this.db) {
+      console.error('  Database not initialized for authentication!');
+      throw new Error('Database not initialized. Please restart the app.');
+    }
+
+    const db = this.getDatabase();
 
     try {
       // First, check if any users exist
@@ -912,6 +1082,22 @@ export class DatabaseService {
     );
   }
 
+  public async getUserById(userId: number): Promise<any | null> {
+    const db = this.getDatabase();
+    return await db.getFirstAsync(
+      'SELECT id, username, full_name, role, is_active, password_hash, last_login, created_at FROM users WHERE id = ?',
+      [userId]
+    );
+  }
+
+  public async getUserByUsername(username: string): Promise<any | null> {
+    const db = this.getDatabase();
+    return await db.getFirstAsync(
+      'SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE username = ? AND is_active = 1',
+      [username]
+    );
+  }
+
   public async createUser(userData: {
     username: string;
     full_name: string;
@@ -926,14 +1112,20 @@ export class DatabaseService {
   }
 
   public async updateUser(userId: number, userData: {
+    username?: string;
     full_name?: string;
     role?: 'ADMIN' | 'CASHIER' | 'MANAGER';
     is_active?: boolean;
+    password_hash?: string;
   }): Promise<void> {
     const db = this.getDatabase();
     const setParts = [];
     const values = [];
 
+    if (userData.username !== undefined) {
+      setParts.push('username = ?');
+      values.push(userData.username);
+    }
     if (userData.full_name !== undefined) {
       setParts.push('full_name = ?');
       values.push(userData.full_name);
@@ -945,6 +1137,10 @@ export class DatabaseService {
     if (userData.is_active !== undefined) {
       setParts.push('is_active = ?');
       values.push(userData.is_active ? 1 : 0);
+    }
+    if (userData.password_hash !== undefined) {
+      setParts.push('password_hash = ?');
+      values.push(userData.password_hash);
     }
 
     if (setParts.length > 0) {
@@ -968,6 +1164,19 @@ export class DatabaseService {
       ${limit ? `LIMIT ${limit}` : ''}
     `;
     return await db.getAllAsync(query);
+  }
+
+  public async getTransactionItems(transactionId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    return await db.getAllAsync(
+      'SELECT * FROM transaction_items WHERE transaction_id = ?',
+      [transactionId]
+    );
+  }
+
+  public async getAllTransactionItems(): Promise<any[]> {
+    const db = this.getDatabase();
+    return await db.getAllAsync('SELECT * FROM transaction_items ORDER BY transaction_id');
   }
 
   public async getTransactionsByCashier(cashierId: number, limit?: number): Promise<any[]> {
@@ -1069,16 +1278,58 @@ export class DatabaseService {
   }
 
   // Get transactions since a specific time (for shift-based filtering)
-  public async getTransactionsSinceTime(startTime: string) {
+  // Get transactions since a specific time
+  // Optional cashier_id to filter by specific cashier
+  public async getTransactionsSinceTime(startTime: string, cashierId?: number) {
     const db = this.getDatabase();
+
+    // Normalize ISO format (with 'T') to SQLite format (with space) for proper comparison
+    const normalizedTime = startTime.replace('T', ' ').replace('Z', '').split('.')[0];
+
+    if (cashierId) {
+      return await db.getAllAsync(
+        `SELECT t.*, u.full_name as cashier_name
+         FROM transactions t
+         JOIN users u ON t.cashier_id = u.id
+         WHERE datetime(t.transaction_date) >= datetime(?) AND t.cashier_id = ?
+         ORDER BY t.created_at DESC`,
+        [normalizedTime, cashierId]
+      );
+    }
 
     return await db.getAllAsync(
       `SELECT t.*, u.full_name as cashier_name
        FROM transactions t
        JOIN users u ON t.cashier_id = u.id
-       WHERE t.transaction_date >= ?
+       WHERE datetime(t.transaction_date) >= datetime(?)
        ORDER BY t.created_at DESC`,
-      [startTime]
+      [normalizedTime]
+    );
+  }
+
+  // Get transactions for a specific date (for closing unterminated sessions)
+  // Optional cashier_id to filter by specific cashier
+  public async getTransactionsByDate(date: string, cashierId?: number) {
+    const db = this.getDatabase();
+
+    if (cashierId) {
+      return await db.getAllAsync(
+        `SELECT t.*, u.full_name as cashier_name
+         FROM transactions t
+         JOIN users u ON t.cashier_id = u.id
+         WHERE DATE(t.transaction_date) = ? AND t.cashier_id = ?
+         ORDER BY t.created_at DESC`,
+        [date, cashierId]
+      );
+    }
+
+    return await db.getAllAsync(
+      `SELECT t.*, u.full_name as cashier_name
+       FROM transactions t
+       JOIN users u ON t.cashier_id = u.id
+       WHERE DATE(t.transaction_date) = ?
+       ORDER BY t.created_at DESC`,
+      [date]
     );
   }
 
@@ -1372,16 +1623,38 @@ export class DatabaseService {
     is_active?: boolean;
   }) {
     const db = this.getDatabase();
+
+    // Check for duplicate product name if name is being updated
+    if (updates.name !== undefined) {
+      const existingName = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND id != ?',
+        [updates.name.trim(), productId]
+      );
+      if (existingName) {
+        throw new Error(`Product name "${updates.name.trim()}" already exists. Please use a unique name.`);
+      }
+    }
+    // Check for duplicate product code if code is being updated
+    if (updates.code !== undefined) {
+      const existingCode = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(code) = LOWER(?) AND id != ?',
+        [updates.code.trim(), productId]
+      );
+      if (existingCode) {
+        throw new Error(`Product code "${updates.code.trim()}" already exists. Please use a unique code.`);
+      }
+    }
+
     const setParts = [];
     const values = [];
 
     if (updates.code !== undefined) {
       setParts.push('code = ?');
-      values.push(updates.code);
+      values.push(updates.code.trim());
     }
     if (updates.name !== undefined) {
       setParts.push('name = ?');
-      values.push(updates.name);
+      values.push(updates.name.trim());
     }
     if (updates.description !== undefined) {
       setParts.push('description = ?');
@@ -1638,12 +1911,30 @@ export class DatabaseService {
     const db = this.getDatabase();
 
     try {
+      // Check for duplicate supplier name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?)',
+        [supplierData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Supplier "${supplierData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
+      // Check for duplicate supplier code (case-insensitive, includes inactive)
+      const existingCode = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM suppliers WHERE LOWER(code) = LOWER(?)',
+        [supplierData.code.trim()]
+      );
+      if (existingCode) {
+        throw new Error(`Supplier code "${supplierData.code.trim()}" already exists. Please use a unique code.`);
+      }
+
       const result = await db.runAsync(
         `INSERT INTO suppliers (code, name, contact_person, phone, email, address, tin, credit_terms, credit_limit, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          supplierData.code,
-          supplierData.name,
+          supplierData.code.trim(),
+          supplierData.name.trim(),
           supplierData.contact_person || null,
           supplierData.phone || null,
           supplierData.email || null,
@@ -1699,13 +1990,34 @@ export class DatabaseService {
     const db = this.getDatabase();
 
     try {
+      // Check for duplicate name if name is being updated
+      if (updates.name !== undefined) {
+        const existingName = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [(updates.name as string).trim(), id]
+        );
+        if (existingName) {
+          throw new Error(`Supplier "${(updates.name as string).trim()}" already exists. Please use a unique name.`);
+        }
+      }
+      // Check for duplicate code if code is being updated
+      if (updates.code !== undefined) {
+        const existingCode = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM suppliers WHERE LOWER(code) = LOWER(?) AND id != ?',
+          [(updates.code as string).trim(), id]
+        );
+        if (existingCode) {
+          throw new Error(`Supplier code "${(updates.code as string).trim()}" already exists. Please use a unique code.`);
+        }
+      }
+
       const setParts = [];
       const values = [];
 
       for (const [key, value] of Object.entries(updates)) {
         if (key !== 'id' && key !== 'created_at' && value !== undefined) {
           setParts.push(`${key} = ?`);
-          values.push(value);
+          values.push(typeof value === 'string' ? value.trim() : value);
         }
       }
 
@@ -2270,6 +2582,226 @@ export class DatabaseService {
       return await db.getAllAsync(query, params);
     } catch (error) {
       console.error('Error getting supplier payments:', error);
+      return [];
+    }
+  }
+
+  // ========================================
+  // PDC (POST-DATED CHEQUE) TRACKING METHODS
+  // ========================================
+
+  /**
+   * Get all cheque payments for PDC tracking
+   */
+  public async getChequePayments(status?: string): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      let whereClause = "WHERE sp.payment_method = 'CHEQUE'";
+      const params: any[] = [];
+
+      if (status && status !== 'ALL') {
+        whereClause += ' AND sp.cheque_status = ?';
+        params.push(status);
+      }
+
+      const query = `
+        SELECT
+          sp.*,
+          s.name as supplier_name,
+          p.purchase_number,
+          u.full_name as created_by_name
+        FROM supplier_payments sp
+        JOIN suppliers s ON sp.supplier_id = s.id
+        LEFT JOIN purchases p ON sp.purchase_id = p.id
+        JOIN users u ON sp.created_by = u.id
+        ${whereClause}
+        ORDER BY sp.cheque_date ASC, sp.created_at DESC
+      `;
+
+      return await db.getAllAsync(query, params);
+    } catch (error) {
+      console.error('Error getting cheque payments:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Update cheque status (for PDC tracking)
+   */
+  public async updateChequeStatus(
+    paymentId: number,
+    newStatus: 'DEPOSITED' | 'CLEARED' | 'BOUNCED',
+    options?: {
+      bounced_reason?: string;
+      updated_by?: number;
+    }
+  ): Promise<boolean> {
+    const db = this.getDatabase();
+
+    try {
+      // Get current payment details
+      const payment = await db.getFirstAsync<any>(
+        `SELECT sp.*, s.name as supplier_name
+         FROM supplier_payments sp
+         JOIN suppliers s ON sp.supplier_id = s.id
+         WHERE sp.id = ? AND sp.payment_method = 'CHEQUE'`,
+        [paymentId]
+      );
+
+      if (!payment) {
+        throw new Error('Cheque payment not found');
+      }
+
+      const oldStatus = payment.cheque_status;
+      const now = new Date().toISOString();
+
+      // Update status and date fields
+      let updateQuery = 'UPDATE supplier_payments SET cheque_status = ?';
+      const updateParams: any[] = [newStatus];
+
+      if (newStatus === 'DEPOSITED') {
+        updateQuery += ', deposited_date = ?';
+        updateParams.push(now);
+      } else if (newStatus === 'CLEARED') {
+        updateQuery += ', cleared_date = ?';
+        updateParams.push(now);
+      } else if (newStatus === 'BOUNCED') {
+        updateQuery += ', bounced_date = ?, bounced_reason = ?';
+        updateParams.push(now);
+        updateParams.push(options?.bounced_reason || 'OTHER');
+      }
+
+      updateQuery += ' WHERE id = ?';
+      updateParams.push(paymentId);
+
+      await db.runAsync(updateQuery, updateParams);
+
+      // Handle BOUNCED cheque - restore AP balance
+      if (newStatus === 'BOUNCED') {
+        if (payment.purchase_id) {
+          // Restore specific purchase AP
+          await db.runAsync(
+            `UPDATE accounts_payable
+             SET paid_amount = MAX(0, paid_amount - ?),
+                 balance_amount = balance_amount + ?,
+                 status = CASE WHEN balance_amount + ? > 0 THEN 'OUTSTANDING' ELSE status END
+             WHERE purchase_id = ?`,
+            [payment.amount, payment.amount, payment.amount, payment.purchase_id]
+          );
+        } else {
+          // Restore to oldest unpaid AP for this supplier
+          const oldestAP = await db.getFirstAsync<{ id: number }>(
+            `SELECT id FROM accounts_payable
+             WHERE supplier_id = ? AND balance_amount > 0
+             ORDER BY created_at ASC LIMIT 1`,
+            [payment.supplier_id]
+          );
+
+          if (oldestAP) {
+            await db.runAsync(
+              `UPDATE accounts_payable
+               SET paid_amount = MAX(0, paid_amount - ?),
+                   balance_amount = balance_amount + ?,
+                   status = 'OUTSTANDING'
+               WHERE id = ?`,
+              [payment.amount, payment.amount, oldestAP.id]
+            );
+          }
+        }
+
+        // Create eJournal entry for bounced cheque
+        await db.runAsync(
+          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+          [
+            'SYSTEM',
+            payment.payment_number,
+            `Bounced cheque from ${payment.supplier_name} - ${payment.cheque_number}`,
+            payment.amount,
+            options?.updated_by || 1
+          ]
+        );
+
+        console.log(`[PDC] Cheque ${payment.cheque_number} bounced, restored ₱${payment.amount} to AP`);
+      }
+
+      // Create status change journal entry
+      await db.runAsync(
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+        [
+          'SYSTEM',
+          payment.payment_number,
+          `Cheque ${payment.cheque_number} status: ${oldStatus} → ${newStatus}`,
+          0,
+          options?.updated_by || 1
+        ]
+      );
+
+      return true;
+    } catch (error) {
+      console.error('Error updating cheque status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get PDC alerts (cheques due soon or past due)
+   */
+  public async getPDCAlerts(daysAhead: number = 7): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      // Get pending cheques with their due status
+      const query = `
+        SELECT
+          sp.*,
+          s.name as supplier_name,
+          CAST(julianday(sp.cheque_date) - julianday('now', 'localtime') AS INTEGER) as days_diff
+        FROM supplier_payments sp
+        JOIN suppliers s ON sp.supplier_id = s.id
+        WHERE sp.payment_method = 'CHEQUE'
+          AND sp.cheque_status = 'PENDING'
+          AND sp.cheque_date IS NOT NULL
+          AND CAST(julianday(sp.cheque_date) - julianday('now', 'localtime') AS INTEGER) <= ?
+        ORDER BY sp.cheque_date ASC
+      `;
+
+      const cheques = await db.getAllAsync<any>(query, [daysAhead]);
+
+      // Transform to alerts
+      const alerts = cheques.map(cheque => {
+        const daysDiff = cheque.days_diff;
+
+        if (daysDiff < 0) {
+          return {
+            ...cheque,
+            alert_type: 'PAST_DUE',
+            days_overdue: Math.abs(daysDiff),
+            days_until_due: null,
+            priority: 'HIGH',
+          };
+        } else {
+          return {
+            ...cheque,
+            alert_type: 'DUE_SOON',
+            days_overdue: null,
+            days_until_due: daysDiff,
+            priority: daysDiff <= 3 ? 'MEDIUM' : 'LOW',
+          };
+        }
+      });
+
+      // Sort by priority (past due first, then by date)
+      return alerts.sort((a, b) => {
+        if (a.alert_type !== b.alert_type) {
+          return a.alert_type === 'PAST_DUE' ? -1 : 1;
+        }
+        return (a.days_overdue || 0) - (b.days_overdue || 0) || (a.days_until_due || 0) - (b.days_until_due || 0);
+      });
+    } catch (error) {
+      console.error('Error getting PDC alerts:', error);
       return [];
     }
   }
@@ -2969,6 +3501,15 @@ export class DatabaseService {
     const db = this.getDatabase();
 
     try {
+      // Check for duplicate customer name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM customers WHERE LOWER(name) = LOWER(?)',
+        [customerData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Customer "${customerData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
       const { getNextCustomerCode, updateCustomerNumber } = await import('./schema');
 
       const customerCode = await getNextCustomerCode(db);
@@ -2980,7 +3521,7 @@ export class DatabaseService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customerCode,
-          customerData.name,
+          customerData.name.trim(),
           customerData.contact_person || null,
           customerData.phone || null,
           customerData.email || null,
@@ -3033,13 +3574,24 @@ export class DatabaseService {
     const db = this.getDatabase();
 
     try {
+      // Check for duplicate customer name if name is being updated
+      if (customerData.name !== undefined) {
+        const existingName = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM customers WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [customerData.name.trim(), id]
+        );
+        if (existingName) {
+          throw new Error(`Customer "${customerData.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+
       const setParts = [];
       const values = [];
 
       Object.entries(customerData).forEach(([key, value]) => {
         if (value !== undefined) {
           setParts.push(`${key} = ?`);
-          values.push(value);
+          values.push(typeof value === 'string' ? value.trim() : value);
         }
       });
 
@@ -3328,9 +3880,18 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate category name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?)',
+        [categoryData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Category "${categoryData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
       const result = await db.runAsync(
         'INSERT INTO categories (name, description) VALUES (?, ?)',
-        [categoryData.name, categoryData.description || null]
+        [categoryData.name.trim(), categoryData.description || null]
       );
       console.log(`Category created: ${categoryData.name} (ID: ${result.lastInsertRowId})`);
       return result.lastInsertRowId as number;
@@ -3343,12 +3904,23 @@ export class DatabaseService {
   public async updateCategory(id: number, updates: Partial<Category>): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate name if name is being updated
+      if (updates.name !== undefined) {
+        const existing = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM categories WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), id]
+        );
+        if (existing) {
+          throw new Error(`Category "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+
       const setParts: string[] = [];
       const values: any[] = [];
 
       if ('name' in updates && updates.name !== undefined) {
         setParts.push('name = ?');
-        values.push(updates.name);
+        values.push(updates.name.trim());
       }
       if ('description' in updates) {
         setParts.push('description = ?');
@@ -3441,9 +4013,18 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate brand name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM brands WHERE LOWER(name) = LOWER(?)',
+        [brandData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Brand "${brandData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
       const result = await db.runAsync(
         'INSERT INTO brands (name, description) VALUES (?, ?)',
-        [brandData.name, brandData.description || null]
+        [brandData.name.trim(), brandData.description || null]
       );
       console.log(`Brand created: ${brandData.name} (ID: ${result.lastInsertRowId})`);
       return result.lastInsertRowId as number;
@@ -3456,12 +4037,23 @@ export class DatabaseService {
   public async updateBrand(id: number, updates: Partial<Brand>): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate name if name is being updated
+      if (updates.name !== undefined) {
+        const existing = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM brands WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), id]
+        );
+        if (existing) {
+          throw new Error(`Brand "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+
       const setParts: string[] = [];
       const values: any[] = [];
 
       if (updates.name !== undefined) {
         setParts.push('name = ?');
-        values.push(updates.name);
+        values.push(updates.name.trim());
       }
       if (updates.description !== undefined) {
         setParts.push('description = ?');
@@ -3556,9 +4148,27 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate unit name (case-insensitive, includes inactive)
+      const existingName = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM units WHERE LOWER(name) = LOWER(?)',
+        [unitData.name.trim()]
+      );
+      if (existingName) {
+        throw new Error(`Unit "${unitData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
+      // Check for duplicate abbreviation (case-insensitive, includes inactive)
+      const existingAbbr = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM units WHERE LOWER(abbreviation) = LOWER(?)',
+        [unitData.abbreviation.trim()]
+      );
+      if (existingAbbr) {
+        throw new Error(`Unit abbreviation "${unitData.abbreviation.trim()}" already exists. Please use a unique abbreviation.`);
+      }
+
       const result = await db.runAsync(
         'INSERT INTO units (name, abbreviation, description) VALUES (?, ?, ?)',
-        [unitData.name, unitData.abbreviation, unitData.description || null]
+        [unitData.name.trim(), unitData.abbreviation.trim(), unitData.description || null]
       );
       console.log(`Unit created: ${unitData.name} (ID: ${result.lastInsertRowId})`);
       return result.lastInsertRowId as number;
@@ -3571,16 +4181,37 @@ export class DatabaseService {
   public async updateUnit(id: number, updates: Partial<Unit>): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate name if name is being updated
+      if (updates.name !== undefined) {
+        const existingName = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM units WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), id]
+        );
+        if (existingName) {
+          throw new Error(`Unit "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+      // Check for duplicate abbreviation if abbreviation is being updated
+      if (updates.abbreviation !== undefined) {
+        const existingAbbr = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM units WHERE LOWER(abbreviation) = LOWER(?) AND id != ?',
+          [updates.abbreviation.trim(), id]
+        );
+        if (existingAbbr) {
+          throw new Error(`Unit abbreviation "${updates.abbreviation.trim()}" already exists. Please use a unique abbreviation.`);
+        }
+      }
+
       const setParts: string[] = [];
       const values: any[] = [];
 
       if (updates.name !== undefined) {
         setParts.push('name = ?');
-        values.push(updates.name);
+        values.push(updates.name.trim());
       }
       if (updates.abbreviation !== undefined) {
         setParts.push('abbreviation = ?');
-        values.push(updates.abbreviation);
+        values.push(updates.abbreviation.trim());
       }
       if (updates.description !== undefined) {
         setParts.push('description = ?');
@@ -3675,9 +4306,18 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate size name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM sizes WHERE LOWER(name) = LOWER(?)',
+        [sizeData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Size "${sizeData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
       const result = await db.runAsync(
         'INSERT INTO sizes (name, description, sort_order) VALUES (?, ?, ?)',
-        [sizeData.name, sizeData.description || null, sizeData.sort_order || 0]
+        [sizeData.name.trim(), sizeData.description || null, sizeData.sort_order || 0]
       );
       console.log(`Size created: ${sizeData.name} (ID: ${result.lastInsertRowId})`);
       return result.lastInsertRowId as number;
@@ -3690,12 +4330,23 @@ export class DatabaseService {
   public async updateSize(id: number, updates: Partial<Size>): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate name if name is being updated
+      if (updates.name !== undefined) {
+        const existing = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM sizes WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), id]
+        );
+        if (existing) {
+          throw new Error(`Size "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+
       const setParts: string[] = [];
       const values: any[] = [];
 
       if (updates.name !== undefined) {
         setParts.push('name = ?');
-        values.push(updates.name);
+        values.push(updates.name.trim());
       }
       if (updates.description !== undefined) {
         setParts.push('description = ?');
@@ -3804,6 +4455,7 @@ export class DatabaseService {
     name: string;
     description?: string;
     price: number;
+    wholesale_price?: number | null;
     cost: number;
     category_id?: number;
     brand_id?: number;
@@ -3819,6 +4471,24 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate product name (case-insensitive, includes inactive)
+      const existingName = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(name) = LOWER(?)',
+        [productData.name.trim()]
+      );
+      if (existingName) {
+        throw new Error(`Product name "${productData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
+      // Check for duplicate product code (case-insensitive, includes inactive)
+      const existingCode = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM products WHERE LOWER(code) = LOWER(?)',
+        [productData.code.trim()]
+      );
+      if (existingCode) {
+        throw new Error(`Product code "${productData.code.trim()}" already exists. Please use a unique code.`);
+      }
+
       // Determine tax_rate based on vat_type
       const vatType = productData.vat_type || 'vatable';
       const taxRate = vatType === 'vatable' ? (productData.tax_rate || 12.00) : 0;
@@ -3826,14 +4496,15 @@ export class DatabaseService {
 
       const result = await db.runAsync(
         `INSERT INTO products (
-          code, name, description, price, cost, category_id, brand_id, unit_id, size_id,
+          code, name, description, price, wholesale_price, cost, category_id, brand_id, unit_id, size_id,
           vat_type, tax_rate, is_vat_inclusive, stock_quantity, reorder_level, unit, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           productData.code,
           productData.name,
           productData.description || '',
           productData.price,
+          productData.wholesale_price || null,
           productData.cost,
           productData.category_id || null,
           productData.brand_id || null,
@@ -3861,6 +4532,7 @@ export class DatabaseService {
     name?: string;
     description?: string;
     price?: number;
+    wholesale_price?: number | null;
     cost?: number;
     category_id?: number | null;
     brand_id?: number | null;
@@ -3876,16 +4548,37 @@ export class DatabaseService {
   }): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate product name if name is being updated
+      if (updates.name !== undefined) {
+        const existingName = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), productId]
+        );
+        if (existingName) {
+          throw new Error(`Product name "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+      // Check for duplicate product code if code is being updated
+      if (updates.code !== undefined) {
+        const existingCode = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM products WHERE LOWER(code) = LOWER(?) AND id != ?',
+          [updates.code.trim(), productId]
+        );
+        if (existingCode) {
+          throw new Error(`Product code "${updates.code.trim()}" already exists. Please use a unique code.`);
+        }
+      }
+
       const setParts: string[] = [];
       const values: any[] = [];
 
       if (updates.code !== undefined) {
         setParts.push('code = ?');
-        values.push(updates.code);
+        values.push(updates.code.trim());
       }
       if (updates.name !== undefined) {
         setParts.push('name = ?');
-        values.push(updates.name);
+        values.push(updates.name.trim());
       }
       if (updates.description !== undefined) {
         setParts.push('description = ?');
@@ -3898,6 +4591,10 @@ export class DatabaseService {
       if (updates.cost !== undefined) {
         setParts.push('cost = ?');
         values.push(updates.cost);
+      }
+      if (updates.wholesale_price !== undefined) {
+        setParts.push('wholesale_price = ?');
+        values.push(updates.wholesale_price);
       }
       if (updates.category_id !== undefined) {
         setParts.push('category_id = ?');
@@ -4161,20 +4858,19 @@ export class DatabaseService {
         });
       }
 
-      // Handle CREDIT refund - update customer balance
+      // Handle CREDIT refund - update accounts_receivable balance
       if (returnData.refund_method === 'CREDIT' && returnData.customer_id) {
-        await db.runAsync(
-          'UPDATE customers SET balance = COALESCE(balance, 0) - ? WHERE id = ?',
-          [returnData.total_amount, returnData.customer_id]
-        );
-
-        // Update accounts_receivable if exists
+        // Update accounts_receivable to reduce customer's outstanding balance
+        // Negative balance = customer has credit/advance payment
         await db.runAsync(
           `UPDATE accounts_receivable
-           SET balance = CASE WHEN balance - ? < 0 THEN 0 ELSE balance - ? END,
-               status = CASE WHEN balance - ? <= 0 THEN 'PAID' ELSE 'PARTIAL' END
-           WHERE customer_id = ? AND balance > 0
-           ORDER BY created_at ASC LIMIT 1`,
+           SET balance_amount = balance_amount - ?,
+               status = CASE
+                 WHEN balance_amount - ? < 0 THEN 'CREDIT'
+                 WHEN balance_amount - ? = 0 THEN 'PAID'
+                 ELSE 'PARTIALLY_PAID'
+               END
+           WHERE id = (SELECT id FROM accounts_receivable WHERE customer_id = ? AND balance_amount >= 0 ORDER BY created_at ASC LIMIT 1)`,
           [returnData.total_amount, returnData.total_amount, returnData.total_amount, returnData.customer_id]
         );
       }
@@ -4224,6 +4920,31 @@ export class DatabaseService {
     } catch (error) {
       console.error('Error getting transaction for return:', error);
       return null;
+    }
+  }
+
+  // Get recent transactions for return lookup (last 30 days)
+  public async getRecentTransactionsForReturn(): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateStr = thirtyDaysAgo.toISOString();
+
+      const transactions = await db.getAllAsync<any>(
+        `SELECT t.id, t.transaction_number, t.total_amount, t.created_at,
+                t.customer_id, t.customer_name, c.name as customer_full_name
+         FROM transactions t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         WHERE t.status = 'COMPLETED' AND t.created_at >= ?
+         ORDER BY t.created_at DESC`,
+        [dateStr]
+      );
+
+      return transactions || [];
+    } catch (error) {
+      console.error('Error getting recent transactions for return:', error);
+      return [];
     }
   }
 
@@ -4305,12 +5026,31 @@ export class DatabaseService {
       });
     }
 
-    // Handle CREDIT refund
+    // Handle CREDIT refund - reduce customer's accounts receivable balance
+    // Negative balance = customer has credit/advance payment
     if (returnData.refund_method === 'CREDIT' && returnData.customer_id) {
       await db.runAsync(
-        'UPDATE customers SET balance = COALESCE(balance, 0) - ? WHERE id = ?',
-        [totalAmount, returnData.customer_id]
+        `UPDATE accounts_receivable
+         SET balance_amount = balance_amount - ?,
+             status = CASE
+               WHEN balance_amount - ? < 0 THEN 'CREDIT'
+               WHEN balance_amount - ? = 0 THEN 'PAID'
+               ELSE 'PARTIALLY_PAID'
+             END
+         WHERE id = (SELECT id FROM accounts_receivable WHERE customer_id = ? AND balance_amount >= 0 ORDER BY created_at ASC LIMIT 1)`,
+        [totalAmount, totalAmount, totalAmount, returnData.customer_id]
       );
+    }
+
+    // Handle CASH refund - record cash movement for accurate Expected Cash calculation
+    if (returnData.refund_method === 'CASH') {
+      await this.createCashMovement({
+        movement_type: 'CASH_REFUND',
+        amount: totalAmount,
+        description: `Cash refund for ${returnNumber}`,
+        reference_number: returnNumber,
+        cashier_id: returnData.created_by
+      });
     }
 
     // Create eJournal entry
@@ -4459,11 +5199,12 @@ export class DatabaseService {
     if (returnData.refund_method === 'CREDIT') {
       await db.runAsync(
         `UPDATE accounts_payable
-         SET balance = CASE WHEN balance - ? < 0 THEN 0 ELSE balance - ? END,
-             status = CASE WHEN balance - ? <= 0 THEN 'PAID' ELSE 'PARTIALLY_PAID' END
-         WHERE supplier_id = ? AND balance > 0
-         ORDER BY created_at ASC LIMIT 1`,
-        [totalAmount, totalAmount, totalAmount, returnData.supplier_id]
+         SET paid_amount = paid_amount + ?,
+             balance_amount = CASE WHEN balance_amount - ? < 0 THEN 0 ELSE balance_amount - ? END,
+             status = CASE WHEN balance_amount - ? <= 0 THEN 'PAID' ELSE 'PARTIALLY_PAID' END,
+             updated_at = datetime('now')
+         WHERE id = (SELECT id FROM accounts_payable WHERE supplier_id = ? AND balance_amount > 0 ORDER BY created_at ASC LIMIT 1)`,
+        [totalAmount, totalAmount, totalAmount, totalAmount, returnData.supplier_id]
       );
     }
 
@@ -4476,6 +5217,152 @@ export class DatabaseService {
 
     console.log(`Purchase return processed: ${returnNumber}, Total: ${totalAmount}`);
     return { returnId, returnNumber };
+  }
+
+  // ========================================
+  // EJOURNAL REPORT METHODS (BIR Compliance)
+  // ========================================
+
+  public async getEJournalEntries(options: {
+    startDate?: string;
+    endDate?: string;
+    entryType?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<{
+    entries: Array<{
+      id: number;
+      transaction_id: number | null;
+      entry_type: string;
+      reference_number: string;
+      description: string;
+      amount: number | null;
+      cashier_id: number;
+      cashier_name: string;
+      timestamp: string;
+      created_at: string;
+    }>;
+    total: number;
+  }> {
+    const db = this.getDatabase();
+
+    let whereClause = '1=1';
+    const params: any[] = [];
+
+    if (options.startDate) {
+      whereClause += ' AND DATE(e.timestamp) >= ?';
+      params.push(options.startDate);
+    }
+
+    if (options.endDate) {
+      whereClause += ' AND DATE(e.timestamp) <= ?';
+      params.push(options.endDate);
+    }
+
+    if (options.entryType && options.entryType !== 'ALL') {
+      whereClause += ' AND e.entry_type = ?';
+      params.push(options.entryType);
+    }
+
+    // Get total count
+    const countResult = await db.getFirstAsync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM ejournal e WHERE ${whereClause}`,
+      params
+    );
+
+    // Get entries with cashier name
+    const limit = options.limit || 100;
+    const offset = options.offset || 0;
+
+    const entries = await db.getAllAsync<{
+      id: number;
+      transaction_id: number | null;
+      entry_type: string;
+      reference_number: string;
+      description: string;
+      amount: number | null;
+      cashier_id: number;
+      cashier_name: string;
+      timestamp: string;
+      created_at: string;
+    }>(
+      `SELECT
+        e.id,
+        e.transaction_id,
+        e.entry_type,
+        e.reference_number,
+        e.description,
+        e.amount,
+        e.cashier_id,
+        COALESCE(u.full_name, u.username, 'System') as cashier_name,
+        e.timestamp,
+        e.created_at
+      FROM ejournal e
+      LEFT JOIN users u ON e.cashier_id = u.id
+      WHERE ${whereClause}
+      ORDER BY e.timestamp DESC, e.id DESC
+      LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return {
+      entries,
+      total: countResult?.count || 0
+    };
+  }
+
+  public async getEJournalSummary(startDate: string, endDate: string): Promise<{
+    totalEntries: number;
+    totalSales: number;
+    totalVoids: number;
+    totalRefunds: number;
+    totalReturns: number;
+    totalPayments: number;
+    byType: Array<{ entry_type: string; count: number; total_amount: number }>;
+  }> {
+    const db = this.getDatabase();
+
+    const summary = await db.getFirstAsync<{
+      totalEntries: number;
+      totalSales: number;
+      totalVoids: number;
+      totalRefunds: number;
+      totalReturns: number;
+      totalPayments: number;
+    }>(
+      `SELECT
+        COUNT(*) as totalEntries,
+        COALESCE(SUM(CASE WHEN entry_type = 'SALE' THEN amount ELSE 0 END), 0) as totalSales,
+        COALESCE(SUM(CASE WHEN entry_type = 'VOID' THEN ABS(amount) ELSE 0 END), 0) as totalVoids,
+        COALESCE(SUM(CASE WHEN entry_type = 'REFUND' THEN ABS(amount) ELSE 0 END), 0) as totalRefunds,
+        COALESCE(SUM(CASE WHEN entry_type IN ('RETURN', 'PURCHASE_RETURN') THEN ABS(amount) ELSE 0 END), 0) as totalReturns,
+        COALESCE(SUM(CASE WHEN entry_type = 'PAYMENT' THEN amount ELSE 0 END), 0) as totalPayments
+      FROM ejournal
+      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ?`,
+      [startDate, endDate]
+    );
+
+    const byType = await db.getAllAsync<{ entry_type: string; count: number; total_amount: number }>(
+      `SELECT
+        entry_type,
+        COUNT(*) as count,
+        COALESCE(SUM(ABS(amount)), 0) as total_amount
+      FROM ejournal
+      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ?
+      GROUP BY entry_type
+      ORDER BY count DESC`,
+      [startDate, endDate]
+    );
+
+    return {
+      totalEntries: summary?.totalEntries || 0,
+      totalSales: summary?.totalSales || 0,
+      totalVoids: summary?.totalVoids || 0,
+      totalRefunds: summary?.totalRefunds || 0,
+      totalReturns: summary?.totalReturns || 0,
+      totalPayments: summary?.totalPayments || 0,
+      byType
+    };
   }
 
   // ========================================
@@ -4570,9 +5457,11 @@ export class DatabaseService {
     const db = this.getDatabase();
     try {
       // If shiftStartTime provided, filter by shift; otherwise filter by date
+      // Normalize ISO format (with 'T') to SQLite format (with space) for proper comparison
       let dateFilter: string;
       if (shiftStartTime) {
-        dateFilter = `AND created_at >= '${shiftStartTime}'`;
+        const normalizedShiftTime = shiftStartTime.replace('T', ' ').replace('Z', '').split('.')[0];
+        dateFilter = `AND datetime(created_at) >= datetime('${normalizedShiftTime}')`;
       } else if (date) {
         dateFilter = `AND DATE(created_at) = '${date}'`;
       } else {
@@ -4777,6 +5666,15 @@ export class DatabaseService {
   }, createdBy: number): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate customer name (case-insensitive, includes inactive)
+      const existing = await db.getFirstAsync<{ id: number }>(
+        'SELECT id FROM customers WHERE LOWER(name) = LOWER(?)',
+        [customerData.name.trim()]
+      );
+      if (existing) {
+        throw new Error(`Customer "${customerData.name.trim()}" already exists. Please use a unique name.`);
+      }
+
       const { getNextCustomerCode, updateCustomerNumber } = await import('./schema');
       const customerCode = await getNextCustomerCode(db);
 
@@ -4787,7 +5685,7 @@ export class DatabaseService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customerCode,
-          customerData.name,
+          customerData.name.trim(),
           customerData.contact_person || null,
           customerData.phone || null,
           customerData.email || null,
@@ -4835,6 +5733,17 @@ export class DatabaseService {
   ): Promise<boolean> {
     const db = this.getDatabase();
     try {
+      // Check for duplicate customer name if name is being updated
+      if (updates.name !== undefined) {
+        const existingName = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM customers WHERE LOWER(name) = LOWER(?) AND id != ?',
+          [updates.name.trim(), customerId]
+        );
+        if (existingName) {
+          throw new Error(`Customer "${updates.name.trim()}" already exists. Please use a unique name.`);
+        }
+      }
+
       // Get existing customer data for audit trail
       const existingCustomer = await db.getFirstAsync<any>(
         'SELECT * FROM customers WHERE id = ?',
@@ -4852,7 +5761,7 @@ export class DatabaseService {
       for (const [key, newValue] of Object.entries(updates)) {
         if (newValue !== undefined && existingCustomer[key] !== newValue) {
           setParts.push(`${key} = ?`);
-          values.push(newValue);
+          values.push(typeof newValue === 'string' ? newValue.trim() : newValue);
 
           // Record audit entry for each changed field
           await db.runAsync(
@@ -4962,8 +5871,7 @@ export class DatabaseService {
         [userId, now, beginningCash, now]
       );
 
-      // Update the beginning_cash setting
-      await this.updateSetting('beginning_cash', String(beginningCash));
+      // NOTE: Beginning cash is stored in shifts table per shift, not in settings
 
       console.log(`Shift started: ID ${result.lastInsertRowId} for user ${userId}`);
       return result.lastInsertRowId as number;
@@ -4984,12 +5892,45 @@ export class DatabaseService {
         [now, endingCash, zReadingId || null, shiftId]
       );
 
-      // Update the beginning_cash setting for next shift
-      await this.updateSetting('beginning_cash', String(endingCash));
+      // NOTE: Do NOT auto-update beginning_cash setting
+      // Each cashier enters their own beginning cash (given by owner)
 
       console.log(`Shift ${shiftId} closed with ending cash: ${endingCash}`);
     } catch (error) {
       console.error('Error ending shift:', error);
+      throw error;
+    }
+  }
+
+  // Close ALL open shifts for a user (handles multiple stuck open shifts)
+  public async closeAllOpenShifts(userId: number, endingCash: number): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const now = new Date().toISOString();
+
+      // Get all open shifts for this user
+      const openShifts = await db.getAllAsync<any>(
+        `SELECT id FROM shifts WHERE user_id = ? AND status = 'OPEN'`,
+        [userId]
+      );
+
+      if (openShifts.length === 0) {
+        console.log(`No open shifts found for user ${userId}`);
+        return 0;
+      }
+
+      // Close all open shifts
+      const result = await db.runAsync(
+        `UPDATE shifts
+         SET end_time = ?, ending_cash = ?, status = 'CLOSED'
+         WHERE user_id = ? AND status = 'OPEN'`,
+        [now, endingCash, userId]
+      );
+
+      console.log(`Closed ${openShifts.length} open shift(s) for user ${userId}`);
+      return openShifts.length;
+    } catch (error) {
+      console.error('Error closing all open shifts:', error);
       throw error;
     }
   }
@@ -5044,7 +5985,7 @@ export class DatabaseService {
   // X-READING (MID-DAY INQUIRY) METHODS
   // ========================================
 
-  public async getXReadingData(date?: string, shiftStartTime?: string): Promise<{
+  public async getXReadingData(date?: string, shiftStartTime?: string, cashierId?: number): Promise<{
     date: string;
     time: string;
     day_closed: boolean;
@@ -5076,9 +6017,15 @@ export class DatabaseService {
 
     // If shiftStartTime provided, filter by shift; otherwise filter by date
     const useShiftFilter = !!shiftStartTime;
+    // Normalize ISO format (with 'T') to SQLite format (with space) for proper comparison
+    const normalizedShiftTime = shiftStartTime ? shiftStartTime.replace('T', ' ').replace('Z', '').split('.')[0] : '';
+
+    // Build cashier filter if provided
+    const cashierFilter = cashierId ? `AND cashier_id = ${cashierId}` : '';
+
     const dateFilter = useShiftFilter
-      ? `transaction_date >= '${shiftStartTime}'`
-      : `DATE(transaction_date) = '${targetDate}'`;
+      ? `datetime(transaction_date) >= datetime('${normalizedShiftTime}') ${cashierFilter}`
+      : `DATE(transaction_date) = '${targetDate}' ${cashierFilter}`;
 
     try {
       // Check if Z-Reading was already completed today (day is closed)
@@ -5140,10 +6087,11 @@ export class DatabaseService {
       `);
 
       // Get VAT breakdown by joining transaction_items with products
-      // Filter by shift start time if provided
+      // Filter by shift start time if provided, and by cashier if provided
+      const cashierFilterT = cashierId ? `AND t.cashier_id = ${cashierId}` : '';
       const vatDateFilter = useShiftFilter
-        ? `t.transaction_date >= '${shiftStartTime}'`
-        : `DATE(t.transaction_date) = '${targetDate}'`;
+        ? `datetime(t.transaction_date) >= datetime('${normalizedShiftTime}') ${cashierFilterT}`
+        : `DATE(t.transaction_date) = '${targetDate}' ${cashierFilterT}`;
 
       const vatBreakdown = await db.getFirstAsync<any>(`
         SELECT
@@ -5161,10 +6109,11 @@ export class DatabaseService {
       const vatableSales = Math.round((vatableTotal / 1.12) * 100) / 100; // VAT-exclusive amount
       const vatAmount = Math.round((vatableTotal - vatableSales) * 100) / 100; // VAT amount (12%)
 
-      // Get refund amount and count (filter by shift if provided)
+      // Get refund amount and count (filter by shift if provided, and by cashier)
+      const cashierRefundFilter = cashierId ? `AND processed_by = ${cashierId}` : '';
       const refundDateFilter = useShiftFilter
-        ? `return_date >= '${shiftStartTime}'`
-        : `DATE(return_date) = '${targetDate}'`;
+        ? `datetime(return_date) >= datetime('${normalizedShiftTime}') ${cashierRefundFilter}`
+        : `DATE(return_date) = '${targetDate}' ${cashierRefundFilter}`;
 
       const refundSummary = await db.getFirstAsync<any>(`
         SELECT
@@ -5184,9 +6133,11 @@ export class DatabaseService {
 
       const cashSales = salesSummary?.cash_sales || 0;
 
-      // Expected Cash = Beginning Cash + Cash Fund + Cash Sales - Cash Out - Petty Cash
+      // Expected Cash = Beginning Cash + Cash Fund + Cash Sales - Cash Out - Petty Cash - Cash Refunds
       // Where Cash Fund = opening_fund + cash_in
-      const expectedCash = beginningCash + cashMovements.net_balance + cashSales - refundAmount;
+      // NOTE: Cash refunds are already included in cashMovements.net_balance (which deducts cash_refunds)
+      // Do NOT subtract refundAmount here as it includes ALL refunds (CASH, CREDIT, STORE_CREDIT, etc.)
+      const expectedCash = beginningCash + cashMovements.net_balance + cashSales;
 
       const result = {
         date: targetDate,
@@ -5295,6 +6246,27 @@ export class DatabaseService {
     } catch (error) {
       console.error('Error saving X-Reading:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Get X-Reading history records
+   */
+  public async getXReadingHistory(limit: number = 30): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const records = await db.getAllAsync<any>(
+        `SELECT x.*, u.full_name as cashier_name, u.username as cashier_username
+         FROM x_readings x
+         LEFT JOIN users u ON x.cashier_id = u.id
+         ORDER BY x.date DESC, x.time DESC, x.id DESC
+         LIMIT ?`,
+        [limit]
+      );
+      return records;
+    } catch (error) {
+      console.error('Error getting X-Reading history:', error);
+      return [];
     }
   }
 
@@ -5589,5 +6561,657 @@ export class DatabaseService {
     }
 
     return summary;
+  }
+
+  /**
+   * Log a reset operation attempt for audit trail
+   */
+  public async logResetOperation(params: {
+    userId: number;
+    username: string;
+    fullName: string;
+    operationType: 'TRANSACTIONAL_DATA_RESET' | 'DATABASE_RESTORE' | 'MASTER_DATA_RESET';
+    status: 'ATTEMPTED' | 'SUCCESS' | 'FAILED' | 'DENIED' | 'CANCELLED';
+    recordsDeleted?: number;
+    details?: Record<string, any>;
+  }): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      const detailsJson = params.details ? JSON.stringify(params.details) : null;
+
+      await db.runAsync(
+        `INSERT INTO reset_operations_log
+         (user_id, username, full_name, operation_type, status, records_deleted, details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))`,
+        [
+          params.userId,
+          params.username,
+          params.fullName,
+          params.operationType,
+          params.status,
+          params.recordsDeleted || 0,
+          detailsJson
+        ]
+      );
+
+      console.log(`[ResetLog] ${params.status}: ${params.operationType} by ${params.username}`);
+    } catch (error) {
+      console.error('[ResetLog] Error logging reset operation:', error);
+      // Don't throw - logging failure shouldn't block the operation
+    }
+  }
+
+  /**
+   * Get reset operations log for admin viewing
+   */
+  public async getResetOperationsLog(limit: number = 50): Promise<Array<{
+    id: number;
+    user_id: number;
+    username: string;
+    full_name: string;
+    operation_type: string;
+    status: string;
+    records_deleted: number;
+    details: string | null;
+    created_at: string;
+  }>> {
+    const db = this.getDatabase();
+    try {
+      const logs = await db.getAllAsync<{
+        id: number;
+        user_id: number;
+        username: string;
+        full_name: string;
+        operation_type: string;
+        status: string;
+        records_deleted: number;
+        details: string | null;
+        created_at: string;
+      }>(
+        `SELECT * FROM reset_operations_log
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [limit]
+      );
+
+      return logs;
+    } catch (error) {
+      console.error('[ResetLog] Error getting reset operations log:', error);
+      return [];
+    }
+  }
+
+  // ==================== DATABASE HEALTH & CORRUPTION PREVENTION ====================
+
+  /**
+   * Enable corruption prevention settings
+   * Call this during database initialization
+   */
+  public async enableCorruptionPrevention(): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      // Enable Write-Ahead Logging for better crash recovery
+      await db.execAsync('PRAGMA journal_mode = WAL');
+
+      // Set synchronous mode to FULL for maximum durability
+      // FULL ensures data is written to disk before returning
+      await db.execAsync('PRAGMA synchronous = FULL');
+
+      // Enable foreign key constraints for data integrity
+      await db.execAsync('PRAGMA foreign_keys = ON');
+
+      // Set a reasonable cache size (negative = KB, positive = pages)
+      await db.execAsync('PRAGMA cache_size = -2000'); // 2MB cache
+
+      // Auto-vacuum to prevent database bloat
+      await db.execAsync('PRAGMA auto_vacuum = INCREMENTAL');
+
+      // Set busy timeout to handle concurrent access
+      await db.execAsync('PRAGMA busy_timeout = 5000'); // 5 seconds
+
+      console.log('[DatabaseService] Corruption prevention settings enabled');
+    } catch (error) {
+      console.error('[DatabaseService] Error enabling corruption prevention:', error);
+    }
+  }
+
+  /**
+   * Check database health and return status
+   */
+  public async checkDatabaseHealth(): Promise<{
+    isHealthy: boolean;
+    walMode: boolean;
+    synchronousMode: string;
+    integrityOk: boolean;
+    foreignKeyViolations: number;
+    freePageCount: number;
+    totalPages: number;
+    issues: string[];
+  }> {
+    const db = this.getDatabase();
+    const issues: string[] = [];
+
+    try {
+      // Check journal mode
+      const journalMode = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode');
+      const walMode = journalMode?.journal_mode?.toLowerCase() === 'wal';
+      if (!walMode) {
+        issues.push('WAL mode not enabled - crash recovery may be slower');
+      }
+
+      // Check synchronous mode
+      const syncMode = await db.getFirstAsync<{ synchronous: number }>('PRAGMA synchronous');
+      const syncModeStr = syncMode?.synchronous === 2 ? 'FULL' :
+                          syncMode?.synchronous === 1 ? 'NORMAL' : 'OFF';
+      if (syncMode?.synchronous !== 2) {
+        issues.push('Synchronous mode not FULL - data may be lost on crash');
+      }
+
+      // Run integrity check
+      const integrityResult = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check');
+      const integrityOk = integrityResult?.integrity_check === 'ok';
+      if (!integrityOk) {
+        issues.push(`Integrity check failed: ${integrityResult?.integrity_check}`);
+      }
+
+      // Check for foreign key violations
+      const fkViolations = await db.getAllAsync('PRAGMA foreign_key_check');
+      const foreignKeyViolations = fkViolations?.length || 0;
+      if (foreignKeyViolations > 0) {
+        issues.push(`${foreignKeyViolations} foreign key violations found`);
+      }
+
+      // Get database page info
+      const freePages = await db.getFirstAsync<{ freelist_count: number }>('PRAGMA freelist_count');
+      const pageCount = await db.getFirstAsync<{ page_count: number }>('PRAGMA page_count');
+
+      return {
+        isHealthy: issues.length === 0,
+        walMode,
+        synchronousMode: syncModeStr,
+        integrityOk,
+        foreignKeyViolations,
+        freePageCount: freePages?.freelist_count || 0,
+        totalPages: pageCount?.page_count || 0,
+        issues,
+      };
+    } catch (error) {
+      console.error('[DatabaseService] Error checking database health:', error);
+      return {
+        isHealthy: false,
+        walMode: false,
+        synchronousMode: 'UNKNOWN',
+        integrityOk: false,
+        foreignKeyViolations: 0,
+        freePageCount: 0,
+        totalPages: 0,
+        issues: [`Health check failed: ${error}`],
+      };
+    }
+  }
+
+  /**
+   * Perform full integrity check
+   */
+  public async performIntegrityCheck(): Promise<{ passed: boolean; details: string }> {
+    const db = this.getDatabase();
+    try {
+      const result = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check');
+      const passed = result?.integrity_check === 'ok';
+      return {
+        passed,
+        details: result?.integrity_check || 'Unknown',
+      };
+    } catch (error) {
+      return {
+        passed: false,
+        details: `Error running integrity check: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * Force WAL checkpoint to ensure all changes are written to main database
+   */
+  public async checkpointWAL(): Promise<{ success: boolean; pagesCheckpointed: number }> {
+    const db = this.getDatabase();
+    try {
+      // TRUNCATE mode moves all WAL content to database and truncates WAL file
+      const result = await db.getFirstAsync<{ busy: number; log: number; checkpointed: number }>(
+        'PRAGMA wal_checkpoint(TRUNCATE)'
+      );
+      return {
+        success: true,
+        pagesCheckpointed: result?.checkpointed || 0,
+      };
+    } catch (error) {
+      console.error('[DatabaseService] WAL checkpoint error:', error);
+      return {
+        success: false,
+        pagesCheckpointed: 0,
+      };
+    }
+  }
+
+  /**
+   * Optimize database (VACUUM and REINDEX)
+   */
+  public async optimizeDatabase(): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      // Checkpoint WAL first
+      await this.checkpointWAL();
+
+      // Analyze tables for query optimization
+      await db.execAsync('ANALYZE');
+
+      // Rebuild indexes
+      await db.execAsync('REINDEX');
+
+      // Compact database (reclaim free pages)
+      await db.execAsync('VACUUM');
+
+      console.log('[DatabaseService] Database optimization completed');
+    } catch (error) {
+      console.error('[DatabaseService] Database optimization error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Attempt automatic database repair
+   * This should be called when database health check fails
+   * Returns detailed results of repair attempts
+   */
+  public async attemptDatabaseRepair(): Promise<{
+    success: boolean;
+    repairSteps: { step: string; success: boolean; message: string }[];
+    finalHealthCheck: {
+      isHealthy: boolean;
+      integrityOk: boolean;
+      issues: string[];
+    };
+  }> {
+    const db = this.getDatabase();
+    const repairSteps: { step: string; success: boolean; message: string }[] = [];
+
+    console.log('[DatabaseService] Starting automatic database repair...');
+
+    // Step 1: Enable WAL mode if not already enabled
+    try {
+      console.log('[DatabaseService] Step 1: Enabling WAL mode...');
+      await db.execAsync('PRAGMA journal_mode = WAL');
+      repairSteps.push({ step: 'Enable WAL Mode', success: true, message: 'WAL mode enabled' });
+    } catch (error) {
+      repairSteps.push({ step: 'Enable WAL Mode', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 2: Checkpoint any pending WAL transactions
+    try {
+      console.log('[DatabaseService] Step 2: Checkpointing WAL...');
+      await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
+      repairSteps.push({ step: 'WAL Checkpoint', success: true, message: 'WAL checkpoint completed' });
+    } catch (error) {
+      repairSteps.push({ step: 'WAL Checkpoint', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 3: Rebuild all indexes (fixes index corruption)
+    try {
+      console.log('[DatabaseService] Step 3: Rebuilding indexes...');
+      await db.execAsync('REINDEX');
+      repairSteps.push({ step: 'Rebuild Indexes', success: true, message: 'All indexes rebuilt' });
+    } catch (error) {
+      repairSteps.push({ step: 'Rebuild Indexes', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 4: Run ANALYZE for query optimization
+    try {
+      console.log('[DatabaseService] Step 4: Analyzing tables...');
+      await db.execAsync('ANALYZE');
+      repairSteps.push({ step: 'Analyze Tables', success: true, message: 'Table statistics updated' });
+    } catch (error) {
+      repairSteps.push({ step: 'Analyze Tables', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 5: Check and auto-fix foreign key violations
+    try {
+      console.log('[DatabaseService] Step 5: Checking and fixing foreign key violations...');
+      const fkViolations = await db.getAllAsync<{ table: string; rowid: number; parent: string; fkid: number }>(
+        'PRAGMA foreign_key_check'
+      );
+      if (fkViolations && fkViolations.length > 0) {
+        console.log(`[DatabaseService] Found ${fkViolations.length} FK violations, attempting to fix...`);
+        let fixedCount = 0;
+        let unfixableCount = 0;
+
+        // Get FK info for each table to know which column to fix
+        const tableFixAttempts = new Map<string, Set<number>>();
+        for (const violation of fkViolations) {
+          if (!tableFixAttempts.has(violation.table)) {
+            tableFixAttempts.set(violation.table, new Set());
+          }
+          tableFixAttempts.get(violation.table)?.add(violation.rowid);
+        }
+
+        // For each table with violations, get the FK column info and try to set to NULL
+        for (const [tableName, rowids] of tableFixAttempts) {
+          try {
+            // Get foreign key info for this table
+            const fkInfo = await db.getAllAsync<{ id: number; seq: number; table: string; from: string; to: string; on_update: string; on_delete: string; match: string }>(
+              `PRAGMA foreign_key_list(${tableName})`
+            );
+
+            for (const fk of fkInfo) {
+              // Try to set the FK column to NULL for orphaned rows
+              try {
+                const updateResult = await db.runAsync(
+                  `UPDATE ${tableName} SET ${fk.from} = NULL WHERE rowid IN (${Array.from(rowids).join(',')}) AND ${fk.from} IS NOT NULL AND ${fk.from} NOT IN (SELECT id FROM ${fk.table})`
+                );
+                if (updateResult.changes > 0) {
+                  console.log(`[DatabaseService] Fixed ${updateResult.changes} FK violations in ${tableName}.${fk.from}`);
+                  fixedCount += updateResult.changes;
+                }
+              } catch (updateError: any) {
+                // Column might be NOT NULL, can't fix automatically
+                if (updateError?.message?.includes('NOT NULL')) {
+                  console.log(`[DatabaseService] Cannot fix ${tableName}.${fk.from} - column is NOT NULL`);
+                  unfixableCount += rowids.size;
+                }
+              }
+            }
+          } catch (tableError) {
+            console.warn(`[DatabaseService] Could not get FK info for table ${tableName}:`, tableError);
+          }
+        }
+
+        // Check remaining violations
+        const remainingViolations = await db.getAllAsync('PRAGMA foreign_key_check');
+        const remainingCount = remainingViolations?.length || 0;
+
+        if (remainingCount === 0) {
+          repairSteps.push({
+            step: 'Fix Foreign Keys',
+            success: true,
+            message: `Fixed all ${fkViolations.length} FK violations`
+          });
+        } else {
+          repairSteps.push({
+            step: 'Fix Foreign Keys',
+            success: false,
+            message: `Fixed ${fixedCount} of ${fkViolations.length} violations, ${remainingCount} remain (require manual fix)`
+          });
+        }
+      } else {
+        repairSteps.push({ step: 'Check Foreign Keys', success: true, message: 'No violations found' });
+      }
+    } catch (error) {
+      repairSteps.push({ step: 'Check Foreign Keys', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 6: VACUUM to rebuild database file (most thorough repair)
+    try {
+      console.log('[DatabaseService] Step 6: Vacuuming database...');
+      await db.execAsync('VACUUM');
+      repairSteps.push({ step: 'Vacuum Database', success: true, message: 'Database compacted and rebuilt' });
+    } catch (error) {
+      repairSteps.push({ step: 'Vacuum Database', success: false, message: `Failed: ${error}` });
+    }
+
+    // Step 7: Re-enable protection settings
+    try {
+      console.log('[DatabaseService] Step 7: Re-enabling protection settings...');
+      await db.execAsync('PRAGMA synchronous = NORMAL');
+      await db.execAsync('PRAGMA foreign_keys = ON');
+      await db.execAsync('PRAGMA busy_timeout = 5000');
+      repairSteps.push({ step: 'Enable Protection', success: true, message: 'Protection settings enabled' });
+    } catch (error) {
+      repairSteps.push({ step: 'Enable Protection', success: false, message: `Failed: ${error}` });
+    }
+
+    // Final: Run integrity check to verify repair was successful
+    console.log('[DatabaseService] Running final integrity check...');
+    let finalHealthCheck = {
+      isHealthy: false,
+      integrityOk: false,
+      issues: [] as string[],
+    };
+
+    try {
+      const integrityResult = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA integrity_check');
+      const integrityOk = integrityResult?.integrity_check === 'ok';
+
+      if (!integrityOk) {
+        finalHealthCheck.issues.push(`Integrity check: ${integrityResult?.integrity_check}`);
+      }
+
+      // Check for remaining FK violations
+      const remainingViolations = await db.getAllAsync('PRAGMA foreign_key_check');
+      if (remainingViolations && remainingViolations.length > 0) {
+        finalHealthCheck.issues.push(`${remainingViolations.length} foreign key violations remain`);
+      }
+
+      finalHealthCheck.integrityOk = integrityOk;
+      finalHealthCheck.isHealthy = integrityOk && (!remainingViolations || remainingViolations.length === 0);
+    } catch (error) {
+      finalHealthCheck.issues.push(`Final check failed: ${error}`);
+    }
+
+    const success = finalHealthCheck.isHealthy;
+    console.log(`[DatabaseService] Repair ${success ? 'SUCCEEDED' : 'COMPLETED WITH ISSUES'}`);
+
+    return {
+      success,
+      repairSteps,
+      finalHealthCheck,
+    };
+  }
+
+  /**
+   * Quick repair - just the essential steps (faster)
+   */
+  public async quickRepair(): Promise<{ success: boolean; message: string }> {
+    const db = this.getDatabase();
+    try {
+      console.log('[DatabaseService] Running quick repair...');
+
+      // Essential repairs only
+      await db.execAsync('PRAGMA journal_mode = WAL');
+      await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
+      await db.execAsync('REINDEX');
+      await db.execAsync('PRAGMA synchronous = NORMAL');
+
+      // Quick integrity check
+      const result = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA quick_check');
+      const passed = result?.integrity_check === 'ok';
+
+      return {
+        success: passed,
+        message: passed ? 'Quick repair successful' : `Issues found: ${result?.integrity_check}`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Quick repair failed: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * Verify admin password for sensitive operations
+   */
+  public async verifyAdminPassword(password: string): Promise<boolean> {
+    const db = this.getDatabase();
+    try {
+      // Get admin user
+      const admin = await db.getFirstAsync<{ id: number; password_hash: string }>(
+        "SELECT id, password_hash FROM users WHERE role = 'ADMIN' LIMIT 1"
+      );
+
+      if (!admin || !admin.password_hash) {
+        return false;
+      }
+
+      // Import verifyPassword function
+      const { verifyPassword } = require('../utils/passwordHash');
+      return verifyPassword(password, admin.password_hash);
+    } catch (error) {
+      console.error('[DatabaseService] Error verifying admin password:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get database file size and storage info
+   */
+  public async getDatabaseInfo(): Promise<{
+    pageSize: number;
+    pageCount: number;
+    estimatedSizeKB: number;
+    walEnabled: boolean;
+  }> {
+    const db = this.getDatabase();
+    try {
+      const pageSize = await db.getFirstAsync<{ page_size: number }>('PRAGMA page_size');
+      const pageCount = await db.getFirstAsync<{ page_count: number }>('PRAGMA page_count');
+      const journalMode = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode');
+
+      const size = (pageSize?.page_size || 4096) * (pageCount?.page_count || 0);
+
+      return {
+        pageSize: pageSize?.page_size || 4096,
+        pageCount: pageCount?.page_count || 0,
+        estimatedSizeKB: Math.round(size / 1024),
+        walEnabled: journalMode?.journal_mode?.toLowerCase() === 'wal',
+      };
+    } catch (error) {
+      console.error('[DatabaseService] Error getting database info:', error);
+      return {
+        pageSize: 0,
+        pageCount: 0,
+        estimatedSizeKB: 0,
+        walEnabled: false,
+      };
+    }
+  }
+
+  // ==================== BIR eSALES REPORT ====================
+
+  /**
+   * Get eSales report data for BIR submission
+   * Returns data formatted for eSales CSV/Excel export
+   */
+  public async getESalesReportData(year: number, month: number): Promise<{
+    tin: string;
+    branch: string;
+    month: string;
+    year: string;
+    min: string;
+    lastOR: string;
+    vatableSales: number;
+    vatZeroRatedSales: number;
+    vatExemptSales: number;
+    otherPercentageTaxSales: number;
+  }> {
+    const db = this.getDatabase();
+
+    try {
+      // Format month with leading zero
+      const monthStr = month.toString().padStart(2, '0');
+      const yearStr = year.toString();
+
+      // Build date range for the month
+      const startDate = `${year}-${monthStr}-01`;
+      const endDate = month === 12
+        ? `${year + 1}-01-01`
+        : `${year}-${(month + 1).toString().padStart(2, '0')}-01`;
+
+      // Get TIN from settings
+      const tinSetting = await db.getFirstAsync<{ value: string }>(
+        "SELECT value FROM settings WHERE key = 'tin'"
+      );
+      const tin = tinSetting?.value?.replace(/-/g, '') || '000000000000';
+
+      // Get Branch from settings (default to "000" for main branch)
+      const branchSetting = await db.getFirstAsync<{ value: string }>(
+        "SELECT value FROM settings WHERE key = 'branch_code'"
+      );
+      const branch = branchSetting?.value || '000';
+
+      // Get MIN (Machine Identification Number) from settings
+      const minSetting = await db.getFirstAsync<{ value: string }>(
+        "SELECT value FROM settings WHERE key = 'min_number'"
+      );
+      const min = minSetting?.value || '';
+
+      // Get last invoice number in the period
+      const lastInvoice = await db.getFirstAsync<{ invoice_number: string }>(
+        `SELECT invoice_number FROM transactions
+         WHERE status = 'COMPLETED'
+         AND date(transaction_date) >= ?
+         AND date(transaction_date) < ?
+         ORDER BY transaction_date DESC, id DESC
+         LIMIT 1`,
+        [startDate, endDate]
+      );
+      const lastOR = lastInvoice?.invoice_number || '';
+
+      // Calculate sales by VAT type
+      // Join transaction_items with products to get vat_type
+      const salesByVatType = await db.getAllAsync<{
+        vat_type: string;
+        total_sales: number;
+      }>(
+        `SELECT
+           COALESCE(p.vat_type, 'vatable') as vat_type,
+           SUM(ti.total_amount) as total_sales
+         FROM transaction_items ti
+         INNER JOIN transactions t ON t.id = ti.transaction_id
+         LEFT JOIN products p ON p.id = ti.product_id
+         WHERE t.status = 'COMPLETED'
+         AND date(t.transaction_date) >= ?
+         AND date(t.transaction_date) < ?
+         GROUP BY COALESCE(p.vat_type, 'vatable')`,
+        [startDate, endDate]
+      );
+
+      // Initialize values
+      let vatableSales = 0;
+      let vatZeroRatedSales = 0;
+      let vatExemptSales = 0;
+
+      // Process results
+      for (const row of salesByVatType) {
+        const sales = row.total_sales || 0;
+        switch (row.vat_type) {
+          case 'vatable':
+            // For vatable sales, we need to get the VAT-exclusive amount
+            // Assuming 12% VAT is already included in the price
+            vatableSales = sales / 1.12;
+            break;
+          case 'zero_rated':
+            vatZeroRatedSales = sales;
+            break;
+          case 'vat_exempt':
+            vatExemptSales = sales;
+            break;
+        }
+      }
+
+      return {
+        tin,
+        branch,
+        month: monthStr,
+        year: yearStr,
+        min,
+        lastOR,
+        vatableSales: Math.round(vatableSales * 100) / 100,
+        vatZeroRatedSales: Math.round(vatZeroRatedSales * 100) / 100,
+        vatExemptSales: Math.round(vatExemptSales * 100) / 100,
+        otherPercentageTaxSales: 0, // Usually 0 for most businesses
+      };
+    } catch (error) {
+      console.error('[DatabaseService] Error getting eSales report data:', error);
+      throw error;
+    }
   }
 }

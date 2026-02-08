@@ -19,6 +19,8 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange, DatePreset } from '../components/DateRangeFilter';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'SalesReport'>;
@@ -91,9 +93,10 @@ export default function SalesReportScreen({ navigation }: Props) {
   const [activeView, setActiveView] = useState<ReportView>('summary');
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState(() => {
-    const range = getDateRange('today');
+    const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   // Pagination for transactions table
   const [currentPage, setCurrentPage] = useState(0);
@@ -119,16 +122,8 @@ export default function SalesReportScreen({ navigation }: Props) {
       const allTransactions = await dbService.getTransactions(500);
       setTransactions(allTransactions);
 
-      // Load transaction items for product breakdown
-      const items: TransactionItem[] = [];
-      for (const txn of allTransactions.slice(0, 100)) {
-        try {
-          const txnItems = await dbService.getTransactionItems(txn.id);
-          items.push(...txnItems);
-        } catch (e) {
-          // Skip if error
-        }
-      }
+      // Load all transaction items in one query for product/category breakdown
+      const items = await dbService.getAllTransactionItems();
       setTransactionItems(items);
 
       // Load products and categories
@@ -323,6 +318,7 @@ export default function SalesReportScreen({ navigation }: Props) {
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('en-PH', {
+      timeZone: 'Asia/Manila',
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -331,6 +327,7 @@ export default function SalesReportScreen({ navigation }: Props) {
 
   const formatDateTime = (dateStr: string) => {
     return new Date(dateStr).toLocaleString('en-PH', {
+      timeZone: 'Asia/Manila',
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -368,6 +365,73 @@ export default function SalesReportScreen({ navigation }: Props) {
   };
 
   const paymentMethods = ['CASH', 'CARD', 'ONLINE', 'CHECK', 'CHARGE_INVOICE'];
+
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('SALES REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .feed()
+      .println(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')}`)
+      .println(`to ${dateRange.endDate.toLocaleDateString('en-PH')}`)
+      .doubleSeparator();
+
+    // Summary
+    builder
+      .align('left')
+      .bold(true)
+      .println('SALES SUMMARY')
+      .bold(false)
+      .separator()
+      .leftRight('Transactions:', salesSummary.transactionCount.toString())
+      .leftRight('Gross Sales:', `P${salesSummary.grossSales.toFixed(2)}`)
+      .leftRight('Discounts:', `P${salesSummary.totalDiscount.toFixed(2)}`)
+      .leftRight('Net Sales:', `P${salesSummary.netSales.toFixed(2)}`)
+      .separator()
+      .leftRight('VATable Sales:', `P${salesSummary.vatableSales.toFixed(2)}`)
+      .leftRight('VAT (12%):', `P${salesSummary.totalTax.toFixed(2)}`)
+      .leftRight('Avg Transaction:', `P${salesSummary.averageTransaction.toFixed(2)}`)
+      .separator();
+
+    // Voids & Refunds
+    builder
+      .leftRight('Void Count:', salesSummary.voidCount.toString())
+      .leftRight('Void Amount:', `P${salesSummary.voidAmount.toFixed(2)}`)
+      .leftRight('Refund Count:', salesSummary.refundCount.toString())
+      .leftRight('Refund Amount:', `P${salesSummary.refundAmount.toFixed(2)}`)
+      .doubleSeparator();
+
+    // By Payment Method
+    builder
+      .bold(true)
+      .println('BY PAYMENT METHOD')
+      .bold(false)
+      .separator();
+
+    Object.entries(salesSummary.byPaymentMethod).forEach(([method, data]) => {
+      builder.leftRight(method, `${data.count} - P${data.total.toFixed(2)}`);
+    });
+
+    builder
+      .feed()
+      .align('center')
+      .separator()
+      .println('*** END OF REPORT ***')
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
 
   // Pagination
   const paginatedTransactions = useMemo(() => {
@@ -669,63 +733,44 @@ export default function SalesReportScreen({ navigation }: Props) {
           <Paragraph style={styles.emptyText}>No transactions found</Paragraph>
         ) : (
           <>
-            <DataTable>
-              <DataTable.Header>
-                <DataTable.Title style={{ flex: 1.2 }}>Invoice</DataTable.Title>
-                <DataTable.Title style={{ flex: 1.5 }}>Date</DataTable.Title>
-                <DataTable.Title style={{ flex: 1.2 }}>Customer</DataTable.Title>
-                <DataTable.Title numeric style={{ flex: 1 }}>Amount</DataTable.Title>
-                <DataTable.Title style={{ flex: 0.8 }}>Pay</DataTable.Title>
-                <DataTable.Title style={{ flex: 0.8 }}>Status</DataTable.Title>
-              </DataTable.Header>
-
-              {paginatedTransactions.map((txn) => (
-                <DataTable.Row key={txn.id}>
-                  <DataTable.Cell style={{ flex: 1.2 }}>
-                    <Paragraph style={styles.smallText}>{txn.invoice_number}</Paragraph>
-                  </DataTable.Cell>
-                  <DataTable.Cell style={{ flex: 1.5 }}>
-                    <Paragraph style={styles.smallText}>
+            {paginatedTransactions.map((txn) => (
+              <View key={txn.id} style={styles.txnCard}>
+                <View style={styles.txnCardHeader}>
+                  <View style={styles.txnCardHeaderLeft}>
+                    <Paragraph style={styles.txnInvoice}>{txn.invoice_number}</Paragraph>
+                    <Paragraph style={styles.txnDate}>
                       {formatDateTime(txn.transaction_date || txn.created_at)}
                     </Paragraph>
-                  </DataTable.Cell>
-                  <DataTable.Cell style={{ flex: 1.2 }}>
-                    <Paragraph style={styles.smallText} numberOfLines={1}>
-                      {txn.customer_name || '-'}
-                    </Paragraph>
-                  </DataTable.Cell>
-                  <DataTable.Cell numeric style={{ flex: 1 }}>
-                    <Paragraph style={styles.smallText}>
-                      {formatCurrency(txn.total_amount)}
-                    </Paragraph>
-                  </DataTable.Cell>
-                  <DataTable.Cell style={{ flex: 0.8 }}>
+                  </View>
+                  <View style={styles.txnCardHeaderRight}>
+                    <Paragraph style={styles.txnAmount}>{formatCurrency(txn.total_amount)}</Paragraph>
+                  </View>
+                </View>
+                <View style={styles.txnCardFooter}>
+                  {txn.customer_name ? (
+                    <Paragraph style={styles.txnCustomer} numberOfLines={1}>{txn.customer_name}</Paragraph>
+                  ) : (
+                    <View />
+                  )}
+                  <View style={styles.txnChips}>
                     <Chip
                       compact
-                      textStyle={{ fontSize: 8, color: '#fff' }}
-                      style={{
-                        backgroundColor: getPaymentMethodColor(txn.payment_method),
-                        height: 20,
-                      }}
+                      textStyle={{ fontSize: 10, color: '#fff' }}
+                      style={{ backgroundColor: getPaymentMethodColor(txn.payment_method), height: 22 }}
                     >
-                      {getPaymentMethodLabel(txn.payment_method)?.substring(0, 4)}
+                      {getPaymentMethodLabel(txn.payment_method)}
                     </Chip>
-                  </DataTable.Cell>
-                  <DataTable.Cell style={{ flex: 0.8 }}>
                     <Chip
                       compact
-                      textStyle={{ fontSize: 8, color: '#fff' }}
-                      style={{
-                        backgroundColor: getStatusColor(txn.status),
-                        height: 20,
-                      }}
+                      textStyle={{ fontSize: 10, color: '#fff' }}
+                      style={{ backgroundColor: getStatusColor(txn.status), height: 22 }}
                     >
-                      {txn.status?.substring(0, 4)}
+                      {txn.status}
                     </Chip>
-                  </DataTable.Cell>
-                </DataTable.Row>
-              ))}
-            </DataTable>
+                  </View>
+                </View>
+              </View>
+            ))}
 
             {/* Pagination */}
             {totalPages > 1 && (
@@ -761,10 +806,22 @@ export default function SalesReportScreen({ navigation }: Props) {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Sales Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Comprehensive sales analysis and transactions
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Sales Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                Comprehensive sales analysis and transactions
+              </Paragraph>
+            </View>
+            <Button
+              mode="contained"
+              icon="printer"
+              onPress={() => setPrintDialogVisible(true)}
+              compact
+            >
+              Print
+            </Button>
+          </View>
         </View>
 
         {/* Date Filter */}
@@ -772,7 +829,7 @@ export default function SalesReportScreen({ navigation }: Props) {
           <Card.Content>
             <DateRangeFilter
               onDateChange={handleDateChange}
-              selectedPreset="today"
+              selectedPreset="this_month"
             />
           </Card.Content>
         </Card>
@@ -860,10 +917,17 @@ export default function SalesReportScreen({ navigation }: Props) {
         {/* Footer */}
         <View style={styles.footer}>
           <Paragraph style={styles.footerText}>
-            Report generated on {new Date().toLocaleString('en-PH')}
+            Report generated on {new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
           </Paragraph>
         </View>
       </ScrollView>
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print Sales Report"
+        onPrint={buildPrintReport}
+      />
     </SafeAreaView>
   );
 }
@@ -895,6 +959,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,
@@ -1020,6 +1092,56 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
     fontStyle: 'italic',
+  },
+  txnCard: {
+    backgroundColor: '#F9F9F9',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#4CAF50',
+  },
+  txnCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 6,
+  },
+  txnCardHeaderLeft: {
+    flex: 1,
+  },
+  txnCardHeaderRight: {
+    marginLeft: 8,
+    alignItems: 'flex-end',
+  },
+  txnInvoice: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#212121',
+  },
+  txnDate: {
+    fontSize: 12,
+    color: '#757575',
+    marginTop: 2,
+  },
+  txnAmount: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+  },
+  txnCardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  txnCustomer: {
+    fontSize: 12,
+    color: '#616161',
+    flex: 1,
+  },
+  txnChips: {
+    flexDirection: 'row',
+    gap: 4,
   },
   pagination: {
     flexDirection: 'row',

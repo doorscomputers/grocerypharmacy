@@ -41,7 +41,14 @@ export default function UserManagementScreen({ navigation }: Props) {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogVisible, setDialogVisible] = useState(false);
+  const [editDialogVisible, setEditDialogVisible] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editUserData, setEditUserData] = useState({
+    username: '',
+    full_name: '',
+    role: 'CASHIER' as 'ADMIN' | 'CASHIER' | 'MANAGER',
+    newPassword: '',
+  });
   const [newUser, setNewUser] = useState({
     username: '',
     full_name: '',
@@ -50,6 +57,8 @@ export default function UserManagementScreen({ navigation }: Props) {
   });
   const theme = useTheme();
   const { user: currentUser } = useAuth();
+
+  const DEFAULT_PASSWORD = '123456';
 
   useEffect(() => {
     loadUsers();
@@ -103,6 +112,67 @@ export default function UserManagementScreen({ navigation }: Props) {
       console.error('Error updating user status:', error);
       Alert.alert('Error', 'Failed to update user status');
     }
+  };
+
+  const handleEditUser = (user: User) => {
+    setEditingUser(user);
+    setEditUserData({
+      username: user.username,
+      full_name: user.full_name,
+      role: user.role as 'ADMIN' | 'CASHIER' | 'MANAGER',
+      newPassword: '',
+    });
+    setEditDialogVisible(true);
+  };
+
+  const handleSaveUser = async () => {
+    if (!editingUser) return;
+
+    if (!editUserData.username || !editUserData.full_name) {
+      Alert.alert('Error', 'Username and Full Name are required');
+      return;
+    }
+
+    try {
+      const dbService = getDatabase();
+      const updateData: any = {
+        username: editUserData.username,
+        full_name: editUserData.full_name,
+        role: editUserData.role,
+      };
+
+      // Only update password if a new one was provided
+      if (editUserData.newPassword) {
+        updateData.password_hash = hashPassword(editUserData.newPassword);
+      }
+
+      await dbService.updateUser(editingUser.id, updateData);
+      setEditDialogVisible(false);
+      setEditingUser(null);
+      loadUsers();
+      Alert.alert('Success', 'User updated successfully');
+    } catch (error) {
+      console.error('Error updating user:', error);
+      Alert.alert('Error', 'Failed to update user');
+    }
+  };
+
+  const handleResetPassword = () => {
+    Alert.alert(
+      'Reset Password',
+      `Reset password to default "${DEFAULT_PASSWORD}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            setEditUserData(prev => ({ ...prev, newPassword: DEFAULT_PASSWORD }));
+            Alert.alert('Password Set', `Password will be set to "${DEFAULT_PASSWORD}" when you save.`);
+          },
+        },
+      ]
+    );
   };
 
   const getRoleColor = (role: string) => {
@@ -170,12 +240,21 @@ export default function UserManagementScreen({ navigation }: Props) {
                       </Chip>
                     </DataTable.Cell>
                     <DataTable.Cell>
-                      <IconButton
-                        icon={user.is_active ? 'account-cancel' : 'account-check'}
-                        size={20}
-                        onPress={() => handleToggleUserStatus(user)}
-                        disabled={user.id === currentUser?.id}
-                      />
+                      <View style={styles.actionButtons}>
+                        <IconButton
+                          icon="pencil"
+                          size={20}
+                          onPress={() => handleEditUser(user)}
+                          iconColor={theme.colors.primary}
+                        />
+                        <IconButton
+                          icon={user.is_active ? 'account-cancel' : 'account-check'}
+                          size={20}
+                          onPress={() => handleToggleUserStatus(user)}
+                          disabled={user.id === currentUser?.id}
+                          iconColor={user.is_active ? theme.colors.error : theme.colors.primary}
+                        />
+                      </View>
                     </DataTable.Cell>
                   </DataTable.Row>
                 ))}
@@ -225,8 +304,8 @@ export default function UserManagementScreen({ navigation }: Props) {
                       key={role}
                       selected={newUser.role === role}
                       onPress={() => setNewUser({ ...newUser, role })}
-                      style={styles.roleChip}
-                      textStyle={{ color: newUser.role === role ? 'white' : undefined }}
+                      style={[styles.roleChip, newUser.role === role && { backgroundColor: theme.colors.primary }]}
+                      textStyle={{ color: newUser.role === role ? '#FFFFFF' : '#333333' }}
                     >
                       {PermissionService.getRoleDisplayName(role)}
                     </Chip>
@@ -238,6 +317,68 @@ export default function UserManagementScreen({ navigation }: Props) {
               <Button onPress={() => setDialogVisible(false)}>Cancel</Button>
               <Button mode="contained" onPress={handleCreateUser}>
                 Create User
+              </Button>
+            </Dialog.Actions>
+          </Dialog>
+
+          {/* Edit User Dialog */}
+          <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
+            <Dialog.Title>Edit User</Dialog.Title>
+            <Dialog.Content>
+              <StableTextInput
+                label="Username"
+                value={editUserData.username}
+                onChangeText={(text) => setEditUserData(prev => ({ ...prev, username: text }))}
+                mode="outlined"
+                style={styles.dialogInput}
+                autoCapitalize="none"
+              />
+              <StableTextInput
+                label="Full Name"
+                value={editUserData.full_name}
+                onChangeText={(text) => setEditUserData(prev => ({ ...prev, full_name: text }))}
+                mode="outlined"
+                style={styles.dialogInput}
+              />
+              <View style={styles.passwordSection}>
+                <StableTextInput
+                  label="New Password (leave blank to keep current)"
+                  value={editUserData.newPassword}
+                  onChangeText={(text) => setEditUserData(prev => ({ ...prev, newPassword: text }))}
+                  mode="outlined"
+                  secureTextEntry
+                  style={styles.passwordInput}
+                />
+                <Button
+                  mode="outlined"
+                  onPress={handleResetPassword}
+                  compact
+                  style={styles.resetButton}
+                >
+                  Reset to Default
+                </Button>
+              </View>
+              <View style={styles.roleSelector}>
+                <Paragraph>Role:</Paragraph>
+                <View style={styles.roleChips}>
+                  {(['CASHIER', 'MANAGER', 'ADMIN'] as const).map((role) => (
+                    <Chip
+                      key={role}
+                      selected={editUserData.role === role}
+                      onPress={() => setEditUserData(prev => ({ ...prev, role }))}
+                      style={[styles.roleChip, editUserData.role === role && { backgroundColor: theme.colors.primary }]}
+                      textStyle={{ color: editUserData.role === role ? '#FFFFFF' : '#333333' }}
+                    >
+                      {PermissionService.getRoleDisplayName(role)}
+                    </Chip>
+                  ))}
+                </View>
+              </View>
+            </Dialog.Content>
+            <Dialog.Actions>
+              <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
+              <Button mode="contained" onPress={handleSaveUser}>
+                Save Changes
               </Button>
             </Dialog.Actions>
           </Dialog>
@@ -294,5 +435,18 @@ const styles = StyleSheet.create({
   roleChip: {
     marginRight: 8,
     marginBottom: 8,
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  passwordSection: {
+    marginBottom: 16,
+  },
+  passwordInput: {
+    marginBottom: 8,
+  },
+  resetButton: {
+    alignSelf: 'flex-start',
   },
 });

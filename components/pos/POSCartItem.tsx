@@ -56,9 +56,16 @@ function POSCartItem({
 
       {/* Product Info */}
       <View style={styles.infoContainer}>
-        <Text style={styles.productName} numberOfLines={2}>
-          {item.name || 'Unknown Product'}
-        </Text>
+        <View style={styles.productNameRow}>
+          <Text style={styles.productName} numberOfLines={2}>
+            {item.name || 'Unknown Product'}
+          </Text>
+          {item.price_type === 'wholesale' && (
+            <View style={styles.wholesaleBadge}>
+              <Text style={styles.wholesaleBadgeText}>WS</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.unitPrice}>
           ₱{formatCurrency(item.price || 0)} × {item.quantity || 0}
         </Text>
@@ -145,12 +152,29 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 10,
   },
+  productNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   productName: {
     fontSize: 15,
     fontWeight: '600',
     color: '#212121',
-    marginBottom: 4,
     lineHeight: 20,
+    flex: 1,
+  },
+  wholesaleBadge: {
+    backgroundColor: '#FF9800',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 6,
+  },
+  wholesaleBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   unitPrice: {
     fontSize: 13,

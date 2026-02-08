@@ -180,11 +180,7 @@ export default function BrandsScreen({ navigation }: Props) {
       await loadBrands();
     } catch (error: any) {
       console.error('Error saving brand:', error);
-      if (error.message?.includes('UNIQUE constraint')) {
-        Alert.alert('Error', 'A brand with this name already exists');
-      } else {
-        Alert.alert('Error', 'Failed to save brand');
-      }
+      Alert.alert('Error', error?.message || 'Failed to save brand');
     } finally {
       setLoading(false);
     }
@@ -339,6 +335,7 @@ export default function BrandsScreen({ navigation }: Props) {
         style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
         icon="plus"
         label="Add Brand"
+        color="#FFFFFF"
         onPress={handleAddBrand}
       />
 
@@ -509,7 +506,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   input: {
     marginBottom: 16,

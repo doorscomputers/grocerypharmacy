@@ -1,33 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
   FlatList,
   Alert,
   ScrollView,
+  Modal,
+  TouchableOpacity,
+  TextInput as RNTextInput,
+  Keyboard,
 } from 'react-native';
-// Note: FlatList is still used for the main list, only dialogs use .map()
 import {
   Card,
-  Title,
   Paragraph,
   Button,
   TextInput,
-  List,
-  FAB,
   IconButton,
   useTheme,
-  Dialog,
-  Portal,
   Divider,
   Chip,
   Menu,
+  Text,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product, Supplier } from '../database/schema';
+import { generatePurchaseOrderPdf, PurchaseOrderPdfData } from '../utils/ReceiptPdfService';
+import { buildPurchaseOrder, PurchaseOrderPrintData } from '../utils/escpos';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
+import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
 
 type PurchaseOrderScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -63,18 +66,19 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   // Purchase Order Creation
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
+  const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [paymentTerms, setPaymentTerms] = useState('30 days');
   const [notes, setNotes] = useState('');
   const [purchaseItems, setPurchaseItems] = useState<PurchaseItem[]>([]);
 
-  // Product Selection
+  // Product Selection (inline in Create PO)
   const [productSearchQuery, setProductSearchQuery] = useState('');
-  const [addProductDialogVisible, setAddProductDialogVisible] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
+  const searchInputRef = useRef<RNTextInput>(null);
 
   // Edit Item
   const [editItemDialogVisible, setEditItemDialogVisible] = useState(false);
@@ -88,6 +92,24 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const [newSupplierPhone, setNewSupplierPhone] = useState('');
   const [newSupplierAddress, setNewSupplierAddress] = useState('');
 
+  // Quick Add Product
+  const [quickAddProductVisible, setQuickAddProductVisible] = useState(false);
+  const [newProductName, setNewProductName] = useState('');
+  const [newProductCode, setNewProductCode] = useState('');
+  const [newProductCost, setNewProductCost] = useState('');
+  const [newProductPrice, setNewProductPrice] = useState('');
+
+  // UI State
+  const [showDetails, setShowDetails] = useState(false);
+  const [addProductDialogVisible, setAddProductDialogVisible] = useState(false);
+
+  // Filters
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'DRAFT' | 'RECEIVED'>('ALL');
+  const [dateRange, setDateRange] = useState(() => {
+    const range = getDateRange('this_month');
+    return { startDate: range.startDate, endDate: range.endDate };
+  });
+
   const theme = useTheme();
 
   useEffect(() => {
@@ -99,7 +121,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
       setLoading(true);
       const dbService = getDatabase();
       const [purchaseOrdersData, suppliersData, productsData] = await Promise.all([
-        dbService.getPurchaseOrders(20),
+        dbService.getPurchaseOrders(500),
         dbService.getSuppliers(true),
         dbService.getProducts(true)
       ]);
@@ -115,6 +137,22 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     }
   };
 
+  const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
+    if (startDate && endDate) {
+      setDateRange({ startDate, endDate });
+    }
+  }, []);
+
+  const filteredPurchaseOrders = useMemo(() => {
+    return purchaseOrders.filter(po => {
+      // Status filter
+      if (statusFilter !== 'ALL' && po.status !== statusFilter) return false;
+      // Date filter
+      const poDate = new Date(po.purchase_date || po.created_at);
+      return poDate >= dateRange.startDate && poDate <= dateRange.endDate;
+    });
+  }, [purchaseOrders, statusFilter, dateRange]);
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'DRAFT': return '#9E9E9E';
@@ -127,7 +165,6 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   };
 
   const openCreateDialog = () => {
-    // Reset form
     setSelectedSupplier(null);
     setReferenceNumber('');
     setExpectedDeliveryDate('');
@@ -136,7 +173,20 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     setPurchaseItems([]);
     setIsEditing(false);
     setEditingPurchaseId(null);
+    setProductSearchQuery('');
+    setSupplierSearchQuery('');
+    setSupplierMenuVisible(false);
+    setShowDetails(false);
     setCreateDialogVisible(true);
+  };
+
+  const closeCreateDialog = () => {
+    setCreateDialogVisible(false);
+    setIsEditing(false);
+    setEditingPurchaseId(null);
+    setProductSearchQuery('');
+    setSupplierSearchQuery('');
+    setSupplierMenuVisible(false);
   };
 
   const openEditDialog = async (purchase: any) => {
@@ -150,17 +200,13 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         return;
       }
 
-      // Find and set the supplier
       const supplier = suppliers.find(s => s.id === purchaseDetails.supplier_id);
       setSelectedSupplier(supplier || null);
-
-      // Set header fields
       setReferenceNumber(purchaseDetails.reference_number || '');
       setExpectedDeliveryDate(purchaseDetails.expected_delivery_date || '');
       setPaymentTerms(purchaseDetails.payment_terms || '30 days');
       setNotes(purchaseDetails.notes || '');
 
-      // Set items
       const items: PurchaseItem[] = purchaseDetails.items?.map((item: any) => ({
         product_id: item.product_id,
         product_code: item.product_code,
@@ -175,6 +221,8 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
       setIsEditing(true);
       setEditingPurchaseId(purchase.id);
+      setProductSearchQuery('');
+      setShowDetails(true);
       setCreateDialogVisible(true);
     } catch (error) {
       console.error('Error loading purchase order for edit:', error);
@@ -184,6 +232,95 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     }
   };
 
+  // === INLINE PRODUCT ADD (like SalesScreen cart) ===
+  const addProductInline = (product: Product) => {
+    const existingIndex = purchaseItems.findIndex(item => item.product_id === product.id);
+
+    if (existingIndex >= 0) {
+      const updatedItems = [...purchaseItems];
+      const item = updatedItems[existingIndex];
+      const newQty = item.quantity_ordered + 1;
+      const taxAmount = product.is_vat_inclusive ? 0 : item.unit_cost * newQty * 0.12;
+      const totalAmount = (item.unit_cost * newQty) + taxAmount;
+      updatedItems[existingIndex] = {
+        ...item,
+        quantity_ordered: newQty,
+        tax_amount: taxAmount,
+        total_amount: totalAmount
+      };
+      setPurchaseItems(updatedItems);
+    } else {
+      const cost = product.cost;
+      const taxAmount = product.is_vat_inclusive ? 0 : cost * 0.12;
+      const totalAmount = cost + taxAmount;
+      const newItem: PurchaseItem = {
+        product_id: product.id,
+        product_code: product.code,
+        product_name: product.name,
+        quantity_ordered: 1,
+        unit_cost: cost,
+        discount_amount: 0,
+        tax_amount: taxAmount,
+        total_amount: totalAmount
+      };
+      setPurchaseItems(prev => [...prev, newItem]);
+    }
+
+    setProductSearchQuery('');
+    setTimeout(() => searchInputRef.current?.focus(), 100);
+  };
+
+  const handleSearchSubmit = () => {
+    const filtered = products.filter(product =>
+      product.name.toLowerCase().includes(productSearchQuery.toLowerCase()) ||
+      product.code.toLowerCase().includes(productSearchQuery.toLowerCase())
+    );
+    if (filtered.length === 1) {
+      addProductInline(filtered[0]);
+    }
+    searchInputRef.current?.focus();
+  };
+
+  const handleBarcodeScanInline = () => {
+    setCreateDialogVisible(false);
+    setTimeout(() => {
+      navigation.navigate('BarcodeScanner', {
+        onScan: (barcode: string) => {
+          const barcodeUpper = barcode.toUpperCase().trim();
+          const product = products.find(p =>
+            (p.code || '').toUpperCase().trim() === barcodeUpper
+          );
+
+          if (product) {
+            addProductInline(product);
+            setCreateDialogVisible(true);
+          } else {
+            Alert.alert(
+              'Product Not Found',
+              `No product found with barcode "${barcode}".\nWould you like to add it as a new product?`,
+              [
+                {
+                  text: 'Cancel',
+                  style: 'cancel',
+                  onPress: () => setCreateDialogVisible(true)
+                },
+                {
+                  text: 'Add New Product',
+                  onPress: () => {
+                    setNewProductCode(barcode);
+                    setQuickAddProductVisible(true);
+                  }
+                }
+              ]
+            );
+          }
+        }
+      });
+    }, 400);
+  };
+
+  // === EXISTING BUSINESS LOGIC (unchanged) ===
+
   const handleQuickAddSupplier = async () => {
     if (!newSupplierName.trim()) {
       Alert.alert('Error', 'Supplier name is required');
@@ -192,11 +329,9 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
     try {
       const dbService = getDatabase();
-
-      // Generate a simple code from name
       const code = newSupplierName.trim().substring(0, 3).toUpperCase() + Date.now().toString().slice(-4);
 
-      const newSupplier = await dbService.createSupplier({
+      await dbService.createSupplier({
         code,
         name: newSupplierName.trim(),
         phone: newSupplierPhone.trim() || undefined,
@@ -204,80 +339,83 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         is_active: true,
       });
 
-      // Reload suppliers and auto-select the new one
       const suppliersData = await dbService.getSuppliers(true);
       setSuppliers(suppliersData);
 
-      // Find and select the newly created supplier
       const createdSupplier = suppliersData.find((s: Supplier) => s.code === code);
       if (createdSupplier) {
         setSelectedSupplier(createdSupplier);
       }
 
-      // Reset and close
       setNewSupplierName('');
       setNewSupplierPhone('');
       setNewSupplierAddress('');
       setQuickAddSupplierVisible(false);
-
       Alert.alert('Success', `Supplier "${newSupplierName}" added successfully`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating supplier:', error);
-      Alert.alert('Error', 'Failed to create supplier');
+      Alert.alert('Error', error?.message || 'Failed to create supplier');
     }
   };
 
-  const addProductToPurchase = () => {
-    if (!selectedProduct || !quantity || !unitCost) {
-      Alert.alert('Error', 'Please fill in all fields');
+  const handleScanForQuickAdd = () => {
+    setQuickAddProductVisible(false);
+    setTimeout(() => {
+      navigation.navigate('BarcodeScanner', {
+        onScan: (barcode: string) => {
+          setNewProductCode(barcode);
+          setQuickAddProductVisible(true);
+        }
+      });
+    }, 400);
+  };
+
+  const handleQuickAddProduct = async () => {
+    if (!newProductName.trim()) {
+      Alert.alert('Error', 'Product name is required');
+      return;
+    }
+    if (!newProductCost.trim() || parseFloat(newProductCost) <= 0) {
+      Alert.alert('Error', 'Valid cost is required');
+      return;
+    }
+    if (!newProductPrice.trim() || parseFloat(newProductPrice) <= 0) {
+      Alert.alert('Error', 'Valid selling price is required');
       return;
     }
 
-    const qty = parseInt(quantity);
-    const cost = parseFloat(unitCost);
+    try {
+      const dbService = getDatabase();
+      const code = newProductCode.trim() || newProductName.trim().substring(0, 3).toUpperCase() + Date.now().toString().slice(-4);
 
-    if (qty <= 0 || cost <= 0) {
-      Alert.alert('Error', 'Quantity and cost must be greater than 0');
-      return;
+      await dbService.createProduct({
+        code,
+        name: newProductName.trim(),
+        cost: parseFloat(newProductCost),
+        price: parseFloat(newProductPrice),
+        stock_quantity: 0,
+        is_active: true,
+      });
+
+      const productsData = await dbService.getProducts(true);
+      setProducts(productsData as Product[]);
+
+      // Auto-add the newly created product to the PO
+      const createdProduct = (productsData as Product[]).find(p => p.code === code);
+      if (createdProduct) {
+        addProductInline(createdProduct);
+      }
+
+      setNewProductName('');
+      setNewProductCode('');
+      setNewProductCost('');
+      setNewProductPrice('');
+      setQuickAddProductVisible(false);
+      Alert.alert('Success', `Product "${newProductName.trim()}" added successfully`);
+    } catch (error: any) {
+      console.error('Error creating product:', error);
+      Alert.alert('Error', error?.message || 'Failed to create product');
     }
-
-    const existingItemIndex = purchaseItems.findIndex(
-      item => item.product_id === selectedProduct.id
-    );
-
-    const taxAmount = selectedProduct.is_vat_inclusive ? 0 : cost * qty * 0.12;
-    const totalAmount = (cost * qty) + taxAmount;
-
-    if (existingItemIndex >= 0) {
-      // Update existing item
-      const updatedItems = [...purchaseItems];
-      updatedItems[existingItemIndex] = {
-        ...updatedItems[existingItemIndex],
-        quantity_ordered: qty,
-        unit_cost: cost,
-        tax_amount: taxAmount,
-        total_amount: totalAmount
-      };
-      setPurchaseItems(updatedItems);
-    } else {
-      // Add new item
-      const newItem: PurchaseItem = {
-        product_id: selectedProduct.id,
-        product_code: selectedProduct.code,
-        product_name: selectedProduct.name,
-        quantity_ordered: qty,
-        unit_cost: cost,
-        discount_amount: 0,
-        tax_amount: taxAmount,
-        total_amount: totalAmount
-      };
-      setPurchaseItems([...purchaseItems, newItem]);
-    }
-
-    setAddProductDialogVisible(false);
-    setSelectedProduct(null);
-    setQuantity('');
-    setUnitCost('');
   };
 
   const removeProductFromPurchase = (productId: number) => {
@@ -311,7 +449,6 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     const updatedItems = [...purchaseItems];
     const item = updatedItems[editingItemIndex];
 
-    // Find the product to check VAT settings
     const product = products.find(p => p.id === item.product_id);
     const taxAmount = product?.is_vat_inclusive ? 0 : cost * qty * 0.12;
     const totalAmount = (cost * qty) + taxAmount;
@@ -356,50 +493,26 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         reference_number: referenceNumber || undefined,
         payment_terms: paymentTerms,
         notes: notes || undefined,
-        created_by: 1, // TODO: Get from user context
+        created_by: 1,
         items: purchaseItems
       };
 
       if (isEditing && editingPurchaseId) {
-        // Update existing purchase order
         const result = await dbService.updatePurchaseOrder(editingPurchaseId, purchaseData);
 
         if (result.success) {
-          Alert.alert(
-            'Success',
-            'Purchase order updated successfully',
-            [
-              {
-                text: 'OK',
-                onPress: () => {
-                  setCreateDialogVisible(false);
-                  setIsEditing(false);
-                  setEditingPurchaseId(null);
-                  loadData();
-                }
-              }
-            ]
-          );
+          Alert.alert('Success', 'Purchase order updated successfully', [
+            { text: 'OK', onPress: () => { closeCreateDialog(); loadData(); } }
+          ]);
         } else {
           Alert.alert('Error', result.message);
         }
       } else {
-        // Create new purchase order
         const result = await dbService.createPurchaseOrder(purchaseData);
 
-        Alert.alert(
-          'Success',
-          `Purchase order ${result.purchaseNumber} created successfully`,
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                setCreateDialogVisible(false);
-                loadData();
-              }
-            }
-          ]
-        );
+        Alert.alert('Success', `Purchase order ${result.purchaseNumber} created successfully`, [
+          { text: 'OK', onPress: () => { closeCreateDialog(); loadData(); } }
+        ]);
       }
     } catch (error) {
       console.error('Error saving purchase order:', error);
@@ -431,7 +544,6 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
       setLoading(true);
       const dbService = getDatabase();
 
-      // For simplicity, receive all ordered quantities
       const items = selectedPurchase.items.map((item: any) => ({
         product_id: item.product_id,
         quantity_received: item.quantity_ordered - item.quantity_received
@@ -439,20 +551,9 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
       await dbService.receivePurchaseOrder(selectedPurchase.id, 1, items);
 
-      Alert.alert(
-        'Success',
-        'Purchase order received successfully',
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              setReceiveDialogVisible(false);
-              setSelectedPurchase(null);
-              loadData();
-            }
-          }
-        ]
-      );
+      Alert.alert('Success', 'Purchase order received successfully', [
+        { text: 'OK', onPress: () => { setReceiveDialogVisible(false); setSelectedPurchase(null); loadData(); } }
+      ]);
     } catch (error) {
       console.error('Error receiving purchase order:', error);
       Alert.alert('Error', 'Failed to receive purchase order');
@@ -461,82 +562,198 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     }
   };
 
+  // === PRINT / PDF / EMAIL HANDLERS ===
+
+  const buildPoPrintData = async (purchase: any): Promise<PurchaseOrderPrintData> => {
+    const dbService = getDatabase();
+    const details = await dbService.getPurchaseOrderById(purchase.id);
+    // Load business settings
+    let businessName = '', businessAddress = '', businessPhone = '';
+    try {
+      businessName = await dbService.getSetting('business_name') || '';
+      businessAddress = await dbService.getSetting('business_address') || '';
+      businessPhone = await dbService.getSetting('business_phone') || '';
+    } catch (e) {}
+
+    return {
+      purchaseNumber: purchase.purchase_number,
+      supplierName: purchase.supplier_name,
+      purchaseDate: new Date(purchase.purchase_date).toLocaleDateString('en-PH'),
+      referenceNumber: purchase.reference_number,
+      expectedDeliveryDate: purchase.expected_delivery_date ? new Date(purchase.expected_delivery_date).toLocaleDateString('en-PH') : undefined,
+      paymentTerms: purchase.payment_terms,
+      notes: purchase.notes,
+      status: purchase.status,
+      items: (details?.items || []).map((item: any) => ({
+        productName: item.product_name,
+        productCode: item.product_code,
+        quantityOrdered: item.quantity_ordered,
+        quantityReceived: item.quantity_received,
+        unitCost: item.unit_cost,
+        totalAmount: item.total_amount || (item.quantity_ordered * item.unit_cost),
+      })),
+      totalAmount: purchase.total_amount,
+      businessName,
+      businessAddress,
+      businessPhone,
+    };
+  };
+
+  const handlePrintPO = async (purchase: any) => {
+    try {
+      const printer = BluetoothPrinterService.getInstance();
+      if (!printer.isConnected()) {
+        Alert.alert('Printer Not Connected', 'Please connect a Bluetooth printer in Settings first.');
+        return;
+      }
+      const printerWidth = printer.getSettings().printerWidth;
+      const data = await buildPoPrintData(purchase);
+      const builder = buildPurchaseOrder(data, printerWidth);
+      await printer.print(builder);
+      Alert.alert('Success', 'Purchase order printed successfully');
+    } catch (error) {
+      console.error('Error printing PO:', error);
+      Alert.alert('Error', 'Failed to print purchase order');
+    }
+  };
+
+  const handleExportPdf = async (purchase: any) => {
+    try {
+      const data = await buildPoPrintData(purchase);
+      let tin = '';
+      try { tin = await getDatabase().getSetting('tin') || ''; } catch (e) {}
+      const pdfData: PurchaseOrderPdfData = { ...data, tin };
+      await generatePurchaseOrderPdf(pdfData);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      Alert.alert('Error', 'Failed to generate PDF');
+    }
+  };
+
   const filteredProducts = products.filter(product =>
     product.name.toLowerCase().includes(productSearchQuery.toLowerCase()) ||
     product.code.toLowerCase().includes(productSearchQuery.toLowerCase())
   );
 
+  const filteredSuppliers = suppliers.filter(supplier =>
+    supplier.name.toLowerCase().includes(supplierSearchQuery.toLowerCase()) ||
+    (supplier.code || '').toLowerCase().includes(supplierSearchQuery.toLowerCase())
+  );
+
+  // === RENDER: PO LIST ITEM ===
   const renderPurchaseOrder = ({ item }: { item: any }) => (
-    <Card style={styles.purchaseCard}>
-      <Card.Content>
-        <View style={styles.purchaseHeader}>
-          <View style={styles.purchaseInfo}>
-            <Title style={styles.purchaseNumber}>{item.purchase_number}</Title>
-            <Paragraph style={styles.supplierName}>{item.supplier_name}</Paragraph>
-            <Paragraph style={styles.purchaseDate}>
-              Date: {new Date(item.purchase_date).toLocaleDateString()}
-            </Paragraph>
-          </View>
-          <View style={styles.purchaseStatus}>
-            <Chip
-              style={[styles.statusChip, { backgroundColor: getStatusColor(item.status) }]}
-              textStyle={{ color: 'white' }}
-            >
-              {item.status}
-            </Chip>
-            <Paragraph style={styles.totalAmount}>
-              ₱{item.total_amount.toLocaleString()}
-            </Paragraph>
-          </View>
+    <TouchableOpacity
+      style={styles.poCard}
+      onPress={() => item.status === 'DRAFT' ? openEditDialog(item) : openReceiveDialog(item)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.poCardHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.poNumber}>{item.purchase_number}</Text>
+          <Text style={styles.poSupplier}>{item.supplier_name}</Text>
+          <Text style={styles.poDate}>{new Date(item.purchase_date).toLocaleDateString()}</Text>
         </View>
-
-        <Divider style={styles.divider} />
-
-        <View style={styles.purchaseDetails}>
-          {item.reference_number && (
-            <Paragraph style={styles.detail}>Ref: {item.reference_number}</Paragraph>
-          )}
-          {item.expected_delivery_date && (
-            <Paragraph style={styles.detail}>
-              Expected: {new Date(item.expected_delivery_date).toLocaleDateString()}
-            </Paragraph>
-          )}
-          <Paragraph style={styles.detail}>Terms: {item.payment_terms}</Paragraph>
+        <View style={{ alignItems: 'flex-end' }}>
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
+            <Text style={styles.statusBadgeText}>{item.status.replace('_', ' ')}</Text>
+          </View>
+          <Text style={styles.poTotal}>₱{item.total_amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</Text>
         </View>
-
-        <View style={styles.actionButtons}>
-          {item.status === 'DRAFT' && (
-            <Button
-              mode="outlined"
-              onPress={() => openEditDialog(item)}
-              style={styles.actionButton}
-              icon="pencil"
-            >
-              Edit
-            </Button>
-          )}
-          <Button
-            mode="outlined"
+      </View>
+      {(item.reference_number || item.payment_terms) && (
+        <View style={styles.poCardFooter}>
+          {item.reference_number && <Text style={styles.poDetail}>Ref: {item.reference_number}</Text>}
+          <Text style={styles.poDetail}>Terms: {item.payment_terms}</Text>
+        </View>
+      )}
+      <View style={styles.poCardActions}>
+        {item.status === 'DRAFT' && (
+          <TouchableOpacity style={styles.poActionBtn} onPress={() => openEditDialog(item)} activeOpacity={0.7}>
+            <Text style={styles.poActionBtnText}>Edit</Text>
+          </TouchableOpacity>
+        )}
+        {item.status !== 'RECEIVED' && item.status !== 'CANCELLED' && (
+          <TouchableOpacity
+            style={[styles.poActionBtn, styles.poActionBtnReceive]}
             onPress={() => openReceiveDialog(item)}
-            style={styles.actionButton}
-            disabled={item.status === 'RECEIVED' || item.status === 'CANCELLED'}
-            icon="package-down"
+            activeOpacity={0.7}
           >
-            Receive
-          </Button>
-        </View>
-      </Card.Content>
-    </Card>
+            <Text style={[styles.poActionBtnText, { color: '#4CAF50' }]}>Receive</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={styles.poActionBtn} onPress={() => handlePrintPO(item)} activeOpacity={0.7}>
+          <Text style={styles.poActionBtnText}>Print</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.poActionBtn, styles.poActionBtnPdf]} onPress={() => handleExportPdf(item)} activeOpacity={0.7}>
+          <Text style={[styles.poActionBtnText, { color: '#1976D2' }]}>PDF / Email</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+
+  // === RENDER: CART-STYLE ITEM ROW ===
+  const renderPurchaseItem = ({ item, index }: { item: PurchaseItem; index: number }) => (
+    <TouchableOpacity
+      style={styles.cartItem}
+      onPress={() => openEditItemDialog(index)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.cartItemLeft}>
+        <Text style={styles.cartItemIndex}>{index + 1}</Text>
+      </View>
+      <View style={styles.cartItemCenter}>
+        <Text style={styles.cartItemName} numberOfLines={1}>{item.product_name}</Text>
+        <Text style={styles.cartItemDetail}>
+          {item.quantity_ordered} x ₱{item.unit_cost.toFixed(2)}
+        </Text>
+      </View>
+      <View style={styles.cartItemRight}>
+        <Text style={styles.cartItemTotal}>₱{item.total_amount.toFixed(2)}</Text>
+        <TouchableOpacity
+          style={styles.cartItemRemove}
+          onPress={() => removeProductFromPurchase(item.product_id)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={styles.cartItemRemoveText}>✕</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>Purchase Orders</Title>
+    <SafeAreaView style={styles.container}>
+      {/* ===== FILTERS ===== */}
+      <View style={styles.filterSection}>
+        <DateRangeFilter onDateChange={handleDateChange} selectedPreset="this_month" />
+        <View style={styles.statusFilterRow}>
+          <Text style={styles.statusFilterLabel}>Status:</Text>
+          {(['ALL', 'DRAFT', 'RECEIVED'] as const).map((status) => (
+            <TouchableOpacity
+              key={status}
+              style={[
+                styles.statusChip,
+                statusFilter === status && styles.statusChipActive,
+              ]}
+              onPress={() => setStatusFilter(status)}
+              activeOpacity={0.7}
+            >
+              <Text style={[
+                styles.statusChipText,
+                statusFilter === status && styles.statusChipTextActive,
+              ]}>
+                {status === 'ALL' ? 'All' : status.charAt(0) + status.slice(1).toLowerCase()}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={styles.filterResultCount}>
+          {filteredPurchaseOrders.length} of {purchaseOrders.length} orders
+        </Text>
       </View>
 
+      {/* ===== MAIN: PURCHASE ORDER LIST ===== */}
       <FlatList
-        data={purchaseOrders}
+        data={filteredPurchaseOrders}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderPurchaseOrder}
         contentContainerStyle={styles.listContainer}
@@ -545,426 +762,426 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         onRefresh={loadData}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Paragraph style={styles.emptyText}>
-              No purchase orders found. Create your first purchase order.
-            </Paragraph>
+            <Text style={styles.emptyIcon}>📋</Text>
+            <Text style={styles.emptyTitle}>No Purchase Orders</Text>
+            <Text style={styles.emptySubtitle}>
+              {purchaseOrders.length > 0 ? 'Try adjusting your filters' : 'Tap the button below to create one'}
+            </Text>
           </View>
         }
       />
 
-      <FAB
-        icon="plus"
-        style={styles.fab}
-        onPress={openCreateDialog}
-        label="New Purchase Order"
-      />
+      {/* Bottom: New PO Button */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity style={styles.newPoButton} onPress={openCreateDialog} activeOpacity={0.8}>
+          <Text style={styles.newPoButtonText}>+ New Purchase Order</Text>
+        </TouchableOpacity>
+      </View>
 
-      {/* Create/Edit Purchase Order Dialog */}
-      <Portal>
-        <Dialog
-          visible={createDialogVisible}
-          onDismiss={() => {
-            setCreateDialogVisible(false);
-            setIsEditing(false);
-            setEditingPurchaseId(null);
-          }}
-          style={styles.createDialog}
-        >
-          <Dialog.Title>{isEditing ? 'Edit Purchase Order' : 'Create Purchase Order'}</Dialog.Title>
-          <Dialog.ScrollArea>
-            <ScrollView style={styles.dialogContent}>
-              {/* Supplier Selection with Quick Add */}
-              <View style={styles.supplierRow}>
-                <Menu
-                  visible={supplierMenuVisible}
-                  onDismiss={() => setSupplierMenuVisible(false)}
-                  anchor={
-                    <Button
-                      mode="outlined"
-                      onPress={() => setSupplierMenuVisible(true)}
-                      style={styles.supplierDropdown}
-                      icon="chevron-down"
-                      contentStyle={{ justifyContent: 'flex-start' }}
-                    >
-                      {selectedSupplier ? selectedSupplier.name : 'Select Supplier'}
-                    </Button>
-                  }
-                  contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
-                  style={{ backgroundColor: '#ffffff' }}
+      {/* ===== MODAL: CREATE/EDIT PURCHASE ORDER (Full Screen) ===== */}
+      <Modal visible={createDialogVisible} animationType="slide" onRequestClose={closeCreateDialog}>
+        <SafeAreaView style={styles.modalContainer}>
+          {/* Header */}
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={closeCreateDialog} style={styles.modalHeaderBtn}>
+              <Text style={styles.modalHeaderBtnText}>✕ Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>{isEditing ? 'Edit PO' : 'New PO'}</Text>
+            <TouchableOpacity onPress={savePurchaseOrder} style={styles.modalHeaderBtn} disabled={loading}>
+              <Text style={[styles.modalHeaderBtnText, { color: '#2196F3' }]}>
+                {loading ? 'Saving...' : 'Save'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Supplier Row */}
+          <View style={styles.supplierSection}>
+            <View style={styles.supplierInputWrapper}>
+              {selectedSupplier && !supplierMenuVisible ? (
+                <TouchableOpacity
+                  style={styles.supplierSelector}
+                  onPress={() => {
+                    setSupplierMenuVisible(true);
+                    setSupplierSearchQuery('');
+                  }}
+                  activeOpacity={0.7}
                 >
-                  {suppliers.map(supplier => (
-                    <Menu.Item
-                      key={supplier.id}
-                      onPress={() => {
-                        setSelectedSupplier(supplier);
-                        setSupplierMenuVisible(false);
-                      }}
-                      title={supplier.name}
-                      style={{ backgroundColor: '#ffffff' }}
-                      titleStyle={{ color: '#333333' }}
-                    />
-                  ))}
-                </Menu>
-                <IconButton
-                  icon="plus"
-                  mode="contained"
-                  iconColor="#fff"
-                  containerColor="#4CAF50"
-                  size={20}
-                  onPress={() => setQuickAddSupplierVisible(true)}
+                  <Text style={styles.supplierSelectedText}>{selectedSupplier.name}</Text>
+                  <Text style={styles.supplierChevron}>▼</Text>
+                </TouchableOpacity>
+              ) : (
+                <TextInput
+                  placeholder="Search supplier..."
+                  value={supplierSearchQuery}
+                  onChangeText={(text) => {
+                    setSupplierSearchQuery(text);
+                    setSupplierMenuVisible(true);
+                  }}
+                  onFocus={() => setSupplierMenuVisible(true)}
+                  mode="outlined"
+                  style={styles.supplierSearchInput}
+                  dense
+                  left={<TextInput.Icon icon="magnify" />}
+                  right={supplierMenuVisible ? (
+                    <TextInput.Icon icon="close" onPress={() => {
+                      setSupplierMenuVisible(false);
+                      setSupplierSearchQuery('');
+                    }} />
+                  ) : undefined}
+                  autoFocus={supplierMenuVisible && !selectedSupplier}
                 />
+              )}
+
+              {supplierMenuVisible && (
+                <View style={styles.supplierDropdown}>
+                  <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
+                    {filteredSuppliers.map(supplier => (
+                      <TouchableOpacity
+                        key={supplier.id}
+                        style={styles.supplierDropdownItem}
+                        onPress={() => {
+                          setSelectedSupplier(supplier);
+                          setSupplierMenuVisible(false);
+                          setSupplierSearchQuery('');
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.supplierDropdownName}>{supplier.name}</Text>
+                        {supplier.code && <Text style={styles.supplierDropdownCode}>{supplier.code}</Text>}
+                      </TouchableOpacity>
+                    ))}
+                    {filteredSuppliers.length === 0 && (
+                      <View style={styles.supplierDropdownEmpty}>
+                        <Text style={{ color: '#9E9E9E', fontSize: 13 }}>No suppliers found</Text>
+                      </View>
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+            <TouchableOpacity
+              style={styles.supplierAddBtn}
+              onPress={() => setQuickAddSupplierVisible(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.supplierAddBtnText}>+</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Search Bar (like SalesScreen) */}
+          <View style={styles.searchSection}>
+            <View style={styles.searchRow}>
+              <View style={styles.searchInputWrapper}>
+                <TextInput
+                  ref={searchInputRef as any}
+                  placeholder="Search product to add..."
+                  value={productSearchQuery}
+                  onChangeText={setProductSearchQuery}
+                  onSubmitEditing={handleSearchSubmit}
+                  mode="outlined"
+                  style={styles.searchInput}
+                  dense
+                  left={<TextInput.Icon icon="magnify" />}
+                  right={productSearchQuery ? (
+                    <TextInput.Icon icon="close" onPress={() => setProductSearchQuery('')} />
+                  ) : undefined}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                />
+
+                {/* Search Dropdown */}
+                {productSearchQuery.length > 0 && filteredProducts.length > 0 && (
+                  <View style={styles.searchDropdown}>
+                    <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled">
+                      {filteredProducts.slice(0, 10).map((product) => (
+                        <TouchableOpacity
+                          key={product.id}
+                          style={styles.searchDropdownItem}
+                          onPress={() => addProductInline(product)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.searchDropdownName}>{product.name}</Text>
+                            <Text style={styles.searchDropdownDetail}>
+                              {product.code} | Stock: {product.stock_quantity} | Cost: ₱{product.cost.toFixed(2)}
+                            </Text>
+                          </View>
+                          <Text style={styles.searchDropdownAdd}>+</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
               </View>
 
+              <TouchableOpacity style={styles.iconBtn} onPress={handleBarcodeScanInline} activeOpacity={0.7}>
+                <Text style={styles.iconBtnText}>📷</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.iconBtn, { backgroundColor: '#E8F5E9' }]}
+                onPress={() => setQuickAddProductVisible(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.iconBtnText, { fontSize: 20 }]}>+</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Details Toggle */}
+          <TouchableOpacity
+            style={styles.detailsToggle}
+            onPress={() => setShowDetails(!showDetails)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.detailsToggleText}>
+              {showDetails ? '▼' : '▶'} PO Details (Ref#, Date, Terms)
+            </Text>
+          </TouchableOpacity>
+
+          {showDetails && (
+            <View style={styles.detailsSection}>
               <TextInput
                 label="Reference Number"
                 value={referenceNumber}
                 onChangeText={setReferenceNumber}
                 mode="outlined"
-                style={styles.dialogInput}
+                style={styles.detailInput}
+                dense
               />
-
               <TextInput
                 label="Expected Delivery Date"
                 value={expectedDeliveryDate}
                 onChangeText={setExpectedDeliveryDate}
                 mode="outlined"
-                style={styles.dialogInput}
+                style={styles.detailInput}
+                dense
                 placeholder="YYYY-MM-DD"
               />
               <View style={styles.quickDateRow}>
-                <Chip
-                  compact
-                  onPress={() => {
-                    const today = new Date();
-                    setExpectedDeliveryDate(today.toISOString().split('T')[0]);
-                  }}
-                  style={styles.quickDateChip}
-                >
-                  Today
-                </Chip>
-                <Chip
-                  compact
-                  onPress={() => {
-                    const tomorrow = new Date();
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    setExpectedDeliveryDate(tomorrow.toISOString().split('T')[0]);
-                  }}
-                  style={styles.quickDateChip}
-                >
-                  Tomorrow
-                </Chip>
-                <Chip
-                  compact
-                  onPress={() => {
-                    const nextWeek = new Date();
-                    nextWeek.setDate(nextWeek.getDate() + 7);
-                    setExpectedDeliveryDate(nextWeek.toISOString().split('T')[0]);
-                  }}
-                  style={styles.quickDateChip}
-                >
-                  +7 Days
-                </Chip>
-                <Chip
-                  compact
-                  onPress={() => {
-                    const nextMonth = new Date();
-                    nextMonth.setDate(nextMonth.getDate() + 30);
-                    setExpectedDeliveryDate(nextMonth.toISOString().split('T')[0]);
-                  }}
-                  style={styles.quickDateChip}
-                >
-                  +30 Days
-                </Chip>
+                {[
+                  { label: 'Today', days: 0 },
+                  { label: 'Tomorrow', days: 1 },
+                  { label: '+7 Days', days: 7 },
+                  { label: '+30 Days', days: 30 },
+                ].map(({ label, days }) => (
+                  <TouchableOpacity
+                    key={label}
+                    style={styles.quickDateChip}
+                    onPress={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() + days);
+                      setExpectedDeliveryDate(d.toISOString().split('T')[0]);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.quickDateChipText}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
-
               <TextInput
                 label="Payment Terms"
                 value={paymentTerms}
                 onChangeText={setPaymentTerms}
                 mode="outlined"
-                style={styles.dialogInput}
+                style={styles.detailInput}
+                dense
               />
-
               <TextInput
                 label="Notes"
                 value={notes}
                 onChangeText={setNotes}
                 mode="outlined"
-                style={styles.dialogInput}
+                style={styles.detailInput}
+                dense
                 multiline
                 numberOfLines={2}
               />
+            </View>
+          )}
 
-              {/* Purchase Items */}
-              <Title style={styles.sectionTitle}>Items</Title>
+          {/* Items List (Cart-style) */}
+          <View style={styles.itemsSection}>
+            <View style={styles.itemsHeader}>
+              <Text style={styles.itemsTitle}>Items ({purchaseItems.length})</Text>
+              {purchaseItems.length > 0 && (
+                <TouchableOpacity onPress={() => setPurchaseItems([])} style={styles.clearAllBtn}>
+                  <Text style={styles.clearAllBtnText}>Clear All</Text>
+                </TouchableOpacity>
+              )}
+            </View>
 
-              {purchaseItems.map((item, index) => (
-                <Card
-                  key={index}
-                  style={styles.itemCard}
-                  onPress={() => openEditItemDialog(index)}
-                >
-                  <Card.Content>
-                    <View style={styles.itemHeader}>
-                      <View style={styles.itemInfo}>
-                        <Paragraph style={styles.itemName}>{item.product_name}</Paragraph>
-                        <Paragraph style={styles.itemDetails}>
-                          {item.quantity_ordered} × ₱{item.unit_cost.toFixed(2)} = ₱{item.total_amount.toFixed(2)}
-                        </Paragraph>
-                        <Paragraph style={styles.tapToEdit}>Tap to edit quantity</Paragraph>
-                      </View>
-                      <IconButton
-                        icon="delete"
-                        size={20}
-                        onPress={() => removeProductFromPurchase(item.product_id)}
-                      />
-                    </View>
-                  </Card.Content>
-                </Card>
-              ))}
-
-              <Button
-                mode="outlined"
-                onPress={() => setAddProductDialogVisible(true)}
-                style={styles.addItemButton}
-                icon="plus"
-              >
-                Add Product
-              </Button>
-
-              <Divider style={styles.divider} />
-
-              <View style={styles.totalSection}>
-                <Title style={styles.totalAmount}>
-                  Total: ₱{calculatePurchaseTotal().toFixed(2)}
-                </Title>
-              </View>
-            </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => {
-              setCreateDialogVisible(false);
-              setIsEditing(false);
-              setEditingPurchaseId(null);
-            }}>Cancel</Button>
-            <Button onPress={savePurchaseOrder} loading={loading}>
-              {isEditing ? 'Update Purchase Order' : 'Create Purchase Order'}
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
-
-      {/* Add Product Dialog */}
-      <Portal>
-        <Dialog
-          visible={addProductDialogVisible}
-          onDismiss={() => setAddProductDialogVisible(false)}
-        >
-          <Dialog.Title>Add Product</Dialog.Title>
-          <Dialog.ScrollArea>
-            <ScrollView style={styles.dialogContent}>
-              <TextInput
-                label="Search Products"
-                value={productSearchQuery}
-                onChangeText={setProductSearchQuery}
-                mode="outlined"
-                style={styles.dialogInput}
-                right={<TextInput.Icon icon="magnify" />}
-              />
-
-              <View style={styles.productList}>
-                {filteredProducts.map((item) => (
-                  <List.Item
-                    key={item.id.toString()}
-                    title={item.name}
-                    description={`${item.code} • Stock: ${item.stock_quantity} • Cost: ₱${item.cost.toFixed(2)}`}
-                    onPress={() => {
-                      setSelectedProduct(item);
-                      setUnitCost(item.cost.toString());
-                    }}
-                    style={selectedProduct?.id === item.id ? styles.selectedProduct : undefined}
-                  />
-                ))}
-              </View>
-
-              {selectedProduct && (
-                <View style={styles.selectedProductSection}>
-                  <View style={styles.selectedProductHeader}>
-                    <Paragraph style={styles.selectedProductName}>
-                      Selected: {selectedProduct.name}
-                    </Paragraph>
-                  </View>
-
-                  <TextInput
-                    label="Quantity"
-                    value={quantity}
-                    onChangeText={setQuantity}
-                    mode="outlined"
-                    style={styles.dialogInput}
-                    keyboardType="numeric"
-                  />
-
-                  <TextInput
-                    label="Unit Cost"
-                    value={unitCost}
-                    onChangeText={setUnitCost}
-                    mode="outlined"
-                    style={styles.dialogInput}
-                    keyboardType="numeric"
-                  />
+            <FlatList
+              data={purchaseItems}
+              keyExtractor={(item, index) => `${item.product_id}-${index}`}
+              renderItem={renderPurchaseItem}
+              style={styles.itemsList}
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <View style={styles.emptyItems}>
+                  <Text style={styles.emptyItemsIcon}>📦</Text>
+                  <Text style={styles.emptyItemsText}>No items yet</Text>
+                  <Text style={styles.emptyItemsSubtext}>Search or scan products above to add</Text>
                 </View>
-              )}
-            </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => setAddProductDialogVisible(false)}>Cancel</Button>
-            <Button onPress={addProductToPurchase} disabled={!selectedProduct}>
-              Add Product
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
-
-      {/* Receive Purchase Order Dialog */}
-      <Portal>
-        <Dialog
-          visible={receiveDialogVisible}
-          onDismiss={() => setReceiveDialogVisible(false)}
-        >
-          <Dialog.Title>Receive Purchase Order</Dialog.Title>
-          <Dialog.ScrollArea>
-            <ScrollView style={styles.dialogContent}>
-              {selectedPurchase && (
-                <>
-                  <Paragraph style={styles.receiveTitle}>
-                    {selectedPurchase.purchase_number} - {selectedPurchase.supplier_name}
-                  </Paragraph>
-
-                  {selectedPurchase.items?.map((item: any, index: number) => (
-                    <Card key={index} style={styles.itemCard}>
-                      <Card.Content>
-                        <Paragraph style={styles.itemName}>{item.product_name}</Paragraph>
-                        <Paragraph style={styles.itemDetails}>
-                          Ordered: {item.quantity_ordered} | Received: {item.quantity_received}
-                        </Paragraph>
-                        <Paragraph style={styles.itemDetails}>
-                          Pending: {item.quantity_ordered - item.quantity_received}
-                        </Paragraph>
-                      </Card.Content>
-                    </Card>
-                  ))}
-                </>
-              )}
-            </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => setReceiveDialogVisible(false)}>Cancel</Button>
-            <Button onPress={receivePurchaseOrder} loading={loading}>
-              Receive All Pending
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
-
-      {/* Quick Add Supplier Dialog */}
-      <Portal>
-        <Dialog
-          visible={quickAddSupplierVisible}
-          onDismiss={() => setQuickAddSupplierVisible(false)}
-          style={{ maxWidth: 400, alignSelf: 'center', width: '90%' }}
-        >
-          <Dialog.Title>Quick Add Supplier</Dialog.Title>
-          <Dialog.Content>
-            <TextInput
-              label="Supplier Name *"
-              value={newSupplierName}
-              onChangeText={setNewSupplierName}
-              mode="outlined"
-              style={{ marginBottom: 12 }}
-              autoFocus
+              }
             />
-            <TextInput
-              label="Phone Number"
-              value={newSupplierPhone}
-              onChangeText={setNewSupplierPhone}
-              mode="outlined"
-              style={{ marginBottom: 12 }}
-              keyboardType="phone-pad"
-            />
-            <TextInput
-              label="Address"
-              value={newSupplierAddress}
-              onChangeText={setNewSupplierAddress}
-              mode="outlined"
-              multiline
-              numberOfLines={2}
-            />
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => {
-              setNewSupplierName('');
-              setNewSupplierPhone('');
-              setNewSupplierAddress('');
-              setQuickAddSupplierVisible(false);
-            }}>
-              Cancel
-            </Button>
-            <Button mode="contained" onPress={handleQuickAddSupplier}>
-              Add Supplier
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+          </View>
 
-      {/* Edit Item Dialog */}
-      <Portal>
-        <Dialog
-          visible={editItemDialogVisible}
-          onDismiss={() => {
-            setEditItemDialogVisible(false);
-            setEditingItemIndex(null);
-          }}
-          style={{ maxWidth: 400, alignSelf: 'center', width: '90%' }}
-        >
-          <Dialog.Title>Edit Item</Dialog.Title>
-          <Dialog.Content>
-            {editingItemIndex !== null && purchaseItems[editingItemIndex] && (
+          {/* Bottom: Total + Save */}
+          <View style={styles.createBottomBar}>
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>TOTAL</Text>
+              <Text style={styles.totalValue}>
+                ₱{calculatePurchaseTotal().toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.saveButton, purchaseItems.length === 0 && styles.saveButtonDisabled]}
+              onPress={savePurchaseOrder}
+              disabled={purchaseItems.length === 0 || loading}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.saveButtonText}>
+                {isEditing ? 'UPDATE PURCHASE ORDER' : 'SAVE PURCHASE ORDER'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* ===== MODAL: RECEIVE PURCHASE ORDER ===== */}
+      <Modal visible={receiveDialogVisible} transparent={true} animationType="fade" onRequestClose={() => setReceiveDialogVisible(false)}>
+        <View style={styles.overlayContainer}>
+          <View style={[styles.overlayCard, { maxWidth: 440 }]}>
+            <Text style={styles.overlayTitle}>
+              {selectedPurchase?.status === 'RECEIVED' ? 'Received Items' : 'Receive Purchase Order'}
+            </Text>
+            {selectedPurchase && (
               <>
-                <Paragraph style={styles.editItemName}>
-                  {purchaseItems[editingItemIndex].product_name}
-                </Paragraph>
-                <TextInput
-                  label="Quantity"
-                  value={editItemQuantity}
-                  onChangeText={setEditItemQuantity}
-                  mode="outlined"
-                  style={{ marginBottom: 12 }}
-                  keyboardType="numeric"
-                  autoFocus
-                />
-                <TextInput
-                  label="Unit Cost (₱)"
-                  value={editItemUnitCost}
-                  onChangeText={setEditItemUnitCost}
-                  mode="outlined"
-                  keyboardType="numeric"
-                />
+                <Text style={styles.overlaySubtitle}>
+                  {selectedPurchase.purchase_number} - {selectedPurchase.supplier_name}
+                </Text>
+                {selectedPurchase.status === 'RECEIVED' && (
+                  <View style={styles.receivedBadge}>
+                    <Text style={styles.receivedBadgeText}>ALL ITEMS RECEIVED</Text>
+                  </View>
+                )}
+                <ScrollView style={{ maxHeight: 300 }}>
+                  {selectedPurchase.items?.map((item: any, index: number) => (
+                    <View key={index} style={styles.receiveItem}>
+                      <Text style={styles.receiveItemName}>{item.product_name}</Text>
+                      <Text style={styles.receiveItemDetail}>
+                        Ordered: {item.quantity_ordered} | Received: {item.quantity_received} | Pending: {item.quantity_ordered - item.quantity_received}
+                      </Text>
+                    </View>
+                  ))}
+                </ScrollView>
               </>
             )}
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => {
-              setEditItemDialogVisible(false);
-              setEditingItemIndex(null);
-            }}>
-              Cancel
-            </Button>
-            <Button mode="contained" onPress={saveEditedItem}>
-              Save
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+            {/* Print / PDF actions for received items */}
+            {selectedPurchase?.status === 'RECEIVED' && (
+              <View style={styles.receiveExportRow}>
+                <TouchableOpacity
+                  style={styles.receiveExportBtn}
+                  onPress={() => { setReceiveDialogVisible(false); handlePrintPO(selectedPurchase); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.receiveExportBtnText}>Print</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.receiveExportBtn, { backgroundColor: '#E3F2FD' }]}
+                  onPress={() => { setReceiveDialogVisible(false); handleExportPdf(selectedPurchase); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.receiveExportBtnText, { color: '#1976D2' }]}>PDF / Email</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            <View style={styles.overlayActions}>
+              <TouchableOpacity style={styles.overlayBtnCancel} onPress={() => setReceiveDialogVisible(false)}>
+                <Text style={styles.overlayBtnCancelText}>Close</Text>
+              </TouchableOpacity>
+              {selectedPurchase?.status !== 'RECEIVED' && selectedPurchase?.status !== 'CANCELLED' && (
+                <TouchableOpacity style={styles.overlayBtnConfirm} onPress={receivePurchaseOrder}>
+                  <Text style={styles.overlayBtnConfirmText}>{loading ? 'Receiving...' : 'Receive All'}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===== MODAL: QUICK ADD SUPPLIER ===== */}
+      <Modal visible={quickAddSupplierVisible} transparent={true} animationType="fade" onRequestClose={() => setQuickAddSupplierVisible(false)}>
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayCard}>
+            <Text style={styles.overlayTitle}>Quick Add Supplier</Text>
+            <TextInput label="Supplier Name *" value={newSupplierName} onChangeText={setNewSupplierName} mode="outlined" style={styles.overlayInput} dense autoFocus />
+            <TextInput label="Phone Number" value={newSupplierPhone} onChangeText={setNewSupplierPhone} mode="outlined" style={styles.overlayInput} dense keyboardType="phone-pad" />
+            <TextInput label="Address" value={newSupplierAddress} onChangeText={setNewSupplierAddress} mode="outlined" style={styles.overlayInput} dense multiline numberOfLines={2} />
+            <View style={styles.overlayActions}>
+              <TouchableOpacity style={styles.overlayBtnCancel} onPress={() => { setNewSupplierName(''); setNewSupplierPhone(''); setNewSupplierAddress(''); setQuickAddSupplierVisible(false); }}>
+                <Text style={styles.overlayBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.overlayBtnConfirm} onPress={handleQuickAddSupplier}>
+                <Text style={styles.overlayBtnConfirmText}>Add Supplier</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===== MODAL: EDIT ITEM ===== */}
+      <Modal visible={editItemDialogVisible} transparent={true} animationType="fade" onRequestClose={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }}>
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayCard}>
+            <Text style={styles.overlayTitle}>Edit Item</Text>
+            {editingItemIndex !== null && purchaseItems[editingItemIndex] && (
+              <>
+                <View style={styles.editItemHeader}>
+                  <Text style={styles.editItemHeaderText}>{purchaseItems[editingItemIndex].product_name}</Text>
+                </View>
+                <TextInput label="Quantity" value={editItemQuantity} onChangeText={setEditItemQuantity} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" autoFocus />
+                <TextInput label="Unit Cost (₱)" value={editItemUnitCost} onChangeText={setEditItemUnitCost} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" />
+              </>
+            )}
+            <View style={styles.overlayActions}>
+              <TouchableOpacity style={styles.overlayBtnCancel} onPress={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }}>
+                <Text style={styles.overlayBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.overlayBtnConfirm} onPress={saveEditedItem}>
+                <Text style={styles.overlayBtnConfirmText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===== MODAL: QUICK ADD PRODUCT ===== */}
+      <Modal visible={quickAddProductVisible} transparent={true} animationType="fade" onRequestClose={() => { setQuickAddProductVisible(false); setCreateDialogVisible(true); }}>
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayCard}>
+            <Text style={styles.overlayTitle}>Quick Add Product</Text>
+            <TextInput label="Product Name *" value={newProductName} onChangeText={setNewProductName} mode="outlined" style={styles.overlayInput} dense autoFocus />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TextInput label="Barcode / Code" value={newProductCode} onChangeText={setNewProductCode} mode="outlined" style={[styles.overlayInput, { flex: 1 }]} dense placeholder="Auto-generate if blank" />
+              <TouchableOpacity style={[styles.iconBtn, { marginBottom: 8 }]} onPress={handleScanForQuickAdd} activeOpacity={0.7}>
+                <Text style={styles.iconBtnText}>📷</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput label="Cost Price (₱) *" value={newProductCost} onChangeText={setNewProductCost} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" />
+            <TextInput label="Selling Price (₱) *" value={newProductPrice} onChangeText={setNewProductPrice} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" />
+            <View style={styles.overlayActions}>
+              <TouchableOpacity style={styles.overlayBtnCancel} onPress={() => { setNewProductName(''); setNewProductCode(''); setNewProductCost(''); setNewProductPrice(''); setQuickAddProductVisible(false); setCreateDialogVisible(true); }}>
+                <Text style={styles.overlayBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.overlayBtnConfirm} onPress={() => { handleQuickAddProduct(); }}>
+                <Text style={styles.overlayBtnConfirmText}>Add Product</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -972,198 +1189,713 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#F5F5F5',
   },
-  header: {
-    padding: 16,
+
+  // === FILTERS ===
+  filterSection: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingTop: 10,
     paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+  statusFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
   },
+  statusFilterLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginRight: 4,
+  },
+  statusChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#F5F5F5',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  statusChipActive: {
+    backgroundColor: '#1976D2',
+    borderColor: '#1976D2',
+  },
+  statusChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+  },
+  statusChipTextActive: {
+    color: '#FFFFFF',
+  },
+  filterResultCount: {
+    fontSize: 12,
+    color: '#9E9E9E',
+    marginTop: 6,
+  },
+
+  // === PO LIST ===
   listContainer: {
-    padding: 16,
-    paddingTop: 8,
+    padding: 12,
+    paddingBottom: 80,
   },
-  purchaseCard: {
-    marginBottom: 16,
-    elevation: 4,
+  poCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
-  purchaseHeader: {
+  poCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
-  purchaseInfo: {
-    flex: 1,
-  },
-  purchaseNumber: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  supplierName: {
-    fontSize: 14,
-    opacity: 0.8,
-    marginBottom: 2,
-  },
-  purchaseDate: {
-    fontSize: 12,
-    opacity: 0.6,
-  },
-  purchaseStatus: {
-    alignItems: 'flex-end',
-  },
-  statusChip: {
-    marginBottom: 8,
-  },
-  totalAmount: {
+  poNumber: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#4CAF50',
+    fontWeight: '700',
+    color: '#212121',
   },
-  divider: {
-    marginVertical: 12,
+  poSupplier: {
+    fontSize: 13,
+    color: '#616161',
+    marginTop: 2,
   },
-  purchaseDetails: {
-    marginBottom: 16,
-  },
-  detail: {
+  poDate: {
     fontSize: 12,
-    opacity: 0.7,
-    marginBottom: 2,
+    color: '#9E9E9E',
+    marginTop: 2,
   },
-  actionButtons: {
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginBottom: 6,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  poTotal: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
+  poCardFooter: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+  },
+  poDetail: {
+    fontSize: 12,
+    color: '#9E9E9E',
+  },
+  poCardActions: {
     flexDirection: 'row',
     gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
   },
-  actionButton: {
+  poActionBtn: {
     flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
+  poActionBtnReceive: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#C8E6C9',
+  },
+  poActionBtnPdf: {
+    backgroundColor: '#E3F2FD',
+    borderColor: '#BBDEFB',
+  },
+  poActionBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+  },
+
+  // === EMPTY STATE ===
   emptyContainer: {
-    flex: 1,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 48,
+    paddingVertical: 80,
   },
-  emptyText: {
-    textAlign: 'center',
-    fontSize: 16,
-    opacity: 0.7,
-  },
-  fab: {
-    position: 'absolute',
-    margin: 16,
-    right: 0,
-    bottom: 0,
-  },
-  createDialog: {
-    maxHeight: '90%',
-  },
-  dialogContent: {
-    maxHeight: 500,
-  },
-  dialogInput: {
+  emptyIcon: {
+    fontSize: 64,
     marginBottom: 16,
+    opacity: 0.5,
   },
-  sectionTitle: {
+  emptyTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginTop: 16,
+    fontWeight: '600',
+    color: '#616161',
     marginBottom: 8,
   },
-  itemCard: {
-    marginBottom: 8,
-    elevation: 2,
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#9E9E9E',
   },
-  itemHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+
+  // === BOTTOM BAR ===
+  bottomBar: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    elevation: 8,
+  },
+  newPoButton: {
+    backgroundColor: '#2196F3',
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: 'center',
   },
-  itemInfo: {
+  newPoButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // === CREATE PO MODAL ===
+  modalContainer: {
     flex: 1,
+    backgroundColor: '#F5F5F5',
   },
-  itemName: {
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  itemDetails: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
-  addItemButton: {
-    marginTop: 8,
-    marginBottom: 16,
-  },
-  totalSection: {
+  modalHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 16,
-  },
-  productList: {
-    maxHeight: 200,
-    marginBottom: 8,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
   },
-  selectedProduct: {
-    backgroundColor: '#E3F2FD',
+  modalHeaderBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
   },
-  selectedProductSection: {
-    backgroundColor: '#F5F5F5',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
+  modalHeaderBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#F44336',
   },
-  selectedProductHeader: {
-    backgroundColor: '#1976D2',
-    borderRadius: 6,
-    padding: 10,
-    marginBottom: 12,
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#212121',
   },
-  selectedProductName: {
-    fontWeight: 'bold',
-    textAlign: 'center',
-    color: '#FFFFFF',
-    fontSize: 14,
-  },
-  receiveTitle: {
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  supplierRow: {
+
+  // Supplier Section
+  supplierSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
     gap: 8,
   },
-  supplierDropdown: {
+  supplierSelector: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  supplierSelectedText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  supplierPlaceholderText: {
+    fontSize: 14,
+    color: '#9E9E9E',
+  },
+  supplierChevron: {
+    fontSize: 12,
+    color: '#9E9E9E',
+  },
+  supplierInputWrapper: {
+    flex: 1,
+    position: 'relative',
+    zIndex: 999,
+  },
+  supplierSearchInput: {
+    backgroundColor: '#FFFFFF',
+  },
+  supplierDropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    zIndex: 1002,
+  },
+  supplierDropdownItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  supplierDropdownName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  supplierDropdownCode: {
+    fontSize: 11,
+    color: '#9E9E9E',
+    marginTop: 2,
+  },
+  supplierDropdownEmpty: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  supplierAddBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#4CAF50',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  supplierAddBtnText: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // Search Section
+  searchSection: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  searchInputWrapper: {
+    flex: 1,
+    position: 'relative',
+    zIndex: 1000,
+  },
+  searchInput: {
+    backgroundColor: '#FFFFFF',
+  },
+  searchDropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    zIndex: 1001,
+  },
+  searchDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  searchDropdownName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  searchDropdownDetail: {
+    fontSize: 11,
+    color: '#9E9E9E',
+    marginTop: 2,
+  },
+  searchDropdownAdd: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#4CAF50',
+    paddingLeft: 12,
+  },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#E3F2FD',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconBtnText: {
+    fontSize: 22,
+  },
+
+  // Details Section
+  detailsToggle: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#FAFAFA',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  detailsToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+  },
+  detailsSection: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  detailInput: {
+    backgroundColor: '#FFFFFF',
+    marginBottom: 8,
   },
   quickDateRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-    marginTop: -8,
+    gap: 6,
+    marginBottom: 8,
   },
   quickDateChip: {
-    marginRight: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#E3F2FD',
   },
-  tapToEdit: {
-    fontSize: 10,
-    color: '#2196F3',
-    fontStyle: 'italic',
+  quickDateChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1976D2',
+  },
+
+  // Items Section
+  itemsSection: {
+    flex: 1,
+    backgroundColor: '#F5F5F5',
+  },
+  itemsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  itemsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#212121',
+  },
+  clearAllBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#FFEBEE',
+  },
+  clearAllBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#F44336',
+  },
+  itemsList: {
+    flex: 1,
+  },
+  emptyItems: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyItemsIcon: {
+    fontSize: 48,
+    opacity: 0.4,
+    marginBottom: 12,
+  },
+  emptyItemsText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#9E9E9E',
+  },
+  emptyItemsSubtext: {
+    fontSize: 13,
+    color: '#BDBDBD',
     marginTop: 4,
   },
-  editItemName: {
-    fontWeight: 'bold',
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 16,
-    padding: 8,
+
+  // Cart Item
+  cartItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 12,
+    marginTop: 8,
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E8E8E8',
+  },
+  cartItemLeft: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#E3F2FD',
-    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  cartItemIndex: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1976D2',
+  },
+  cartItemCenter: {
+    flex: 1,
+  },
+  cartItemName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  cartItemDetail: {
+    fontSize: 12,
+    color: '#616161',
+    marginTop: 2,
+  },
+  cartItemRight: {
+    alignItems: 'flex-end',
+    marginLeft: 10,
+  },
+  cartItemTotal: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
+  cartItemRemove: {
+    marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  cartItemRemoveText: {
+    fontSize: 14,
+    color: '#F44336',
+    fontWeight: '600',
+  },
+
+  // Bottom Bar (Create PO)
+  createBottomBar: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    elevation: 8,
+  },
+  totalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  totalLabel: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#212121',
+  },
+  totalValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
+  saveButton: {
+    backgroundColor: '#2196F3',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  saveButtonDisabled: {
+    backgroundColor: '#BDBDBD',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // === OVERLAY MODALS ===
+  overlayContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  overlayCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 400,
+    padding: 20,
+    elevation: 8,
+  },
+  overlayTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#212121',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  overlaySubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#616161',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  overlayInput: {
+    backgroundColor: '#FFFFFF',
+    marginBottom: 10,
+  },
+  overlayActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  overlayBtnCancel: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  overlayBtnCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#616161',
+  },
+  overlayBtnConfirm: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#2196F3',
+    alignItems: 'center',
+  },
+  overlayBtnConfirmText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // Receive Item
+  receiveItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  receiveItemName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+    marginBottom: 4,
+  },
+  receiveItemDetail: {
+    fontSize: 12,
+    color: '#616161',
+  },
+  receivedBadge: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+  },
+  receivedBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
+  receiveExportRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  receiveExportBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  receiveExportBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+  },
+
+  // Edit Item Header
+  editItemHeader: {
+    backgroundColor: '#1976D2',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  editItemHeaderText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
   },
 });

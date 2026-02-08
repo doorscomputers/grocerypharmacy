@@ -9,11 +9,14 @@ import {
   Chip,
   SegmentedButtons,
   Divider,
+  Button,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'AccountsReceivableReport'>;
@@ -65,6 +68,7 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   useEffect(() => {
     loadData(dateRange.startDate, dateRange.endDate);
@@ -183,6 +187,74 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
     return '#B71C1C';
   };
 
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('ACCOUNTS RECEIVABLE')
+      .println('REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .doubleSeparator()
+      .align('left');
+
+    // Date range
+    builder
+      .leftRight('From:', dateRange.startDate.toLocaleDateString('en-PH'))
+      .leftRight('To:', dateRange.endDate.toLocaleDateString('en-PH'))
+      .separator();
+
+    // Summary totals
+    builder
+      .bold(true)
+      .println('AGING SUMMARY')
+      .bold(false)
+      .leftRight('Current (0-30):', formatCurrency(totals.current))
+      .leftRight('31-60 Days:', formatCurrency(totals.days30))
+      .leftRight('61-90 Days:', formatCurrency(totals.days60))
+      .leftRight('90+ Days:', formatCurrency(totals.days90Plus))
+      .doubleSeparator()
+      .bold(true)
+      .leftRight('TOTAL:', formatCurrency(totals.total))
+      .bold(false)
+      .separator();
+
+    // Statistics
+    builder
+      .leftRight('Customers:', customers.length.toString())
+      .leftRight('Open Invoices:', customers.reduce((sum, c) => sum + c.transactions.length, 0).toString())
+      .leftRight('Avg Balance:', formatCurrency(customers.length > 0 ? totals.total / customers.length : 0))
+      .separator();
+
+    // Customer balances
+    if (customers.length > 0) {
+      builder
+        .bold(true)
+        .println('CUSTOMER BALANCES')
+        .bold(false)
+        .separator();
+
+      customers.sort((a, b) => b.aging.total - a.aging.total).forEach((customer) => {
+        builder.leftRight(customer.name.substring(0, 20), formatCurrency(customer.aging.total));
+      });
+    }
+
+    builder
+      .feed()
+      .separator()
+      .align('center')
+      .println('Report Generated:')
+      .println(new Date().toLocaleString('en-PH'))
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView
@@ -192,10 +264,15 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         nestedScrollEnabled={true}
       >
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Accounts Receivable Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Customer balances and aging analysis
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Accounts Receivable Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                Customer balances and aging analysis
+              </Paragraph>
+            </View>
+            <Button mode="contained" icon="printer" onPress={() => setPrintDialogVisible(true)} compact>Print</Button>
+          </View>
         </View>
 
         {/* Date Filter */}
@@ -473,6 +550,13 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
           </Paragraph>
         </View>
       </ScrollView>
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print AR Report"
+        onPrint={buildPrintReport}
+      />
     </View>
   );
 }
@@ -504,6 +588,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,

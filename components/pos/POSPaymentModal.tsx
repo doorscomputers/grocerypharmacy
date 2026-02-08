@@ -187,6 +187,12 @@ function POSPaymentModal({
                     style={styles.customerSearchInput}
                     dense
                     left={<TextInput.Icon icon="magnify" />}
+                    right={customerSearch ? (
+                      <TextInput.Icon
+                        icon="close"
+                        onPress={() => setCustomerSearch('')}
+                      />
+                    ) : null}
                   />
                   <Button
                     mode="text"
@@ -813,6 +819,7 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: 'row',
     padding: 16,
+    paddingBottom: 32,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     gap: 12,

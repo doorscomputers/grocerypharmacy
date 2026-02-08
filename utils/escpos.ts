@@ -512,9 +512,6 @@ export function buildReceipt(data: ReceiptData, printerWidth: number = PRINTER_W
   }
 
   builder
-    .feed()
-    .println('*** THIS SERVES AS YOUR ***')
-    .println('*** OFFICIAL RECEIPT ***')
     .feed(2);
 
   // Cut paper
@@ -894,6 +891,261 @@ export function buildPaymentReceipt(
   return builder;
 }
 
+// Return Receipt Data interface
+export interface ReturnReceiptItem {
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  reason: string;
+}
+
+export interface ReturnReceiptPrintData {
+  businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  tin?: string;
+  returnNumber: string;
+  returnDate: Date;
+  processedBy: string;
+  originalTransactionNumber?: string;
+  customerName?: string;
+  customerCode?: string;
+  items: ReturnReceiptItem[];
+  totalAmount: number;
+  refundMethod: string;
+  notes?: string;
+  footerText?: string;
+}
+
+export function buildReturnReceipt(
+  data: ReturnReceiptPrintData,
+  printerWidth: number = PRINTER_WIDTH.MM_58
+): ESCPOSBuilder {
+  const builder = new ESCPOSBuilder(printerWidth);
+
+  const formatDate = (date: Date): string => {
+    return date.toLocaleDateString('en-PH', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  };
+
+  const formatTime = (date: Date): string => {
+    return date.toLocaleTimeString('en-PH', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  // Header
+  builder
+    .initialize()
+    .align('center')
+    .bold(true)
+    .println(data.businessName || 'STORE')
+    .bold(false);
+
+  if (data.businessAddress) {
+    builder.println(data.businessAddress);
+  }
+  if (data.businessPhone) {
+    builder.println(`Tel: ${data.businessPhone}`);
+  }
+  if (data.tin) {
+    builder.println(`TIN: ${data.tin}`);
+  }
+
+  builder
+    .doubleSeparator()
+    .bold(true)
+    .println('SALES RETURN RECEIPT')
+    .bold(false)
+    .separator()
+    .align('left');
+
+  // Return details
+  builder
+    .leftRight('Return #:', data.returnNumber)
+    .leftRight('Date:', formatDate(data.returnDate))
+    .leftRight('Time:', formatTime(data.returnDate))
+    .leftRight('Processed By:', data.processedBy);
+
+  if (data.originalTransactionNumber) {
+    builder.leftRight('Orig Trans #:', data.originalTransactionNumber);
+  }
+
+  builder.separator();
+
+  // Customer info (if available)
+  if (data.customerName) {
+    builder
+      .bold(true)
+      .println('CUSTOMER')
+      .bold(false)
+      .leftRight('Name:', data.customerName);
+
+    if (data.customerCode) {
+      builder.leftRight('Code:', data.customerCode);
+    }
+
+    builder.separator();
+  }
+
+  // Items header
+  builder
+    .bold(true)
+    .println('RETURNED ITEMS')
+    .bold(false)
+    .separator();
+
+  // Items
+  for (const item of data.items) {
+    builder
+      .println(item.productName)
+      .leftRight(`  ${item.quantity} x P${item.unitPrice.toFixed(2)}`, `P${item.total.toFixed(2)}`)
+      .println(`  Reason: ${item.reason}`);
+  }
+
+  builder.doubleSeparator();
+
+  // Total
+  builder
+    .bold(true)
+    .leftRight('TOTAL REFUND:', `P${data.totalAmount.toFixed(2)}`)
+    .bold(false)
+    .separator();
+
+  // Refund method
+  builder.leftRight('Refund Method:', data.refundMethod);
+
+  if (data.notes) {
+    builder
+      .feed()
+      .println(`Notes: ${data.notes}`);
+  }
+
+  builder.separator();
+
+  // Footer
+  builder
+    .align('center')
+    .println('Thank you!')
+    .feed();
+
+  if (data.footerText) {
+    builder.println(data.footerText);
+  }
+
+  builder
+    .doubleSeparator()
+    .bold(true)
+    .println('*** SALES RETURN ACKNOWLEDGMENT ***')
+    .bold(false)
+    .println(new Date().toLocaleString())
+    .feed(2)
+    .cut();
+
+  return builder;
+}
+
+/**
+ * Build a Purchase Order print for thermal printer
+ */
+export interface PurchaseOrderPrintData {
+  purchaseNumber: string;
+  supplierName: string;
+  purchaseDate: string;
+  referenceNumber?: string;
+  expectedDeliveryDate?: string;
+  paymentTerms?: string;
+  notes?: string;
+  status: string;
+  items: {
+    productName: string;
+    productCode: string;
+    quantityOrdered: number;
+    quantityReceived?: number;
+    unitCost: number;
+    totalAmount: number;
+  }[];
+  totalAmount: number;
+  businessName?: string;
+  businessAddress?: string;
+  businessPhone?: string;
+}
+
+export function buildPurchaseOrder(
+  data: PurchaseOrderPrintData,
+  printerWidth: number = PRINTER_WIDTH.MM_58
+): ESCPOSBuilder {
+  const builder = new ESCPOSBuilder(printerWidth);
+
+  // Header
+  builder.align('center').bold(true);
+  if (data.businessName) builder.println(data.businessName);
+  builder.bold(false);
+  if (data.businessAddress) builder.println(data.businessAddress);
+  if (data.businessPhone) builder.println(`Tel: ${data.businessPhone}`);
+
+  builder.doubleSeparator();
+  builder.bold(true).println('PURCHASE ORDER').bold(false);
+  builder.separator();
+
+  // PO Details
+  builder.align('left');
+  builder.leftRight('PO #:', data.purchaseNumber);
+  builder.leftRight('Supplier:', data.supplierName);
+  builder.leftRight('Date:', data.purchaseDate);
+  builder.leftRight('Status:', data.status);
+  if (data.referenceNumber) builder.leftRight('Ref #:', data.referenceNumber);
+  if (data.expectedDeliveryDate) builder.leftRight('Delivery:', data.expectedDeliveryDate);
+  if (data.paymentTerms) builder.leftRight('Terms:', data.paymentTerms);
+
+  builder.separator();
+
+  // Items header
+  builder.bold(true);
+  builder.columns('Item', 'Qty', 'Amount');
+  builder.bold(false);
+  builder.separator();
+
+  // Items
+  for (const item of data.items) {
+    const truncName = item.productName.length > printerWidth - 2
+      ? item.productName.substring(0, printerWidth - 2) + '..'
+      : item.productName;
+    builder.println(truncName);
+    const qtyStr = `  ${item.quantityOrdered} x ${item.unitCost.toFixed(2)}`;
+    builder.leftRight(qtyStr, item.totalAmount.toFixed(2));
+    if (item.quantityReceived !== undefined && item.quantityReceived > 0) {
+      builder.println(`  Received: ${item.quantityReceived}`);
+    }
+  }
+
+  builder.doubleSeparator();
+
+  // Total
+  builder.bold(true);
+  builder.leftRight('TOTAL:', `P${data.totalAmount.toFixed(2)}`);
+  builder.bold(false);
+
+  builder.separator();
+
+  if (data.notes) {
+    builder.println(`Notes: ${data.notes}`);
+    builder.separator();
+  }
+
+  builder.align('center');
+  builder.println(new Date().toLocaleString('en-PH'));
+  builder.feed(2).cut();
+
+  return builder;
+}
+
 export default {
   ESCPOSBuilder,
   PRINTER_WIDTH,
@@ -904,4 +1156,6 @@ export default {
   buildXReading,
   buildZReading,
   buildPaymentReceipt,
+  buildReturnReceipt,
+  buildPurchaseOrder,
 };

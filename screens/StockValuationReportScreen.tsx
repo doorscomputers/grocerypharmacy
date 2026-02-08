@@ -16,6 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'StockValuationReport'>;
@@ -50,6 +52,7 @@ export default function StockValuationReportScreen({ navigation }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('summary');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -158,6 +161,69 @@ export default function StockValuationReportScreen({ navigation }: Props) {
 
   const formatCurrency = (amount: number) => {
     return `₱${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('STOCK VALUATION')
+      .println('REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .doubleSeparator();
+
+    // Summary
+    builder
+      .align('left')
+      .bold(true)
+      .println('SUMMARY')
+      .bold(false)
+      .separator()
+      .leftRight('Total Products:', totals.productCount.toString())
+      .leftRight('Total Units:', totals.totalUnits.toLocaleString())
+      .separator()
+      .leftRight('Cost Value:', `P${totals.totalCostValue.toFixed(2)}`)
+      .leftRight('Retail Value:', `P${totals.totalRetailValue.toFixed(2)}`)
+      .separator()
+      .bold(true)
+      .leftRight('Potential Profit:', `P${totals.potentialProfit.toFixed(2)}`)
+      .leftRight('Profit Margin:', `${totals.profitMargin.toFixed(1)}%`)
+      .bold(false)
+      .doubleSeparator();
+
+    // Category breakdown
+    builder
+      .bold(true)
+      .println('BY CATEGORY')
+      .bold(false)
+      .separator();
+
+    for (const cat of categoryBreakdown) {
+      const catName = cat.category_name.length > printerWidth - 15
+        ? cat.category_name.substring(0, printerWidth - 17) + '..'
+        : cat.category_name;
+      builder.println(catName);
+      builder.leftRight(`  Units: ${cat.total_units}`, `P${cat.retail_value.toFixed(2)}`);
+    }
+
+    builder
+      .feed()
+      .align('center')
+      .separator()
+      .println('*** END OF REPORT ***')
+      .feed(2)
+      .cut();
+
+    return builder;
   };
 
   // Paginated products
@@ -410,10 +476,22 @@ export default function StockValuationReportScreen({ navigation }: Props) {
         showsVerticalScrollIndicator={true}
       >
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Stock Valuation Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Total inventory value at cost and retail prices
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Stock Valuation Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                Total inventory value at cost and retail prices
+              </Paragraph>
+            </View>
+            <Button
+              mode="contained"
+              icon="printer"
+              onPress={() => setPrintDialogVisible(true)}
+              compact
+            >
+              Print
+            </Button>
+          </View>
         </View>
 
         <SegmentedButtons
@@ -447,6 +525,13 @@ export default function StockValuationReportScreen({ navigation }: Props) {
           </Button>
         </View>
       </ScrollView>
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print Stock Valuation Report"
+        onPrint={buildPrintReport}
+      />
     </SafeAreaView>
   );
 }
@@ -477,6 +562,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,

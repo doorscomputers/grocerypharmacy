@@ -63,7 +63,8 @@ export function usePOSProducts(): UsePOSProductsReturn {
 
   // Filter products based on search and category
   const filteredProducts = useMemo(() => {
-    let filtered = products;
+    // First, exclude products with zero or negative stock
+    let filtered = products.filter(p => (p.stock_quantity || 0) > 0);
 
     // Filter by category
     if (selectedCategory !== null) {

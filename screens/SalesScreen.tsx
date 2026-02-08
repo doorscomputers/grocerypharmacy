@@ -7,6 +7,7 @@ import {
   TextInput as RNTextInput,
   TouchableOpacity,
   Keyboard,
+  Alert,
 } from 'react-native';
 import {
   TextInput,
@@ -40,12 +41,14 @@ import {
   POSRefundModal,
   POSExchangeModal,
   POSQuickCustomerModal,
+  POSUnterminatedSessionModal,
 } from '../components/pos';
 import POSSeniorDiscountModal from '../components/pos/POSSeniorDiscountModal';
 import { CartItem } from '../hooks/usePOSCart';
 import ReceiptPreview, { ReceiptData } from '../components/ReceiptPreview';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 import { buildReceipt, PRINTER_WIDTH } from '../utils/escpos';
+import { generateReceiptPdf } from '../utils/ReceiptPdfService';
 
 // Hooks
 import usePOSCart from '../hooks/usePOSCart';
@@ -71,6 +74,8 @@ export default function SalesScreen({ navigation, route }: Props) {
     cart,
     totals,
     discount,
+    priceType,
+    setPriceType,
     addItem,
     removeItem,
     updateQuantity,
@@ -124,6 +129,7 @@ export default function SalesScreen({ navigation, route }: Props) {
   const [cashFundModalVisible, setCashFundModalVisible] = useState(false);
   const [pettyCashModalVisible, setPettyCashModalVisible] = useState(false);
   const [xReadingModalVisible, setXReadingModalVisible] = useState(false);
+  const [xReadingTargetDate, setXReadingTargetDate] = useState<string | undefined>(undefined);
   const [voidModalVisible, setVoidModalVisible] = useState(false);
   const [refundModalVisible, setRefundModalVisible] = useState(false);
   const [exchangeModalVisible, setExchangeModalVisible] = useState(false);
@@ -133,6 +139,10 @@ export default function SalesScreen({ navigation, route }: Props) {
   const [currentShift, setCurrentShift] = useState<{id: number; beginning_cash: number} | null>(null);
   const [shiftDialogVisible, setShiftDialogVisible] = useState(false);
   const [checkingShift, setCheckingShift] = useState(true);
+
+  // Unterminated Session State
+  const [unterminatedSessions, setUnterminatedSessions] = useState<{date: string; transaction_count: number; total_sales: number}[]>([]);
+  const [unterminatedModalVisible, setUnterminatedModalVisible] = useState(false);
 
   // Check for active shift on mount
   useEffect(() => {
@@ -144,12 +154,30 @@ export default function SalesScreen({ navigation, route }: Props) {
     setCheckingShift(true);
     try {
       const dbService = getDatabase();
+
+      // Check if database is ready
+      if (!dbService.isReady()) {
+        console.warn('Database not ready, skipping shift check');
+        setCheckingShift(false);
+        return;
+      }
+
+      // First check for unterminated sessions from previous days
+      const unterminated = await dbService.getUnterminatedSalesDates();
+      if (unterminated.length > 0) {
+        setUnterminatedSessions(unterminated);
+        setUnterminatedModalVisible(true);
+        setCheckingShift(false);
+        return; // Don't check shift until unterminated sessions are resolved
+      }
+
       const shift = await dbService.getCurrentShift(user.id);
       if (shift) {
         setCurrentShift({ id: shift.id, beginning_cash: shift.beginning_cash });
         setShiftDialogVisible(false);
       } else {
         setCurrentShift(null);
+        // No active shift - show dialog to start shift
         setShiftDialogVisible(true);
       }
     } catch (error) {
@@ -168,6 +196,22 @@ export default function SalesScreen({ navigation, route }: Props) {
     refreshProducts();
   };
 
+  // Handle unterminated session actions
+  const handleUnterminatedXReading = () => {
+    setUnterminatedModalVisible(false);
+    // Pass the oldest unterminated date for X-Reading view
+    const oldestDate = unterminatedSessions.length > 0 ? unterminatedSessions[0].date : undefined;
+    setXReadingTargetDate(oldestDate);
+    setXReadingModalVisible(true);
+  };
+
+  const handleUnterminatedZReading = () => {
+    setUnterminatedModalVisible(false);
+    // Pass the oldest unterminated date to close that specific day
+    const oldestDate = unterminatedSessions.length > 0 ? unterminatedSessions[0].date : undefined;
+    navigation.navigate('EndOfDay', { targetDate: oldestDate });
+  };
+
   // Load customers
   useEffect(() => {
     loadCustomers();
@@ -177,6 +221,8 @@ export default function SalesScreen({ navigation, route }: Props) {
   useFocusEffect(
     useCallback(() => {
       refreshProducts();
+      // Re-check for unterminated sessions when returning to this screen
+      checkActiveShift();
       // Auto-focus search field for barcode scanning
       setTimeout(() => {
         searchInputRef.current?.focus();
@@ -230,9 +276,8 @@ export default function SalesScreen({ navigation, route }: Props) {
     addItem(product);
     setSearchQuery('');
     setShowSearchDropdown(false);
-    Keyboard.dismiss();
-    // Re-focus for next scan
-    setTimeout(() => searchInputRef.current?.focus(), 100);
+    // Keep focus on search field for faster selling
+    searchInputRef.current?.focus();
   }, [addItem, setSearchQuery]);
 
   // Handle product selection from browser
@@ -327,6 +372,10 @@ export default function SalesScreen({ navigation, route }: Props) {
         amount_tendered: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : data.amountTendered,
         change_amount: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
         cashier_id: user.id,
+        // BIR Compliance: SC/PWD discount info
+        sc_pwd_id: discount.scPwdId,
+        sc_pwd_name: discount.scPwdName,
+        sc_pwd_type: discount.scPwdType,
         items: cart.map(item => ({
           product_id: item.id,
           product_code: item.code,
@@ -337,6 +386,7 @@ export default function SalesScreen({ navigation, route }: Props) {
             ? (item.price * item.quantity) - ((item.price * item.quantity) / (1 + item.tax_rate / 100))
             : (item.price * item.quantity * item.tax_rate) / 100,
           total_amount: item.price * item.quantity,
+          price_type: item.price_type,
         })),
       };
 
@@ -348,6 +398,20 @@ export default function SalesScreen({ navigation, route }: Props) {
       const storePhone = await dbService.getSetting('store_phone') || '';
       const tin = await dbService.getSetting('company_tin') || '';
       const permitNumber = await dbService.getSetting('permit_number') || '';
+      // BIR Compliance: Additional required fields
+      const minNumber = await dbService.getSetting('min_number') || '';
+      const ptuNumber = await dbService.getSetting('ptu_number') || '';
+      const ptuDate = await dbService.getSetting('ptu_date') || '';
+      const atpNumber = await dbService.getSetting('atp_number') || '';
+      const atpDate = await dbService.getSetting('atp_date') || '';
+      const accreditationNumber = await dbService.getSetting('accreditation_number') || '';
+      const accreditationDate = await dbService.getSetting('accreditation_date') || '';
+      const serialNumberFrom = await dbService.getSetting('serial_number_from') || '';
+      const serialNumberTo = await dbService.getSetting('serial_number_to') || '';
+      const supplierName = await dbService.getSetting('supplier_name') || '';
+      const supplierAddress = await dbService.getSetting('supplier_address') || '';
+      const supplierTin = await dbService.getSetting('supplier_tin') || '';
+      const supplierAccreditation = await dbService.getSetting('supplier_accreditation') || '';
 
       // Prepare receipt data with BIR VAT breakdown
       const newReceiptData: ReceiptData = {
@@ -356,6 +420,20 @@ export default function SalesScreen({ navigation, route }: Props) {
         businessPhone: storePhone,
         tin: tin,
         permitNumber: permitNumber,
+        // BIR Compliance fields
+        minNumber: minNumber,
+        ptuNumber: ptuNumber,
+        ptuDate: ptuDate,
+        atpNumber: atpNumber,
+        atpDate: atpDate,
+        accreditationNumber: accreditationNumber,
+        accreditationDate: accreditationDate,
+        serialNumberFrom: serialNumberFrom,
+        serialNumberTo: serialNumberTo,
+        supplierName: supplierName,
+        supplierAddress: supplierAddress,
+        supplierTin: supplierTin,
+        supplierAccreditation: supplierAccreditation,
         invoiceNumber: result.invoiceNumber,
         transactionDate: new Date(),
         cashierName: user.full_name || user.username,
@@ -375,6 +453,10 @@ export default function SalesScreen({ navigation, route }: Props) {
         vatExemptSales: totals.vatExemptSales || 0,
         zeroRatedSales: totals.zeroRatedSales || 0,
         vatAmount: totals.vatAmount || 0,
+        // BIR Compliance: SC/PWD info for receipt
+        scPwdId: discount.scPwdId,
+        scPwdName: discount.scPwdName,
+        scPwdType: discount.scPwdType,
         paymentMethod: data.paymentMethod,
         amountTendered: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : data.amountTendered,
         changeAmount: data.paymentMethod === 'CHARGE_INVOICE' ? 0 : changeAmount,
@@ -385,6 +467,15 @@ export default function SalesScreen({ navigation, route }: Props) {
       setLastReceiptData(newReceiptData);  // Store for reprint
       setPaymentVisible(false);
       setReceiptVisible(true);
+
+      // Clear cart and reset state immediately after successful transaction
+      // This ensures everything is reset even if receipt modal is dismissed unexpectedly
+      clearCart();
+      refreshProducts();
+      setTransactionType('CASH');
+      setSelectedCustomer(null);
+      setShowCustomerDropdown(false);
+      setCustomerSearch('');
     } catch (error) {
       console.error('Transaction error:', error);
     } finally {
@@ -394,8 +485,20 @@ export default function SalesScreen({ navigation, route }: Props) {
 
   // Print receipt
   const handlePrintReceipt = async () => {
-    if (!receiptData || !printerService.isConnected()) {
-      navigation.navigate('PrinterSettings');
+    if (!receiptData) {
+      Alert.alert('Print Error', 'No receipt data available.');
+      return;
+    }
+
+    if (!printerService.isConnected()) {
+      Alert.alert(
+        'Printer Not Connected',
+        'No printer is connected. Would you like to set up a printer?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Setup Printer', onPress: () => navigation.navigate('PrinterSettings') },
+        ]
+      );
       return;
     }
 
@@ -405,8 +508,25 @@ export default function SalesScreen({ navigation, route }: Props) {
       const printerWidth = settings.printerWidth || PRINTER_WIDTH.MM_58;
       const receiptBuilder = buildReceipt(receiptData, printerWidth);
       await printerService.print(receiptBuilder);
-    } catch (error) {
+      Alert.alert('Success', 'Receipt printed successfully.');
+    } catch (error: any) {
       console.error('Print error:', error);
+      Alert.alert('Print Failed', error?.message || 'Failed to print receipt. Please check printer connection and try again.');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  // Email/Share PDF receipt
+  const handleEmailReceipt = async () => {
+    if (!receiptData) return;
+
+    try {
+      setIsPrinting(true);
+      await generateReceiptPdf(receiptData);
+    } catch (error: any) {
+      console.error('Email receipt error:', error);
+      Alert.alert('Error', error?.message || 'Failed to generate PDF receipt.');
     } finally {
       setIsPrinting(false);
     }
@@ -456,6 +576,36 @@ export default function SalesScreen({ navigation, route }: Props) {
     <SafeAreaView style={[styles.container, { backgroundColor: '#F5F5F5' }]}>
       {/* ===== SEARCH BAR SECTION ===== */}
       <View style={styles.searchSection}>
+        {/* Price Type Selector */}
+        <View style={styles.priceTypeRow}>
+          <Text style={styles.priceTypeLabel}>Price Type:</Text>
+          <View style={styles.priceTypeButtons}>
+            <TouchableOpacity
+              style={[
+                styles.priceTypeButton,
+                priceType === 'retail' && styles.priceTypeButtonActive
+              ]}
+              onPress={() => setPriceType('retail')}
+            >
+              <Text style={[
+                styles.priceTypeButtonText,
+                priceType === 'retail' && styles.priceTypeButtonTextActive
+              ]}>Retail</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.priceTypeButton,
+                priceType === 'wholesale' && styles.priceTypeButtonActive
+              ]}
+              onPress={() => setPriceType('wholesale')}
+            >
+              <Text style={[
+                styles.priceTypeButtonText,
+                priceType === 'wholesale' && styles.priceTypeButtonTextActive
+              ]}>Wholesale</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
         <View style={styles.searchRow}>
           {/* Search Input */}
           <View style={styles.searchInputWrapper}>
@@ -834,10 +984,11 @@ export default function SalesScreen({ navigation, route }: Props) {
         currentTotalCustomers={discount.totalCustomers}
         currentSeniorCount={discount.seniorCount}
         isSeniorApplied={discount.isSeniorCitizen}
-        onApply={(totalCustomers, seniorCount) => {
+        currentScPwdInfo={discount.scPwdId ? { id: discount.scPwdId, name: discount.scPwdName || '', type: discount.scPwdType || 'SENIOR' } : undefined}
+        onApply={(totalCustomers, seniorCount, scPwdInfo) => {
           setDiscountType('none');  // Clear regular discount first
           setDiscountValue('');
-          setSeniorDiscount(totalCustomers, seniorCount);
+          setSeniorDiscount(totalCustomers, seniorCount, scPwdInfo);
         }}
         onClear={clearSeniorDiscount}
         onClose={() => setSeniorDiscountModalVisible(false)}
@@ -862,6 +1013,7 @@ export default function SalesScreen({ navigation, route }: Props) {
                 data={receiptData}
                 width={printerService.getSettings().printerWidth === PRINTER_WIDTH.MM_80 ? '80mm' : '58mm'}
                 onPrint={handlePrintReceipt}
+                onEmail={handleEmailReceipt}
                 onClose={handleCloseReceipt}
                 isPrinting={isPrinting}
                 showActions={true}
@@ -949,8 +1101,12 @@ export default function SalesScreen({ navigation, route }: Props) {
       {/* X-Reading Modal */}
       <POSXReadingModal
         visible={xReadingModalVisible}
-        onClose={() => setXReadingModalVisible(false)}
+        onClose={() => {
+          setXReadingModalVisible(false);
+          setXReadingTargetDate(undefined);  // Clear target date when closing
+        }}
         cashierId={user?.id || 0}
+        targetDate={xReadingTargetDate}
       />
 
       {/* Void Transaction Modal */}
@@ -1002,11 +1158,24 @@ export default function SalesScreen({ navigation, route }: Props) {
         userId={user?.id || 0}
       />
 
+      {/* Unterminated Session Modal - Must close previous day's session */}
+      <POSUnterminatedSessionModal
+        visible={unterminatedModalVisible}
+        sessions={unterminatedSessions}
+        onDoXReading={handleUnterminatedXReading}
+        onDoZReading={handleUnterminatedZReading}
+      />
+
       {/* Start Shift Dialog - Required before sales can be made */}
       <StartShiftDialog
-        visible={shiftDialogVisible && !checkingShift}
+        visible={shiftDialogVisible && !checkingShift && !unterminatedModalVisible}
         userId={user?.id || 0}
         onShiftStarted={handleShiftStarted}
+        onCancel={() => {
+          setShiftDialogVisible(false);
+          // Navigate back to Dashboard when user cancels
+          navigation.navigate('Dashboard');
+        }}
       />
     </SafeAreaView>
   );
@@ -1024,6 +1193,42 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
+  },
+  priceTypeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  priceTypeLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
+    marginRight: 10,
+  },
+  priceTypeButtons: {
+    flexDirection: 'row',
+    flex: 1,
+  },
+  priceTypeButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#F0F0F0',
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  priceTypeButtonActive: {
+    backgroundColor: '#1976D2',
+    borderColor: '#1976D2',
+  },
+  priceTypeButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
+  },
+  priceTypeButtonTextActive: {
+    color: '#FFFFFF',
   },
   searchRow: {
     flexDirection: 'row',
@@ -1127,7 +1332,8 @@ const styles = StyleSheet.create({
   checkoutSection: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 80,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     elevation: 8,

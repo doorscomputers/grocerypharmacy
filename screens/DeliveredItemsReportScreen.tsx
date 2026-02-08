@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Text } from 'react-native';
 import {
   Card,
   Title,
@@ -13,12 +13,15 @@ import {
   IconButton,
   SegmentedButtons,
   List,
+  Menu,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'DeliveredItemsReport'>;
@@ -85,11 +88,13 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeView, setActiveView] = useState<ReportView>('summary');
   const [selectedSupplier, setSelectedSupplier] = useState<number | null>(null);
+  const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState(() => {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -349,6 +354,126 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       case 'CANCELLED': return 'Cancelled';
       default: return status;
     }
+  };
+
+  const buildPrintReport = (): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder();
+    const now = new Date();
+
+    // Header
+    builder
+      .alignCenter()
+      .bold(true)
+      .text('DELIVERED ITEMS REPORT')
+      .bold(false)
+      .newline()
+      .text('--------------------------------')
+      .newline();
+
+    // Date/Time
+    builder
+      .alignLeft()
+      .text(`Date: ${now.toLocaleDateString('en-PH')}`)
+      .newline()
+      .text(`Time: ${now.toLocaleTimeString('en-PH')}`)
+      .newline()
+      .text(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')} - ${dateRange.endDate.toLocaleDateString('en-PH')}`)
+      .newline()
+      .text('--------------------------------')
+      .newline();
+
+    // Summary Section
+    builder
+      .bold(true)
+      .text('SUMMARY')
+      .bold(false)
+      .newline()
+      .text(`Total POs: ${summary.totalPOs}`)
+      .newline()
+      .text(`Fully Received: ${summary.fullyReceived}`)
+      .newline()
+      .text(`Partially Received: ${summary.partiallyReceived}`)
+      .newline()
+      .text(`Unique Suppliers: ${summary.uniqueSuppliers}`)
+      .newline()
+      .text(`Unique Products: ${summary.uniqueProducts}`)
+      .newline()
+      .text('--------------------------------')
+      .newline();
+
+    // Quantity Summary
+    builder
+      .text(`Items Ordered: ${summary.totalOrdered.toLocaleString()}`)
+      .newline()
+      .text(`Items Received: ${summary.totalReceived.toLocaleString()}`)
+      .newline()
+      .text(`Pending Items: ${summary.totalPending.toLocaleString()}`)
+      .newline()
+      .text(`Fulfillment Rate: ${summary.fulfillmentRate.toFixed(1)}%`)
+      .newline()
+      .text('--------------------------------')
+      .newline();
+
+    // Value Summary
+    builder
+      .bold(true)
+      .text('TOTALS')
+      .bold(false)
+      .newline()
+      .text(`Received Value: ${formatCurrency(summary.totalValue)}`)
+      .newline()
+      .text('--------------------------------')
+      .newline();
+
+    // Top Suppliers (first 10)
+    if (supplierDeliveries.length > 0) {
+      builder
+        .bold(true)
+        .text('TOP SUPPLIERS')
+        .bold(false)
+        .newline();
+
+      supplierDeliveries.slice(0, 10).forEach((supplier, index) => {
+        builder
+          .text(`${index + 1}. ${supplier.supplier_name.substring(0, 20)}`)
+          .newline()
+          .text(`   POs: ${supplier.po_count} | Items: ${supplier.total_received}`)
+          .newline()
+          .text(`   Value: ${formatCurrency(supplier.total_value)}`)
+          .newline();
+      });
+
+      builder.text('--------------------------------').newline();
+    }
+
+    // Top Products (first 10)
+    if (productDeliveries.length > 0) {
+      builder
+        .bold(true)
+        .text('TOP PRODUCTS RECEIVED')
+        .bold(false)
+        .newline();
+
+      productDeliveries.slice(0, 10).forEach((product, index) => {
+        builder
+          .text(`${index + 1}. ${product.product_name.substring(0, 22)}`)
+          .newline()
+          .text(`   Qty: ${product.total_received} | ${formatCurrency(product.total_value)}`)
+          .newline();
+      });
+
+      builder.text('--------------------------------').newline();
+    }
+
+    // Footer
+    builder
+      .alignCenter()
+      .text('*** END OF REPORT ***')
+      .newline()
+      .newline()
+      .newline();
+
+    return builder;
   };
 
   // Pagination for deliveries table
@@ -726,10 +851,15 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Delivered Items Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Items received from suppliers
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Delivered Items Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                Items received from suppliers
+              </Paragraph>
+            </View>
+            <Button mode="contained" icon="printer" onPress={() => setPrintDialogVisible(true)} compact>Print</Button>
+          </View>
         </View>
 
         {/* Date Filter */}
@@ -764,27 +894,47 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
         <Card style={styles.filterCard}>
           <Card.Content>
             <Paragraph style={styles.filterLabel}>Supplier:</Paragraph>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View style={styles.chipContainer}>
-                <Chip
-                  selected={selectedSupplier === null}
-                  onPress={() => setSelectedSupplier(null)}
-                  style={styles.chip}
+            <Menu
+              visible={supplierMenuVisible}
+              onDismiss={() => setSupplierMenuVisible(false)}
+              anchor={
+                <TouchableOpacity
+                  style={styles.dropdownButton}
+                  onPress={() => setSupplierMenuVisible(true)}
                 >
-                  All
-                </Chip>
-                {suppliers.slice(0, 10).map(supplier => (
-                  <Chip
+                  <Text style={styles.dropdownButtonText}>
+                    {selectedSupplier
+                      ? suppliers.find(s => s.id === selectedSupplier)?.name || 'Unknown'
+                      : 'All Suppliers'}
+                  </Text>
+                  <Text style={styles.dropdownChevron}>▼</Text>
+                </TouchableOpacity>
+              }
+              contentStyle={styles.menuContent}
+            >
+              <Menu.Item
+                onPress={() => {
+                  setSelectedSupplier(null);
+                  setSupplierMenuVisible(false);
+                }}
+                title="All Suppliers"
+                leadingIcon={selectedSupplier === null ? 'check' : undefined}
+              />
+              <Divider />
+              {[...suppliers]
+                .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                .map(supplier => (
+                  <Menu.Item
                     key={supplier.id}
-                    selected={selectedSupplier === supplier.id}
-                    onPress={() => setSelectedSupplier(supplier.id)}
-                    style={styles.chip}
-                  >
-                    {supplier.name}
-                  </Chip>
+                    onPress={() => {
+                      setSelectedSupplier(supplier.id);
+                      setSupplierMenuVisible(false);
+                    }}
+                    title={supplier.name}
+                    leadingIcon={selectedSupplier === supplier.id ? 'check' : undefined}
+                  />
                 ))}
-              </View>
-            </ScrollView>
+            </Menu>
           </Card.Content>
         </Card>
 
@@ -859,6 +1009,13 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
             Report generated on {new Date().toLocaleString('en-PH')}
           </Paragraph>
         </View>
+
+        <PrintOptionsDialog
+          visible={printDialogVisible}
+          onDismiss={() => setPrintDialogVisible(false)}
+          title="Print Delivered Items Report"
+          onPrint={buildPrintReport}
+        />
       </ScrollView>
     </SafeAreaView>
   );
@@ -891,6 +1048,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,
@@ -935,6 +1100,31 @@ const styles = StyleSheet.create({
   chip: {
     marginRight: 4,
     marginBottom: 4,
+  },
+  dropdownButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+  },
+  dropdownButtonText: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
+  },
+  dropdownChevron: {
+    fontSize: 12,
+    color: '#666',
+    marginLeft: 8,
+  },
+  menuContent: {
+    backgroundColor: '#fff',
+    maxHeight: 300,
   },
   segmentedButtons: {
     marginTop: 4,

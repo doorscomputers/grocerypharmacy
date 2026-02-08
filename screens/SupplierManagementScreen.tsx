@@ -195,9 +195,9 @@ export default function SupplierManagementScreen({ navigation }: Props) {
       setDialogVisible(false);
       clearForm();
       await loadSuppliers();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving supplier:', error);
-      Alert.alert('Error', 'Failed to save supplier');
+      Alert.alert('Error', error?.message || 'Failed to save supplier');
     } finally {
       setLoading(false);
     }
@@ -329,7 +329,13 @@ export default function SupplierManagementScreen({ navigation }: Props) {
           onChangeText={setSearchQuery}
           mode="outlined"
           style={styles.searchInput}
-          right={<TextInput.Icon icon="magnify" />}
+          left={<TextInput.Icon icon="magnify" />}
+          right={searchQuery ? (
+            <TextInput.Icon
+              icon="close"
+              onPress={() => setSearchQuery('')}
+            />
+          ) : null}
           dense
         />
       </View>
@@ -353,9 +359,10 @@ export default function SupplierManagementScreen({ navigation }: Props) {
 
       <FAB
         icon="plus"
-        style={styles.fab}
+        style={[styles.fab, { backgroundColor: theme.colors.primary }]}
         onPress={openAddDialog}
         label="Add Supplier"
+        color="#FFFFFF"
       />
 
       {/* Add/Edit Supplier Dialog */}
@@ -565,7 +572,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   dialogContent: {
     maxHeight: 400,

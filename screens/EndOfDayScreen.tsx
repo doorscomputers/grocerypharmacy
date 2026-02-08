@@ -5,6 +5,10 @@ import {
   ScrollView,
   Platform,
   Alert,
+  TouchableOpacity,
+  Text,
+  ActivityIndicator,
+  Modal,
 } from 'react-native';
 import {
   Card,
@@ -20,12 +24,21 @@ import {
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
+import { buildZReading, PRINTER_WIDTH } from '../utils/escpos';
+import {
+  ZReadingPdfData,
+  shareZReadingPdf,
+  emailZReadingPdf,
+} from '../utils/ReceiptPdfService';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'EndOfDay'>;
+  route: RouteProp<RootStackParamList, 'EndOfDay'>;
 };
 
 interface CashDenomination {
@@ -69,9 +82,22 @@ interface DaySummary {
   cashRefunds: number;        // CASH_REFUND (from exchanges, etc.)
 }
 
-export default function EndOfDayScreen({ navigation }: Props) {
+// Helper to get Philippine timezone date
+const getPhilippineDate = (): string => {
+  const now = new Date();
+  const phOffset = 8 * 60; // Philippines is UTC+8
+  const localOffset = now.getTimezoneOffset();
+  const phTime = new Date(now.getTime() + (phOffset + localOffset) * 60000);
+  return phTime.toISOString().split('T')[0];
+};
+
+export default function EndOfDayScreen({ navigation, route }: Props) {
   const theme = useTheme();
   const { user } = useAuth();
+
+  // Get target date from navigation params (for closing unterminated sessions)
+  // If no target date provided, use today's date in Philippine timezone
+  const targetDate = route?.params?.targetDate || getPhilippineDate();
 
   // Beginning cash (from previous day or manual input)
   const [beginningCash, setBeginningCash] = useState<string>('0');
@@ -126,80 +152,140 @@ export default function EndOfDayScreen({ navigation }: Props) {
   const [eodHistory, setEodHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [currentShift, setCurrentShift] = useState<{ id: number; start_time: string } | null>(null);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<any | null>(null);
+
+  // Print/Export/Email states
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isEmailing, setIsEmailing] = useState(false);
+  const [isHistoryPrinting, setIsHistoryPrinting] = useState(false);
+  const [isHistoryExporting, setIsHistoryExporting] = useState(false);
+  const [isHistoryEmailing, setIsHistoryEmailing] = useState(false);
+  const [businessInfo, setBusinessInfo] = useState<{ name: string; address: string; tin: string }>({
+    name: '',
+    address: '',
+    tin: '',
+  });
+
+  // Post-EOD completion dialog
+  const [showCompletionDialog, setShowCompletionDialog] = useState(false);
+  const [completionSummary, setCompletionSummary] = useState<{
+    netSales: number;
+    variance: number;
+    cashCounted: number;
+  } | null>(null);
 
   useEffect(() => {
     loadDayData();
+    loadBusinessInfo();
   }, []);
+
+  const loadBusinessInfo = async () => {
+    try {
+      const dbService = getDatabase();
+      const [name, address, tin] = await Promise.all([
+        dbService.getSetting('company_name'),
+        dbService.getSetting('company_address'),
+        dbService.getSetting('company_tin'),
+      ]);
+      setBusinessInfo({
+        name: name || 'Store',
+        address: address || '',
+        tin: tin || '',
+      });
+    } catch (error) {
+      console.error('Error loading business info:', error);
+    }
+  };
 
   const loadDayData = async () => {
     setLoading(true);
     try {
       const dbService = getDatabase();
 
-      // Get current shift for this user
+      // Check if we're closing a past date (unterminated session)
+      const today = getPhilippineDate();
+      const isClosingPastDate = targetDate !== today;
+
+      // Always get current shift for this user (we need to close it regardless of target date)
       let shiftStartTime: string | undefined;
       if (user?.id) {
         const shift = await dbService.getCurrentShift(user.id);
         if (shift) {
           setCurrentShift({ id: shift.id, start_time: shift.start_time });
-          shiftStartTime = shift.start_time;
+          // Only use shift time for filtering if closing today
+          if (!isClosingPastDate) {
+            shiftStartTime = shift.start_time;
+          }
         }
       }
 
-      // Get transactions - filter by shift if exists, otherwise by today
+      // Get transactions - filter by shift if closing today, otherwise by target date
+      // Always filter by logged-in user to only show this cashier's transactions
       let todayTransactions;
-      if (shiftStartTime) {
-        // Get transactions from shift start time onwards
-        todayTransactions = await dbService.getTransactionsSinceTime(shiftStartTime);
+      if (isClosingPastDate) {
+        // Closing a past date - get all transactions for that specific date by this cashier
+        todayTransactions = await dbService.getTransactionsByDate(targetDate, user?.id);
+      } else if (shiftStartTime) {
+        // Get transactions from shift start time onwards by this cashier
+        todayTransactions = await dbService.getTransactionsSinceTime(shiftStartTime, user?.id);
       } else {
-        todayTransactions = await dbService.getTodaysTransactions();
+        // Fall back to today's transactions (already filtered by date)
+        const allToday = await dbService.getTodaysTransactions();
+        todayTransactions = user?.id
+          ? allToday.filter((t: any) => t.cashier_id === user.id)
+          : allToday;
       }
 
-      // Get sales returns - filter by shift if exists
+      // Normalize shift time for JavaScript string comparison
+      // Convert ISO format "2026-01-31T20:50:43.000Z" to "2026-01-31 20:50:43"
+      const normalizedShiftTime = shiftStartTime
+        ? shiftStartTime.replace('T', ' ').replace('Z', '').split('.')[0]
+        : undefined;
+
+      // Get sales returns - filter by shift if exists, otherwise by target date
+      // Also filter by this cashier (processed_by)
       const allReturns = await dbService.getSalesReturns();
-      const today = new Date().toISOString().split('T')[0];
-      const todayReturns = shiftStartTime
-        ? allReturns.filter((r: any) => r.created_at >= shiftStartTime)
-        : allReturns.filter((r: any) => r.created_at?.startsWith(today));
+      const todayReturns = normalizedShiftTime
+        ? allReturns.filter((r: any) => r.created_at >= normalizedShiftTime && r.processed_by === user?.id)
+        : allReturns.filter((r: any) => r.created_at?.startsWith(targetDate) && r.processed_by === user?.id);
 
-      // Get customer payments - filter by shift if exists
+      // Get customer payments - filter by shift if exists, otherwise by target date
+      // Also filter by this cashier (collected_by)
       const allCustomerPayments = await dbService.getCustomerPayments();
-      const todayCustomerPayments = shiftStartTime
-        ? allCustomerPayments.filter((p: any) => p.created_at >= shiftStartTime)
-        : allCustomerPayments.filter((p: any) => p.created_at?.startsWith(today));
+      const todayCustomerPayments = normalizedShiftTime
+        ? allCustomerPayments.filter((p: any) => p.created_at >= normalizedShiftTime && p.collected_by === user?.id)
+        : allCustomerPayments.filter((p: any) => p.created_at?.startsWith(targetDate) && p.collected_by === user?.id);
 
-      // Get supplier payments - filter by shift if exists
+      // Get supplier payments - filter by shift if exists, otherwise by target date
+      // Also filter by this cashier (created_by)
       const allSupplierPayments = await dbService.getSupplierPayments();
-      const todaySupplierPayments = shiftStartTime
-        ? allSupplierPayments.filter((p: any) => p.created_at >= shiftStartTime)
-        : allSupplierPayments.filter((p: any) => p.created_at?.startsWith(today));
+      const todaySupplierPayments = normalizedShiftTime
+        ? allSupplierPayments.filter((p: any) => p.created_at >= normalizedShiftTime && p.created_by === user?.id)
+        : allSupplierPayments.filter((p: any) => p.created_at?.startsWith(targetDate) && p.created_by === user?.id);
 
-      // Get cash movements - filter by shift if exists
-      const allCashMovements = await dbService.getCashMovements(today);
-      const todayCashMovements = shiftStartTime
-        ? (allCashMovements || []).filter((m: any) => m.created_at >= shiftStartTime)
-        : allCashMovements;
+      // Get cash movements - filter by shift if exists, otherwise by target date
+      // Also filter by this cashier (created_by)
+      const allCashMovements = await dbService.getCashMovements(targetDate);
+      const todayCashMovements = normalizedShiftTime
+        ? (allCashMovements || []).filter((m: any) => m.created_at >= normalizedShiftTime && m.created_by === user?.id)
+        : (allCashMovements || []).filter((m: any) => m.created_by === user?.id);
 
       // Get EOD history
       const eodRecords = await dbService.getEndOfDayRecords();
       setEodHistory(eodRecords || []);
 
-      // Get beginning cash - use shift's beginning_cash if active shift exists
+      // Get beginning cash ONLY from current shift (entered by cashier when starting shift)
+      // Do NOT auto-fill from previous day - each day is independent
       if (user?.id) {
         const shift = await dbService.getCurrentShift(user.id);
         if (shift?.beginning_cash !== undefined) {
           setBeginningCash(String(shift.beginning_cash));
         } else {
-          // Fall back to last EOD or settings
-          const lastEod = eodRecords?.[0];
-          if (lastEod?.next_day_beginning_cash) {
-            setBeginningCash(String(lastEod.next_day_beginning_cash));
-          } else {
-            const savedBeginningCash = await dbService.getSetting('beginning_cash');
-            if (savedBeginningCash) {
-              setBeginningCash(savedBeginningCash);
-            }
-          }
+          // No active shift - default to 0, cashier must enter manually
+          // NOTE: We intentionally do NOT fall back to previous EOD or settings
+          // Each day starts fresh with what the cashier actually has
+          setBeginningCash('0');
         }
       }
 
@@ -341,18 +427,18 @@ export default function EndOfDayScreen({ navigation }: Props) {
   // + Cash Sales (cash received from sales)
   // + Customer Payments in Cash (AR collections)
   // + Cash Fund Added (opening fund, additional cash)
-  // - Sales Returns Paid in Cash
-  // - Supplier Payments in Cash
-  // - Petty Cash Withdrawn
-  // - Cash Refunds (from exchanges, etc.)
+  // - Sales Returns Paid in Cash (from sales_returns where refund_method='CASH')
+  // - Cash Refunds recorded in cash_movements (CASH_REFUND type)
+  // - Petty Cash Withdrawn (includes any cash taken from drawer for supplier payments)
+  // NOTE: Use MAX of salesReturnsCash and cashRefunds to avoid double-counting
+  // while catching both old refunds (only in sales_returns) and new refunds (in both)
+  const totalCashRefundsOut = Math.max(daySummary.salesReturnsCash, daySummary.cashRefunds);
   const expectedCash = beginningCashNum +
     daySummary.cashSales +
     daySummary.customerPaymentsCash +
     daySummary.cashFundAdded -
-    daySummary.salesReturnsCash -
-    daySummary.supplierPaymentsCash -
-    daySummary.pettyCashWithdrawn -
-    daySummary.cashRefunds;
+    totalCashRefundsOut -
+    daySummary.pettyCashWithdrawn;
 
   const cashVariance = totalCashCount - expectedCash;
   const isShort = cashVariance < 0;
@@ -380,6 +466,262 @@ export default function EndOfDayScreen({ navigation }: Props) {
     }
   };
 
+  // Build Z-Reading data for print/export
+  const buildZReadingData = (): ZReadingPdfData => {
+    return {
+      businessName: businessInfo.name,
+      businessAddress: businessInfo.address,
+      tin: businessInfo.tin,
+      date: new Date(targetDate + 'T00:00:00').toLocaleDateString('en-PH', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      zReadingNumber: (eodHistory.length + 1).toString(),
+      cashierName: user?.full_name || user?.username || 'Cashier',
+      // Sales Summary
+      transaction_count: daySummary.transactionCount,
+      gross_sales: daySummary.grossSales,
+      discount_amount: daySummary.discounts,
+      sales_returns: daySummary.salesReturns,
+      net_sales: daySummary.netSales,
+      // VAT (calculate from gross sales)
+      vat_sales: daySummary.grossSales / 1.12,
+      vat_amount: daySummary.grossSales - (daySummary.grossSales / 1.12),
+      vat_exempt_sales: 0,
+      zero_rated_sales: 0,
+      // Payment Methods
+      cash_sales: daySummary.cashSales,
+      card_sales: daySummary.cardSales,
+      check_sales: daySummary.checkSales,
+      credit_sales: daySummary.creditSales,
+      gcash_sales: daySummary.gcashSales,
+      // Voids
+      void_count: daySummary.voidCount,
+      void_amount: daySummary.voidAmount,
+      // Cash Drawer
+      beginning_cash: beginningCashNum,
+      cash_fund: daySummary.cashFundAdded,
+      petty_cash: daySummary.pettyCashWithdrawn,
+      cash_refunds: totalCashRefundsOut,
+      expected_cash: expectedCash,
+      actual_cash: totalCashCount,
+      cash_variance: cashVariance,
+    };
+  };
+
+  // Get paper width setting
+  const getPaperWidth = (): '58mm' | '80mm' => {
+    const printerService = BluetoothPrinterService.getInstance();
+    const settings = printerService.getSettings();
+    return settings.printerWidth === PRINTER_WIDTH.MM_80 ? '80mm' : '58mm';
+  };
+
+  // Print Z-Reading
+  const handlePrint = async () => {
+    if (Platform.OS === 'web') {
+      showAlert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
+      return;
+    }
+
+    const printerService = BluetoothPrinterService.getInstance();
+    if (!printerService.isConnected()) {
+      showAlert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
+      return;
+    }
+
+    setIsPrinting(true);
+    try {
+      const settings = printerService.getSettings();
+      const printerWidth = settings.printerWidth;
+
+      const zReadingBuilder = buildZReading(
+        {
+          businessName: businessInfo.name,
+          tin: businessInfo.tin,
+          zReadingNumber: eodHistory.length + 1,
+          date: new Date(),
+          resetCounter: eodHistory.length + 1,
+          beginningOR: '',
+          endingOR: '',
+          grossSales: daySummary.grossSales,
+          regularDiscount: daySummary.discounts,
+          seniorDiscount: 0,
+          voidAmount: daySummary.voidAmount,
+          returnAmount: daySummary.salesReturns,
+          netSales: daySummary.netSales,
+          vatableSales: daySummary.grossSales / 1.12,
+          vatAmount: daySummary.grossSales - (daySummary.grossSales / 1.12),
+          vatExemptSales: 0,
+          zeroRatedSales: 0,
+          transactionCount: daySummary.transactionCount,
+          cashierName: user?.full_name || user?.username || 'Cashier',
+        },
+        printerWidth
+      );
+
+      await printerService.print(zReadingBuilder);
+      showAlert('Success', 'Z-Reading printed successfully!');
+    } catch (error) {
+      console.error('Print error:', error);
+      showAlert('Print Error', error instanceof Error ? error.message : 'Failed to print');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  // Export Z-Reading to PDF
+  const handleExportPdf = async () => {
+    setIsExporting(true);
+    try {
+      const pdfData = buildZReadingData();
+      const paperWidth = getPaperWidth();
+      await shareZReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Export error:', error);
+      showAlert('Export Error', error instanceof Error ? error.message : 'Failed to export PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Email Z-Reading
+  const handleEmail = async () => {
+    setIsEmailing(true);
+    try {
+      const pdfData = buildZReadingData();
+      const paperWidth = getPaperWidth();
+      await emailZReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Email error:', error);
+      showAlert('Email Error', error instanceof Error ? error.message : 'Failed to send email');
+    } finally {
+      setIsEmailing(false);
+    }
+  };
+
+  // Build ZReadingPdfData from historical EOD record
+  const buildHistoricalZReadingData = (eod: any): ZReadingPdfData => {
+    return {
+      businessName: businessInfo.name,
+      businessAddress: businessInfo.address,
+      tin: businessInfo.tin,
+      date: new Date(eod.date + 'T00:00:00').toLocaleDateString('en-PH', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      zReadingNumber: String(eod.id),
+      cashierName: eod.cashier_name || 'Cashier',
+      transaction_count: eod.transaction_count || 0,
+      gross_sales: eod.gross_sales || 0,
+      discount_amount: eod.discounts || 0,
+      sales_returns: eod.sales_returns || 0,
+      net_sales: eod.net_sales || 0,
+      vat_sales: (eod.gross_sales || 0) / 1.12,
+      vat_amount: (eod.gross_sales || 0) - ((eod.gross_sales || 0) / 1.12),
+      vat_exempt_sales: 0,
+      zero_rated_sales: 0,
+      cash_sales: eod.cash_sales || 0,
+      card_sales: eod.card_sales || 0,
+      check_sales: 0,
+      credit_sales: eod.credit_sales || 0,
+      gcash_sales: eod.gcash_sales || 0,
+      void_count: eod.void_count || 0,
+      void_amount: eod.void_amount || 0,
+      beginning_cash: eod.beginning_cash || 0,
+      cash_fund: 0,
+      petty_cash: 0,
+      cash_refunds: 0,
+      expected_cash: eod.expected_cash || 0,
+      actual_cash: eod.actual_cash || 0,
+      cash_variance: eod.cash_variance || 0,
+    };
+  };
+
+  // Print historical Z-Reading
+  const handleHistoryPrint = async (eod: any) => {
+    if (Platform.OS === 'web') {
+      showAlert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
+      return;
+    }
+
+    const printerService = BluetoothPrinterService.getInstance();
+    if (!printerService.isConnected()) {
+      showAlert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
+      return;
+    }
+
+    setIsHistoryPrinting(true);
+    try {
+      const settings = printerService.getSettings();
+      const printerWidth = settings.printerWidth;
+
+      const zReadingBuilder = buildZReading(
+        {
+          businessName: businessInfo.name,
+          tin: businessInfo.tin,
+          zReadingNumber: eod.id,
+          date: new Date(eod.date),
+          resetCounter: eod.id,
+          beginningOR: '',
+          endingOR: '',
+          grossSales: eod.gross_sales || 0,
+          regularDiscount: eod.discounts || 0,
+          seniorDiscount: 0,
+          voidAmount: eod.void_amount || 0,
+          returnAmount: eod.sales_returns || 0,
+          netSales: eod.net_sales || 0,
+          vatableSales: (eod.gross_sales || 0) / 1.12,
+          vatAmount: (eod.gross_sales || 0) - ((eod.gross_sales || 0) / 1.12),
+          vatExemptSales: 0,
+          zeroRatedSales: 0,
+          transactionCount: eod.transaction_count || 0,
+          cashierName: eod.cashier_name || 'Cashier',
+        },
+        printerWidth
+      );
+
+      await printerService.print(zReadingBuilder);
+      showAlert('Success', 'Z-Reading printed successfully!');
+    } catch (error) {
+      console.error('Print error:', error);
+      showAlert('Print Error', error instanceof Error ? error.message : 'Failed to print');
+    } finally {
+      setIsHistoryPrinting(false);
+    }
+  };
+
+  // Export historical Z-Reading to PDF
+  const handleHistoryExportPdf = async (eod: any) => {
+    setIsHistoryExporting(true);
+    try {
+      const pdfData = buildHistoricalZReadingData(eod);
+      const paperWidth = getPaperWidth();
+      await shareZReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Export error:', error);
+      showAlert('Export Error', error instanceof Error ? error.message : 'Failed to export PDF');
+    } finally {
+      setIsHistoryExporting(false);
+    }
+  };
+
+  // Email historical Z-Reading
+  const handleHistoryEmail = async (eod: any) => {
+    setIsHistoryEmailing(true);
+    try {
+      const pdfData = buildHistoricalZReadingData(eod);
+      const paperWidth = getPaperWidth();
+      await emailZReadingPdf(pdfData, paperWidth);
+    } catch (error) {
+      console.error('Email error:', error);
+      showAlert('Email Error', error instanceof Error ? error.message : 'Failed to send email');
+    } finally {
+      setIsHistoryEmailing(false);
+    }
+  };
+
   const submitEndOfDay = async () => {
     if (totalCashCount === 0) {
       showAlert('Error', 'Please enter the cash breakdown count');
@@ -404,7 +746,7 @@ export default function EndOfDayScreen({ navigation }: Props) {
           const dbService = getDatabase();
 
           const eodData = {
-            date: new Date().toISOString().split('T')[0],
+            date: targetDate,  // Use target date for closing unterminated sessions
             beginning_cash: beginningCashNum,
             gross_sales: daySummary.grossSales,
             discounts: daySummary.discounts,
@@ -424,35 +766,46 @@ export default function EndOfDayScreen({ navigation }: Props) {
             actual_cash: totalCashCount,
             cash_variance: cashVariance,
             denomination_breakdown: denominations,
-            next_day_beginning_cash: totalCashCount, // Carry forward actual cash
+            next_day_beginning_cash: 0, // Each day starts fresh - cashier enters their own amount
             created_by: user?.id || 1,
             status: 'COMPLETED',
           };
 
+          console.log('[EOD] Saving End of Day for date:', targetDate);
           const eodResult = await dbService.saveEndOfDay(eodData);
+          console.log('[EOD] End of Day record saved with ID:', eodResult);
 
-          // End the current shift
-          if (user?.id) {
-            const currentShift = await dbService.getCurrentShift(user.id);
-            if (currentShift) {
-              await dbService.endShift(currentShift.id, totalCashCount, eodResult);
+          // Generate Z-Reading for the target date (creates record in z_readings table)
+          try {
+            console.log('[EOD] Generating Z-Reading for date:', targetDate);
+            const zReadingResult = await dbService.generateZReading(user?.id || 1, targetDate);
+            console.log('[EOD] Z-Reading generated:', zReadingResult);
+          } catch (zError: any) {
+            // Z-Reading might already exist for this date, which is OK
+            if (zError.message?.includes('already generated')) {
+              console.log('[EOD] Z-Reading already exists for this date (OK)');
+            } else {
+              console.error('[EOD] Z-Reading generation error:', zError);
             }
           }
 
-          // Update beginning_cash setting for next day
-          await dbService.updateSetting('beginning_cash', String(totalCashCount));
+          // Close ALL open shifts for this user (handles multiple stuck open shifts)
+          if (user?.id) {
+            console.log('[EOD] Closing all open shifts for user:', user.id);
+            const closedCount = await dbService.closeAllOpenShifts(user.id, totalCashCount);
+            console.log(`[EOD] Closed ${closedCount} shift(s) for user ${user.id}`);
+          }
 
-          showAlert(
-            'End of Day Complete',
-            `Z-Reading saved successfully!\n\n` +
-            `Net Sales: ₱${daySummary.netSales.toFixed(2)}\n` +
-            `${varianceText}\n\n` +
-            `Tomorrow's beginning cash: ₱${totalCashCount.toFixed(2)}\n\n` +
-            `Your shift has been closed. Start a new shift to make sales.`,
-            () => {
-              navigation.goBack();
-            }
-          );
+          // NOTE: Do NOT auto-fill beginning_cash for next shift
+          // Each cashier enters their own beginning cash amount (given by owner)
+
+          // Show completion dialog with print/export options
+          setCompletionSummary({
+            netSales: daySummary.netSales,
+            variance: cashVariance,
+            cashCounted: totalCashCount,
+          });
+          setShowCompletionDialog(true);
         } catch (error) {
           console.error('Error saving EOD:', error);
           showAlert('Error', 'Failed to save End of Day record');
@@ -501,22 +854,158 @@ export default function EndOfDayScreen({ navigation }: Props) {
           <Card style={styles.card}>
             <Card.Content>
               <Title style={styles.sectionTitle}>EOD History</Title>
+              <Paragraph style={styles.noteText}>Tap a record to view details and print/export.</Paragraph>
               {eodHistory.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No EOD records yet</Paragraph>
               ) : (
-                eodHistory.slice(0, 10).map((eod, index) => (
+                eodHistory.slice(0, 20).map((eod, index) => (
                   <View key={eod.id || index}>
-                    <List.Item
-                      title={`${eod.date} - Z-Reading #${eod.id}`}
-                      description={`Net Sales: ₱${(eod.net_sales || 0).toFixed(2)} | Variance: ₱${(eod.cash_variance || 0).toFixed(2)}`}
-                      left={props => (
-                        <List.Icon
-                          {...props}
-                          icon="file-document"
-                          color={eod.cash_variance === 0 ? '#4CAF50' : eod.cash_variance < 0 ? '#F44336' : '#FF9800'}
-                        />
-                      )}
-                    />
+                    <TouchableOpacity
+                      onPress={() => setSelectedHistoryItem(selectedHistoryItem?.id === eod.id ? null : eod)}
+                    >
+                      <List.Item
+                        title={`${eod.date} - Z-Reading #${eod.id}`}
+                        description={`Net Sales: ₱${(eod.net_sales || 0).toFixed(2)} | Variance: ₱${(eod.cash_variance || 0).toFixed(2)}`}
+                        left={props => (
+                          <List.Icon
+                            {...props}
+                            icon="file-document"
+                            color={eod.cash_variance === 0 ? '#4CAF50' : eod.cash_variance < 0 ? '#F44336' : '#FF9800'}
+                          />
+                        )}
+                        right={props => (
+                          <List.Icon
+                            {...props}
+                            icon={selectedHistoryItem?.id === eod.id ? 'chevron-up' : 'chevron-down'}
+                          />
+                        )}
+                      />
+                    </TouchableOpacity>
+
+                    {/* Expandable Details */}
+                    {selectedHistoryItem?.id === eod.id && (
+                      <View style={styles.historyDetails}>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Date:</Text>
+                          <Text style={styles.historyDetailValue}>{eod.date}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Cashier:</Text>
+                          <Text style={styles.historyDetailValue}>{eod.cashier_name || 'Unknown'}</Text>
+                        </View>
+                        <Divider style={styles.historyDivider} />
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Gross Sales:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.gross_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Discounts:</Text>
+                          <Text style={styles.historyDetailValueRed}>(₱{(eod.discounts || 0).toFixed(2)})</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Net Sales:</Text>
+                          <Text style={styles.historyDetailValueBold}>₱{(eod.net_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <Divider style={styles.historyDivider} />
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Cash Sales:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.cash_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Card Sales:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.card_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>GCash/Online:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.gcash_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Credit Sales:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.credit_sales || 0).toFixed(2)}</Text>
+                        </View>
+                        <Divider style={styles.historyDivider} />
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Transactions:</Text>
+                          <Text style={styles.historyDetailValue}>{eod.transaction_count || 0}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Voids:</Text>
+                          <Text style={styles.historyDetailValueRed}>{eod.void_count || 0} (₱{(eod.void_amount || 0).toFixed(2)})</Text>
+                        </View>
+                        <Divider style={styles.historyDivider} />
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Beginning Cash:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.beginning_cash || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Expected Cash:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.expected_cash || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Actual Cash:</Text>
+                          <Text style={styles.historyDetailValue}>₱{(eod.actual_cash || 0).toFixed(2)}</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Variance:</Text>
+                          <Text style={[
+                            styles.historyDetailValueBold,
+                            eod.cash_variance === 0 ? styles.varianceBalanced :
+                            eod.cash_variance < 0 ? styles.varianceShort : styles.varianceOver
+                          ]}>
+                            {eod.cash_variance === 0 ? 'BALANCED' :
+                             eod.cash_variance < 0 ? `SHORT ₱${Math.abs(eod.cash_variance).toFixed(2)}` :
+                             `OVER ₱${eod.cash_variance.toFixed(2)}`}
+                          </Text>
+                        </View>
+
+                        {/* Action Buttons */}
+                        <View style={styles.historyActionRow}>
+                          <TouchableOpacity
+                            style={[styles.historyActionBtn, isHistoryPrinting && styles.actionBtnDisabled]}
+                            onPress={() => handleHistoryPrint(eod)}
+                            disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                          >
+                            {isHistoryPrinting ? (
+                              <ActivityIndicator size="small" color="#6200EE" />
+                            ) : (
+                              <>
+                                <Text style={styles.actionBtnIcon}>🖨️</Text>
+                                <Text style={styles.actionBtnText}>Print</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.historyActionBtn, isHistoryExporting && styles.actionBtnDisabled]}
+                            onPress={() => handleHistoryExportPdf(eod)}
+                            disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                          >
+                            {isHistoryExporting ? (
+                              <ActivityIndicator size="small" color="#6200EE" />
+                            ) : (
+                              <>
+                                <Text style={styles.actionBtnIcon}>📄</Text>
+                                <Text style={styles.actionBtnText}>PDF</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.historyActionBtn, isHistoryEmailing && styles.actionBtnDisabled]}
+                            onPress={() => handleHistoryEmail(eod)}
+                            disabled={isHistoryPrinting || isHistoryExporting || isHistoryEmailing}
+                          >
+                            {isHistoryEmailing ? (
+                              <ActivityIndicator size="small" color="#6200EE" />
+                            ) : (
+                              <>
+                                <Text style={styles.actionBtnIcon}>📧</Text>
+                                <Text style={styles.actionBtnText}>Email</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+
                     {index < eodHistory.length - 1 && <Divider />}
                   </View>
                 ))
@@ -530,7 +1019,7 @@ export default function EndOfDayScreen({ navigation }: Props) {
               <Card.Content>
                 <View style={styles.dateHeader}>
                   <Title style={styles.dateTitle}>
-                    {new Date().toLocaleDateString('en-PH', {
+                    {new Date(targetDate + 'T00:00:00').toLocaleDateString('en-PH', {
                       weekday: 'long',
                       year: 'numeric',
                       month: 'long',
@@ -753,7 +1242,7 @@ export default function EndOfDayScreen({ navigation }: Props) {
               <Card.Content>
                 <Title style={styles.sectionTitle}>💵 Cash Drawer Accountability</Title>
                 <Paragraph style={styles.noteText}>
-                  Only CASH transactions are included in this calculation.
+                  Only CASH transactions are included. Record supplier cash payments as Petty Cash.
                 </Paragraph>
 
                 <DataTable>
@@ -775,24 +1264,16 @@ export default function EndOfDayScreen({ navigation }: Props) {
                       <DataTable.Cell numeric>₱{daySummary.cashFundAdded.toFixed(2)}</DataTable.Cell>
                     </DataTable.Row>
                   )}
-                  <DataTable.Row>
-                    <DataTable.Cell>Less: Sales Returns (Cash)</DataTable.Cell>
-                    <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.salesReturnsCash.toFixed(2)})</DataTable.Cell>
-                  </DataTable.Row>
-                  <DataTable.Row>
-                    <DataTable.Cell>Less: Cash Paid to Suppliers</DataTable.Cell>
-                    <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.supplierPaymentsCash.toFixed(2)})</DataTable.Cell>
-                  </DataTable.Row>
+                  {totalCashRefundsOut > 0 && (
+                    <DataTable.Row>
+                      <DataTable.Cell>Less: Cash Refunds</DataTable.Cell>
+                      <DataTable.Cell numeric style={styles.deduction}>(₱{totalCashRefundsOut.toFixed(2)})</DataTable.Cell>
+                    </DataTable.Row>
+                  )}
                   {daySummary.pettyCashWithdrawn > 0 && (
                     <DataTable.Row>
                       <DataTable.Cell>Less: Petty Cash Withdrawn</DataTable.Cell>
                       <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.pettyCashWithdrawn.toFixed(2)})</DataTable.Cell>
-                    </DataTable.Row>
-                  )}
-                  {daySummary.cashRefunds > 0 && (
-                    <DataTable.Row>
-                      <DataTable.Cell>Less: Exchange/Other Refunds</DataTable.Cell>
-                      <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.cashRefunds.toFixed(2)})</DataTable.Cell>
                     </DataTable.Row>
                   )}
                   <DataTable.Row style={styles.expectedRow}>
@@ -827,6 +1308,60 @@ export default function EndOfDayScreen({ navigation }: Props) {
               </Card.Content>
             </Card>
 
+            {/* Action Buttons - Print, Export, Email */}
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={styles.sectionTitle}>📤 Print / Export Z-Reading</Title>
+                <Paragraph style={styles.noteText}>
+                  You can print, export, or email the Z-Reading report. Select one or more options:
+                </Paragraph>
+                <View style={styles.actionButtonsRow}>
+                  <TouchableOpacity
+                    style={[styles.actionBtn, isPrinting && styles.actionBtnDisabled]}
+                    onPress={handlePrint}
+                    disabled={isPrinting || isExporting || isEmailing}
+                  >
+                    {isPrinting ? (
+                      <ActivityIndicator size="small" color="#6200EE" />
+                    ) : (
+                      <>
+                        <Text style={styles.actionBtnIcon}>🖨️</Text>
+                        <Text style={styles.actionBtnText}>Print</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.actionBtn, isExporting && styles.actionBtnDisabled]}
+                    onPress={handleExportPdf}
+                    disabled={isPrinting || isExporting || isEmailing}
+                  >
+                    {isExporting ? (
+                      <ActivityIndicator size="small" color="#6200EE" />
+                    ) : (
+                      <>
+                        <Text style={styles.actionBtnIcon}>📄</Text>
+                        <Text style={styles.actionBtnText}>Export PDF</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.actionBtn, isEmailing && styles.actionBtnDisabled]}
+                    onPress={handleEmail}
+                    disabled={isPrinting || isExporting || isEmailing}
+                  >
+                    {isEmailing ? (
+                      <ActivityIndicator size="small" color="#6200EE" />
+                    ) : (
+                      <>
+                        <Text style={styles.actionBtnIcon}>📧</Text>
+                        <Text style={styles.actionBtnText}>Email</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </Card.Content>
+            </Card>
+
             {/* Submit Button */}
             <Button
               mode="contained"
@@ -842,6 +1377,122 @@ export default function EndOfDayScreen({ navigation }: Props) {
           </>
         )}
       </ScrollView>
+
+      {/* Completion Dialog with Print/Export Options */}
+      <Modal
+        visible={showCompletionDialog}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={styles.completionOverlay}>
+          <View style={styles.completionDialog}>
+            {/* Header */}
+            <View style={styles.completionHeader}>
+              <Text style={styles.completionHeaderIcon}>✅</Text>
+              <Text style={styles.completionHeaderTitle}>End of Day Complete</Text>
+            </View>
+
+            {/* Summary */}
+            <View style={styles.completionContent}>
+              <Text style={styles.completionMessage}>
+                Z-Reading saved successfully! Your shift has been closed.
+              </Text>
+
+              {completionSummary && (
+                <View style={styles.completionSummary}>
+                  <View style={styles.completionSummaryRow}>
+                    <Text style={styles.completionSummaryLabel}>Net Sales:</Text>
+                    <Text style={styles.completionSummaryValue}>₱{completionSummary.netSales.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.completionSummaryRow}>
+                    <Text style={styles.completionSummaryLabel}>Cash Counted:</Text>
+                    <Text style={styles.completionSummaryValue}>₱{completionSummary.cashCounted.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.completionSummaryRow}>
+                    <Text style={styles.completionSummaryLabel}>Variance:</Text>
+                    <Text style={[
+                      styles.completionSummaryValue,
+                      completionSummary.variance === 0 ? styles.varianceBalanced :
+                      completionSummary.variance < 0 ? styles.varianceShort : styles.varianceOver
+                    ]}>
+                      {completionSummary.variance === 0 ? 'BALANCED' :
+                       completionSummary.variance < 0 ? `SHORT ₱${Math.abs(completionSummary.variance).toFixed(2)}` :
+                       `OVER ₱${completionSummary.variance.toFixed(2)}`}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.completionPrompt}>
+                Would you like to print or export the Z-Reading?
+              </Text>
+
+              {/* Action Buttons */}
+              <View style={styles.completionActions}>
+                <TouchableOpacity
+                  style={[styles.completionActionBtn, isPrinting && styles.actionBtnDisabled]}
+                  onPress={handlePrint}
+                  disabled={isPrinting || isExporting || isEmailing}
+                >
+                  {isPrinting ? (
+                    <ActivityIndicator size="small" color="#6200EE" />
+                  ) : (
+                    <>
+                      <Text style={styles.completionActionIcon}>🖨️</Text>
+                      <Text style={styles.completionActionText}>Print</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.completionActionBtn, isExporting && styles.actionBtnDisabled]}
+                  onPress={handleExportPdf}
+                  disabled={isPrinting || isExporting || isEmailing}
+                >
+                  {isExporting ? (
+                    <ActivityIndicator size="small" color="#6200EE" />
+                  ) : (
+                    <>
+                      <Text style={styles.completionActionIcon}>📄</Text>
+                      <Text style={styles.completionActionText}>Export PDF</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.completionActionBtn, isEmailing && styles.actionBtnDisabled]}
+                  onPress={handleEmail}
+                  disabled={isPrinting || isExporting || isEmailing}
+                >
+                  {isEmailing ? (
+                    <ActivityIndicator size="small" color="#6200EE" />
+                  ) : (
+                    <>
+                      <Text style={styles.completionActionIcon}>📧</Text>
+                      <Text style={styles.completionActionText}>Email</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Done Button */}
+            <TouchableOpacity
+              style={styles.completionDoneBtn}
+              onPress={() => {
+                setShowCompletionDialog(false);
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'Dashboard' }],
+                });
+              }}
+            >
+              <Text style={styles.completionDoneBtnText}>Done - Go to Dashboard</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -975,5 +1626,204 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     opacity: 0.7,
     marginBottom: 8,
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+  },
+  actionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 90,
+    elevation: 2,
+  },
+  actionBtnDisabled: {
+    opacity: 0.5,
+  },
+  actionBtnIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  actionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6200EE',
+  },
+  historyDetails: {
+    backgroundColor: '#F5F5F5',
+    padding: 12,
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderRadius: 8,
+  },
+  historyDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  historyDetailLabel: {
+    fontSize: 13,
+    color: '#616161',
+  },
+  historyDetailValue: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#212121',
+  },
+  historyDetailValueBold: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#212121',
+  },
+  historyDetailValueRed: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#D32F2F',
+  },
+  historyDivider: {
+    marginVertical: 8,
+  },
+  historyActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  historyActionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 70,
+  },
+  varianceBalanced: {
+    color: '#4CAF50',
+  },
+  varianceShort: {
+    color: '#D32F2F',
+  },
+  varianceOver: {
+    color: '#FF9800',
+  },
+  // Completion Dialog Styles
+  completionOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  completionDialog: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 400,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  completionHeader: {
+    backgroundColor: '#4CAF50',
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    alignItems: 'center',
+  },
+  completionHeaderIcon: {
+    fontSize: 48,
+    marginBottom: 8,
+  },
+  completionHeaderTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  completionContent: {
+    padding: 20,
+  },
+  completionMessage: {
+    fontSize: 15,
+    color: '#424242',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  completionSummary: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  completionSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  completionSummaryLabel: {
+    fontSize: 14,
+    color: '#616161',
+  },
+  completionSummaryValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  completionPrompt: {
+    fontSize: 14,
+    color: '#757575',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  completionActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  completionActionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 90,
+    elevation: 2,
+  },
+  completionActionIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  completionActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6200EE',
+  },
+  completionDoneBtn: {
+    backgroundColor: '#6200EE',
+    paddingVertical: 16,
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    alignItems: 'center',
+  },
+  completionDoneBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

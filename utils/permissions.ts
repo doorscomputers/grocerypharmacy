@@ -10,6 +10,10 @@ export type Permission =
   | 'REFUND_SALE'
   | 'MANAGE_PRODUCTS'
   | 'VIEW_PRODUCTS'
+  | 'ADD_PRODUCT'
+  | 'EDIT_PRODUCT'
+  | 'DELETE_PRODUCT'
+  | 'VIEW_PRODUCT_COST'
   | 'MANAGE_INVENTORY'
   | 'VIEW_REPORTS'
   | 'MANAGE_USERS'
@@ -21,10 +25,21 @@ export type Permission =
   | 'MANAGE_PURCHASES'
   | 'MANAGE_SUPPLIERS'
   | 'CREATE_PURCHASE_ORDER'
+  | 'RECEIVE_PURCHASE'
   | 'MANAGE_SUPPLIER_PAYMENTS'
+  | 'PAY_PAYABLES'
+  | 'VIEW_ACCOUNTS_PAYABLE'
   | 'MANAGE_DAMAGED_ITEMS'
   | 'MANAGE_CUSTOMERS'
-  | 'COLLECT_CUSTOMER_PAYMENTS';
+  | 'ADD_CUSTOMER'
+  | 'EDIT_CUSTOMER'
+  | 'DELETE_CUSTOMER'
+  | 'COLLECT_CUSTOMER_PAYMENTS'
+  | 'VIEW_ACCOUNTS_RECEIVABLE'
+  | 'CREATE_CHARGE_INVOICE'
+  | 'DELETE_RECORDS'
+  | 'ACCESS_ADMIN_TOOLS'
+  | 'MANAGE_PERMISSIONS';
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER';
 
@@ -38,6 +53,10 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'REFUND_SALE',
     'MANAGE_PRODUCTS',
     'VIEW_PRODUCTS',
+    'ADD_PRODUCT',
+    'EDIT_PRODUCT',
+    'DELETE_PRODUCT',
+    'VIEW_PRODUCT_COST',
     'MANAGE_INVENTORY',
     'VIEW_REPORTS',
     'MANAGE_USERS',
@@ -49,10 +68,21 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'MANAGE_PURCHASES',
     'MANAGE_SUPPLIERS',
     'CREATE_PURCHASE_ORDER',
+    'RECEIVE_PURCHASE',
     'MANAGE_SUPPLIER_PAYMENTS',
+    'PAY_PAYABLES',
+    'VIEW_ACCOUNTS_PAYABLE',
     'MANAGE_DAMAGED_ITEMS',
     'MANAGE_CUSTOMERS',
+    'ADD_CUSTOMER',
+    'EDIT_CUSTOMER',
+    'DELETE_CUSTOMER',
     'COLLECT_CUSTOMER_PAYMENTS',
+    'VIEW_ACCOUNTS_RECEIVABLE',
+    'CREATE_CHARGE_INVOICE',
+    'DELETE_RECORDS',
+    'ACCESS_ADMIN_TOOLS',
+    'MANAGE_PERMISSIONS',
   ],
   MANAGER: [
     'VIEW_DASHBOARD',
@@ -63,6 +93,10 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'REFUND_SALE',
     'MANAGE_PRODUCTS',
     'VIEW_PRODUCTS',
+    'ADD_PRODUCT',
+    'EDIT_PRODUCT',
+    'DELETE_PRODUCT',
+    'VIEW_PRODUCT_COST',
     'MANAGE_INVENTORY',
     'VIEW_REPORTS',
     'VIEW_SETTINGS',
@@ -72,18 +106,39 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'MANAGE_PURCHASES',
     'MANAGE_SUPPLIERS',
     'CREATE_PURCHASE_ORDER',
+    'RECEIVE_PURCHASE',
     'MANAGE_SUPPLIER_PAYMENTS',
+    'PAY_PAYABLES',
+    'VIEW_ACCOUNTS_PAYABLE',
     'MANAGE_DAMAGED_ITEMS',
     'MANAGE_CUSTOMERS',
+    'ADD_CUSTOMER',
+    'EDIT_CUSTOMER',
+    'DELETE_CUSTOMER',
     'COLLECT_CUSTOMER_PAYMENTS',
-    // Manager cannot: MANAGE_USERS, MANAGE_SETTINGS
+    'VIEW_ACCOUNTS_RECEIVABLE',
+    'CREATE_CHARGE_INVOICE',
+    // Manager cannot: MANAGE_USERS, MANAGE_SETTINGS, DELETE_RECORDS (global)
   ],
   CASHIER: [
     'VIEW_DASHBOARD',
     'CREATE_SALE',
     'VIEW_OWN_SALES',
     'VIEW_PRODUCTS',
-    // Cashier cannot: void/refund sales, manage products/inventory, view all sales, access settings, etc.
+    'ADD_PRODUCT',           // Can add products
+    // NO EDIT_PRODUCT       - Cannot edit products
+    // NO DELETE_PRODUCT     - Cannot delete products
+    // NO VIEW_PRODUCT_COST  - Cannot see cost prices
+    'RECEIVE_PURCHASE',      // Can accept deliveries
+    'ADD_CUSTOMER',          // Can add customers
+    // NO EDIT_CUSTOMER      - Cannot edit customers
+    // NO DELETE_CUSTOMER    - Cannot delete customers
+    'COLLECT_CUSTOMER_PAYMENTS',  // Can collect receivables
+    'PAY_PAYABLES',          // Can pay suppliers
+    'CREATE_CHARGE_INVOICE', // Can create charge invoices
+    // NO DELETE_RECORDS     - Cannot delete any records
+    // NO VOID_SALE          - Cannot void sales
+    // NO REFUND_SALE        - Cannot refund sales
   ],
 };
 
@@ -218,15 +273,33 @@ export class PermissionService {
       { permission: 'VIEW_OWN_SALES', label: 'View Own Sales', description: 'See only own transactions' },
       { permission: 'VOID_SALE', label: 'Void Sales', description: 'Cancel/void sales transactions' },
       { permission: 'REFUND_SALE', label: 'Refund Sales', description: 'Process customer refunds' },
-      { permission: 'MANAGE_PRODUCTS', label: 'Manage Products', description: 'Create, edit, and delete products' },
+      { permission: 'MANAGE_PRODUCTS', label: 'Manage Products', description: 'Full product management access' },
       { permission: 'VIEW_PRODUCTS', label: 'View Products', description: 'Browse product catalog' },
+      { permission: 'ADD_PRODUCT', label: 'Add Products', description: 'Create new products' },
+      { permission: 'EDIT_PRODUCT', label: 'Edit Products', description: 'Modify existing products' },
+      { permission: 'DELETE_PRODUCT', label: 'Delete Products', description: 'Remove products from catalog' },
+      { permission: 'VIEW_PRODUCT_COST', label: 'View Product Cost', description: 'See product cost prices' },
       { permission: 'MANAGE_INVENTORY', label: 'Manage Inventory', description: 'Handle inventory movements and counting' },
       { permission: 'VIEW_REPORTS', label: 'View Reports', description: 'Access to BIR reports and analytics' },
       { permission: 'VIEW_SETTINGS', label: 'View Settings', description: 'See system configuration' },
       { permission: 'PERFORM_Z_READING', label: 'Z-Reading', description: 'Generate end-of-day reports' },
       { permission: 'PERFORM_X_READING', label: 'X-Reading', description: 'Generate mid-day inquiry reports' },
       { permission: 'VIEW_EJOURNAL', label: 'View eJournal', description: 'Access audit trail logs' },
-      { permission: 'MANAGE_PURCHASES', label: 'Manage Purchases', description: 'Handle purchase orders and receiving' },
+      { permission: 'MANAGE_PURCHASES', label: 'Manage Purchases', description: 'Handle purchase orders' },
+      { permission: 'RECEIVE_PURCHASE', label: 'Receive Purchases', description: 'Accept deliveries from suppliers' },
+      { permission: 'MANAGE_SUPPLIER_PAYMENTS', label: 'Manage Supplier Payments', description: 'Full supplier payment management' },
+      { permission: 'PAY_PAYABLES', label: 'Pay Payables', description: 'Make payments to suppliers' },
+      { permission: 'VIEW_ACCOUNTS_PAYABLE', label: 'View Accounts Payable', description: 'See outstanding supplier balances' },
+      { permission: 'MANAGE_CUSTOMERS', label: 'Manage Customers', description: 'Full customer management access' },
+      { permission: 'ADD_CUSTOMER', label: 'Add Customers', description: 'Create new customer records' },
+      { permission: 'EDIT_CUSTOMER', label: 'Edit Customers', description: 'Modify customer information' },
+      { permission: 'DELETE_CUSTOMER', label: 'Delete Customers', description: 'Remove customer records' },
+      { permission: 'COLLECT_CUSTOMER_PAYMENTS', label: 'Collect Payments', description: 'Receive customer payments' },
+      { permission: 'VIEW_ACCOUNTS_RECEIVABLE', label: 'View Accounts Receivable', description: 'See outstanding customer balances' },
+      { permission: 'CREATE_CHARGE_INVOICE', label: 'Charge Invoices', description: 'Create credit/charge invoices' },
+      { permission: 'DELETE_RECORDS', label: 'Delete Records', description: 'Delete any system records' },
+      { permission: 'ACCESS_ADMIN_TOOLS', label: 'Admin Tools', description: 'Access to admin tools like database reset and test data' },
+      { permission: 'MANAGE_PERMISSIONS', label: 'Manage Permissions', description: 'Configure role permissions (Admin only)' },
     ];
   }
 }

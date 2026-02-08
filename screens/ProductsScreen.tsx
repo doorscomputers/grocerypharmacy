@@ -78,6 +78,7 @@ export default function ProductsScreen({ navigation }: Props) {
     name: '',
     description: '',
     price: '',
+    wholesale_price: '',
     cost: '',
     stock_quantity: '',
     reorder_level: '',
@@ -185,6 +186,7 @@ export default function ProductsScreen({ navigation }: Props) {
       name: '',
       description: '',
       price: '',
+      wholesale_price: '',
       cost: '',
       stock_quantity: '',
       reorder_level: '',
@@ -207,6 +209,7 @@ export default function ProductsScreen({ navigation }: Props) {
       name: '',
       description: '',
       price: '',
+      wholesale_price: '',
       cost: '',
       stock_quantity: '',
       reorder_level: '',
@@ -233,6 +236,7 @@ export default function ProductsScreen({ navigation }: Props) {
       name: product.name || '',
       description: product.description || '',
       price: (product.price || product.selling_price || 0).toString(),
+      wholesale_price: product.wholesale_price ? product.wholesale_price.toString() : '',
       cost: (product.cost || product.cost_price || 0).toString(),
       stock_quantity: (product.stock_quantity || 0).toString(),
       reorder_level: (product.reorder_level || 0).toString(),
@@ -260,9 +264,18 @@ export default function ProductsScreen({ navigation }: Props) {
 
     // Validate price and cost are valid numbers
     const price = parseFloat(formData.price);
+    const wholesalePrice = formData.wholesale_price ? parseFloat(formData.wholesale_price) : null;
     const cost = parseFloat(formData.cost) || 0;
     if (isNaN(price) || price < 0) {
       Alert.alert('Error', 'Please enter a valid price');
+      return;
+    }
+    if (wholesalePrice !== null && (isNaN(wholesalePrice) || wholesalePrice < 0)) {
+      Alert.alert('Error', 'Please enter a valid wholesale price');
+      return;
+    }
+    if (wholesalePrice !== null && wholesalePrice > price) {
+      Alert.alert('Error', 'Wholesale price cannot be greater than retail price');
       return;
     }
     if (cost < 0) {
@@ -322,6 +335,7 @@ export default function ProductsScreen({ navigation }: Props) {
         name: formData.name.trim(),
         description: formData.description?.trim() || '',
         price: price,
+        wholesale_price: wholesalePrice,
         cost: cost,
         stock_quantity: parseInt(formData.stock_quantity) || 0,
         reorder_level: parseInt(formData.reorder_level) || 0,
@@ -347,9 +361,9 @@ export default function ProductsScreen({ navigation }: Props) {
       setDialogVisible(false);
       resetForm();
       await loadProducts(searchQuery.trim() || undefined);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving product:', error);
-      Alert.alert('Error', 'Failed to save product');
+      Alert.alert('Error', error?.message || 'Failed to save product');
     } finally {
       setLoading(false);
     }
@@ -611,11 +625,7 @@ export default function ProductsScreen({ navigation }: Props) {
       closeDropdown();
     } catch (error: any) {
       console.error('Error in quick add:', error);
-      if (error.message?.includes('UNIQUE constraint')) {
-        Alert.alert('Error', 'An item with this name already exists');
-      } else {
-        Alert.alert('Error', 'Failed to add item');
-      }
+      Alert.alert('Error', error?.message || 'Failed to add item');
     } finally {
       setQuickAddLoading(false);
     }
@@ -719,9 +729,15 @@ export default function ProductsScreen({ navigation }: Props) {
             </Paragraph>
           </View>
           <View style={styles.detailRow}>
-            <Paragraph style={styles.label}>Price:</Paragraph>
+            <Paragraph style={styles.label}>Retail:</Paragraph>
             <Paragraph style={styles.value}>P{(item.price || item.selling_price || 0).toFixed(2)}</Paragraph>
           </View>
+          {item.wholesale_price ? (
+            <View style={styles.detailRow}>
+              <Paragraph style={styles.label}>Wholesale:</Paragraph>
+              <Paragraph style={styles.value}>P{item.wholesale_price.toFixed(2)}</Paragraph>
+            </View>
+          ) : null}
           <View style={styles.detailRow}>
             <Paragraph style={styles.label}>Stock:</Paragraph>
             <Paragraph style={[
@@ -900,9 +916,10 @@ export default function ProductsScreen({ navigation }: Props) {
       </View>
 
       <FAB
-        style={[styles.fab, { bottom: insets.bottom + 16 }]}
+        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
         icon="plus"
         label="Add Product"
+        color="#FFFFFF"
         onPress={handleAddProduct}
       />
 
@@ -1007,7 +1024,7 @@ export default function ProductsScreen({ navigation }: Props) {
 
                 <View style={styles.row}>
                   <TextInput
-                    label="Selling Price *"
+                    label="Selling Price (Retail) *"
                     value={formData.price}
                     onChangeText={(text) => setFormData(prev => ({...prev, price: text}))}
                     mode="outlined"
@@ -1026,6 +1043,17 @@ export default function ProductsScreen({ navigation }: Props) {
                     left={<TextInput.Affix text="P" />}
                   />
                 </View>
+
+                <TextInput
+                  label="Wholesale Price"
+                  value={formData.wholesale_price}
+                  onChangeText={(text) => setFormData(prev => ({...prev, wholesale_price: text}))}
+                  mode="outlined"
+                  keyboardType="numeric"
+                  style={styles.input}
+                  left={<TextInput.Affix text="P" />}
+                  placeholder="Leave empty if not applicable"
+                />
 
                 <View style={styles.row}>
                   <StableTextInput
@@ -1579,7 +1607,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   dialog: {
     maxHeight: '90%',

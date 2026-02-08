@@ -26,6 +26,8 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type PhysicalCountReportScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -80,6 +82,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
   const theme = useTheme();
 
   useEffect(() => {
@@ -278,6 +281,106 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     }
   };
 
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('PHYSICAL COUNT')
+      .println('REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .doubleSeparator();
+
+    // Date Range
+    builder
+      .align('left')
+      .bold(true)
+      .println('DATE RANGE')
+      .bold(false)
+      .leftRight('From:', dateRange.startDate.toLocaleDateString('en-PH'))
+      .leftRight('To:', dateRange.endDate.toLocaleDateString('en-PH'))
+      .separator();
+
+    // Summary
+    const totalSessions = reportData.length;
+    const completedSessions = reportData.filter(r => r.session.status === 'completed').length;
+    const totalDiscrepancies = reportData.reduce((sum, r) => sum + (r.session.discrepancy_count || 0), 0);
+    const totalValueImpact = reportData.reduce((sum, r) => sum + (r.session.total_discrepancy_value || 0), 0);
+
+    builder
+      .bold(true)
+      .println('SUMMARY')
+      .bold(false)
+      .separator()
+      .leftRight('Total Sessions:', totalSessions.toString())
+      .leftRight('Completed:', completedSessions.toString())
+      .leftRight('Total Discrepancies:', totalDiscrepancies.toString())
+      .leftRight('Value Impact:', `P${Math.abs(totalValueImpact).toFixed(2)}`)
+      .doubleSeparator();
+
+    // Sessions List
+    builder
+      .bold(true)
+      .println('SESSIONS')
+      .bold(false)
+      .separator();
+
+    for (const report of reportData.slice(0, 10)) {
+      const session = report.session;
+      builder
+        .println(`Session: ${session.session_id.substring(0, 8)}...`)
+        .leftRight('Date:', formatDate(session.date))
+        .leftRight('Status:', session.status.toUpperCase())
+        .leftRight('Counted By:', session.started_by_name)
+        .leftRight('Items:', `${session.counted_items || 0}/${session.total_items || 0}`)
+        .leftRight('Discrepancies:', (session.discrepancy_count || 0).toString());
+
+      if (session.total_discrepancy_value !== 0) {
+        const valueStr = session.total_discrepancy_value < 0
+          ? `-P${Math.abs(session.total_discrepancy_value).toFixed(2)}`
+          : `P${session.total_discrepancy_value.toFixed(2)}`;
+        builder.leftRight('Value Impact:', valueStr);
+      }
+
+      // Print first few item details
+      if (report.details.length > 0) {
+        builder.println('  Items with discrepancy:');
+        for (const detail of report.details.filter(d => d.discrepancy !== 0).slice(0, 5)) {
+          const diffStr = detail.discrepancy >= 0 ? `+${detail.discrepancy}` : `${detail.discrepancy}`;
+          const itemName = detail.product_name.length > printerWidth - 10
+            ? detail.product_name.substring(0, printerWidth - 12) + '..'
+            : detail.product_name;
+          builder.leftRight(`  ${itemName}`, diffStr);
+        }
+      }
+
+      builder.separator();
+    }
+
+    if (reportData.length > 10) {
+      builder.println(`... and ${reportData.length - 10} more sessions`);
+      builder.separator();
+    }
+
+    // Footer
+    builder
+      .align('center')
+      .println('*** PHYSICAL COUNT REPORT ***')
+      .println(now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' }))
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
+
   const renderSession = ({ item: report }: { item: GroupedReport }) => (
     <Card key={report.session.session_id} style={styles.sessionCard}>
       <List.Item
@@ -426,10 +529,23 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     <View>
       <Card style={styles.headerCard}>
         <Card.Content>
-          <Title style={styles.headerTitle}>Physical Count Reports</Title>
-          <Paragraph style={styles.headerSubtitle}>
-            View detailed physical inventory count sessions grouped by user and date
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.headerTitle}>Physical Count Reports</Title>
+              <Paragraph style={styles.headerSubtitle}>
+                View detailed physical inventory count sessions grouped by user and date
+              </Paragraph>
+            </View>
+            <Button
+              mode="contained"
+              icon="printer"
+              onPress={() => setPrintDialogVisible(true)}
+              compact
+              disabled={reportData.length === 0}
+            >
+              Print
+            </Button>
+          </View>
           <View style={styles.headerButtons}>
             <Button
               mode="outlined"
@@ -506,6 +622,13 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
         style={styles.flatList}
         contentContainerStyle={styles.flatListContent}
       />
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print Physical Count Report"
+        onPrint={buildPrintReport}
+      />
     </SafeAreaView>
   );
 }
@@ -529,6 +652,16 @@ const styles = StyleSheet.create({
     margin: 16,
     marginBottom: 8,
     elevation: 4,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  headerTitles: {
+    flex: 1,
+    marginRight: 12,
   },
   headerTitle: {
     fontSize: 24,

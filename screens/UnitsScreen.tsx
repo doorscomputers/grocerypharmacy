@@ -201,11 +201,7 @@ export default function UnitsScreen({ navigation }: Props) {
       await loadUnits();
     } catch (error: any) {
       console.error('Error saving unit:', error);
-      if (error.message?.includes('UNIQUE constraint')) {
-        Alert.alert('Error', 'A unit with this name already exists');
-      } else {
-        Alert.alert('Error', 'Failed to save unit');
-      }
+      Alert.alert('Error', error?.message || 'Failed to save unit');
     } finally {
       setLoading(false);
     }
@@ -366,6 +362,7 @@ export default function UnitsScreen({ navigation }: Props) {
         style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
         icon="plus"
         label="Add Unit"
+        color="#FFFFFF"
         onPress={handleAddUnit}
       />
 
@@ -559,7 +556,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   input: {
     marginBottom: 16,

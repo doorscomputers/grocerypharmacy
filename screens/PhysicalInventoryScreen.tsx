@@ -464,36 +464,76 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
     }
   };
 
-  const handleBarcodeScanned = ({ type, data }: { type: string; data: string }) => {
+  const handleBarcodeScanned = async ({ type, data }: { type: string; data: string }) => {
     setScanned(true);
     setScannerVisible(false);
 
-    // Set the search query to the scanned barcode
-    setSearchQuery(data);
+    const barcodeUpper = data.toUpperCase().trim();
 
-    // Auto-focus and select the first matching product if only one result
-    setTimeout(() => {
-      const items = countItems.filter(item =>
-        item.product_name.toLowerCase().includes(data.toLowerCase()) ||
-        item.product_code.toLowerCase().includes(data.toLowerCase()) ||
-        item.product_code === data
+    // 1. Check if product is already in the count list
+    const existingItem = countItems.find(item =>
+      (item.product_code || '').toUpperCase().trim() === barcodeUpper
+    );
+
+    if (existingItem) {
+      console.log('Product already in count, opening dialog:', existingItem.product_name);
+      setSearchQuery('');
+      handleCountProduct(existingItem);
+      setTimeout(() => setScanned(false), 2000);
+      return;
+    }
+
+    // 2. Search the product database directly by code
+    try {
+      const dbService = getDatabase();
+      const searchResults = await dbService.getProducts(true, 20, data);
+
+      // Try exact code match first
+      let matchedProduct = searchResults.find((p: any) =>
+        (p.code || '').toUpperCase().trim() === barcodeUpper
       );
 
-      if (items.length === 1) {
-        console.log('Single match found, auto-selecting for count:', items[0].product_name);
-        handleCountProduct(items[0]);
-      } else if (items.length > 1) {
-        Alert.alert(
-          'Multiple Matches',
-          `Found ${items.length} products matching "${data}". Please select the correct one from the list.`
+      // Try with leading zero added (UPC-A to EAN-13)
+      if (!matchedProduct) {
+        const withLeadingZero = '0' + barcodeUpper;
+        matchedProduct = searchResults.find((p: any) =>
+          (p.code || '').toUpperCase().trim() === withLeadingZero
         );
+      }
+
+      // Try with leading zero removed
+      if (!matchedProduct && barcodeUpper.startsWith('0')) {
+        const withoutLeadingZero = barcodeUpper.substring(1);
+        matchedProduct = searchResults.find((p: any) =>
+          (p.code || '').toUpperCase().trim() === withoutLeadingZero
+        );
+      }
+
+      // Try partial match (barcode ends with code or vice versa)
+      if (!matchedProduct) {
+        matchedProduct = searchResults.find((p: any) => {
+          const code = (p.code || '').toUpperCase().trim();
+          return code.endsWith(barcodeUpper) || barcodeUpper.endsWith(code);
+        });
+      }
+
+      if (matchedProduct) {
+        console.log('Product found in database, adding to count:', matchedProduct.name);
+        setSearchQuery('');
+        addProductToCount(matchedProduct);
       } else {
+        // Set search query so user can see results and pick manually
+        setSearchQuery(data);
         Alert.alert(
           'No Match',
           `No products found matching barcode "${data}". Please check the barcode and try again.`
         );
       }
-    }, 100);
+    } catch (error) {
+      console.error('Error searching for barcode:', error);
+      setSearchQuery(data);
+      Alert.alert('Error', 'Failed to search for product. Please try manual search.');
+    }
 
     // Reset scanner state after a delay
     setTimeout(() => setScanned(false), 2000);

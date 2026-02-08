@@ -17,3 +17,4 @@ export { default as POSVoidModal } from './POSVoidModal';
 export { default as POSRefundModal } from './POSRefundModal';
 export { default as POSExchangeModal } from './POSExchangeModal';
 export { default as POSQuickCustomerModal } from './POSQuickCustomerModal';
+export { default as POSUnterminatedSessionModal } from './POSUnterminatedSessionModal';

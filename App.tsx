@@ -5,6 +5,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { Provider as PaperProvider, DefaultTheme, Title, Paragraph, Button } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { markDatabaseInitialized } from './database/getDatabase';
 // Conditional imports to avoid SQLite issues on web
 let DatabaseService: any = null;
 let initializeSampleData: any = null;
@@ -16,7 +17,8 @@ if (Platform.OS !== 'web') {
   // Use mock database service for web testing
   DatabaseService = require('./database/WebMockDatabaseService').WebMockDatabaseService;
 }
-import { AuthProvider } from './contexts/AuthContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { AppThemeProvider, useAppTheme } from './contexts/ThemeContext';
 import { DeviceBindingService } from './utils/DeviceBindingService';
 import ActivationScreen from './screens/ActivationScreen';
 
@@ -67,6 +69,13 @@ import PDCTrackingScreen from './screens/PDCTrackingScreen';
 import LicenseGeneratorScreen from './screens/LicenseGeneratorScreen';
 import StockValuationReportScreen from './screens/StockValuationReportScreen';
 import ZeroInventoryReportScreen from './screens/ZeroInventoryReportScreen';
+import ProfileScreen from './screens/ProfileScreen';
+import CustomerReportScreen from './screens/CustomerReportScreen';
+import CustomerReportDetailScreen from './screens/CustomerReportDetailScreen';
+import ProductTransactionReportScreen from './screens/ProductTransactionReportScreen';
+import UserManualScreen from './screens/UserManualScreen';
+import EJournalReportScreen from './screens/EJournalReportScreen';
+import ESalesReportScreen from './screens/ESalesReportScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -101,7 +110,7 @@ export type RootStackParamList = {
   ReportsHub: undefined;
   SalesReturns: undefined;
   PurchaseReturns: undefined;
-  EndOfDay: undefined;
+  EndOfDay: { targetDate?: string } | undefined;
   CashCount: undefined;
   PurchaseReport: undefined;
   SalesReturnsReport: undefined;
@@ -115,17 +124,24 @@ export type RootStackParamList = {
   LicenseGenerator: undefined;
   StockValuationReport: undefined;
   ZeroInventoryReport: undefined;
+  Profile: undefined;
+  CustomerReport: undefined;
+  CustomerReportDetail: { customerId: number; customerName: string; reportType: string };
+  ProductTransactionReport: undefined;
+  UserManual: undefined;
+  EJournalReport: undefined;
+  ESalesReport: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
 
-// Custom theme with proper contrast for mobile POS
-const theme = {
+// Default fallback theme (used during loading before ThemeContext is ready)
+const defaultTheme = {
   ...DefaultTheme,
   colors: {
     ...DefaultTheme.colors,
-    primary: '#2196F3',
-    accent: '#FF9800',
+    primary: '#00796B', // Teal (default)
+    accent: '#F57C00',
     background: '#FFFFFF',
     surface: '#F5F5F5',
     text: '#212121',
@@ -135,12 +151,23 @@ const theme = {
   },
 };
 
-export default function App() {
+// Inner App component that has access to theme context
+function AppContent() {
+  const { colors, paperTheme } = useAppTheme();
   const [isDbInitialized, setIsDbInitialized] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(null);
   const [isDeviceActivated, setIsDeviceActivated] = useState(false);
   const [isCheckingActivation, setIsCheckingActivation] = useState(true);
+
+  // Create dynamic theme from context
+  const theme = {
+    ...DefaultTheme,
+    colors: {
+      ...DefaultTheme.colors,
+      ...paperTheme.colors,
+    },
+  };
 
   useEffect(() => {
     console.log('App component mounted, Platform:', Platform.OS);
@@ -158,6 +185,7 @@ export default function App() {
           const dbService = DatabaseService.getInstance();
           await dbService.initialize();
           console.log('[Web] Mock database initialized successfully');
+          markDatabaseInitialized();
         }
         setIsDbInitialized(true);
         setIsDeviceActivated(true); // Web doesn't require activation
@@ -181,6 +209,7 @@ export default function App() {
 
       await dbService.initialize();
       console.log('Database initialized successfully');
+      markDatabaseInitialized();
 
       // Initialize DeviceBindingService with database
       const db = dbService.getDatabase();
@@ -300,20 +329,43 @@ export default function App() {
     <SafeAreaProvider>
       <PaperProvider theme={theme}>
         <AuthProvider>
-          <NavigationContainer>
-            <Stack.Navigator
-              id={undefined}
-              initialRouteName="Login"
-              screenOptions={{
-                headerStyle: {
-                  backgroundColor: theme.colors.primary,
-                },
-                headerTintColor: '#FFFFFF',
-                headerTitleStyle: {
-                  fontWeight: 'bold',
-                },
-              }}
-            >
+          <AppNavigator theme={theme} />
+        </AuthProvider>
+        <StatusBar style="dark" />
+      </PaperProvider>
+    </SafeAreaProvider>
+  );
+}
+
+// Navigation component that respects auth state
+function AppNavigator({ theme }: { theme: any }) {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  // Show loading while checking session
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background }}>
+        <Title>Loading...</Title>
+        <Paragraph>Checking session...</Paragraph>
+      </View>
+    );
+  }
+
+  return (
+    <NavigationContainer>
+      <Stack.Navigator
+        id={undefined}
+        initialRouteName={isAuthenticated ? "Dashboard" : "Login"}
+        screenOptions={{
+          headerStyle: {
+            backgroundColor: theme.colors.primary,
+          },
+          headerTintColor: '#FFFFFF',
+          headerTitleStyle: {
+            fontWeight: 'bold',
+          },
+        }}
+      >
             <Stack.Screen
               name="Login"
               component={LoginScreen}
@@ -544,11 +596,51 @@ export default function App() {
               component={ZeroInventoryReportScreen}
               options={{ title: 'Zero Inventory Report' }}
             />
+            <Stack.Screen
+              name="Profile"
+              component={ProfileScreen}
+              options={{ title: 'My Profile' }}
+            />
+            <Stack.Screen
+              name="CustomerReport"
+              component={CustomerReportScreen}
+              options={{ title: 'Customer Reports' }}
+            />
+            <Stack.Screen
+              name="CustomerReportDetail"
+              component={CustomerReportDetailScreen}
+              options={{ title: 'Customer Report Detail' }}
+            />
+            <Stack.Screen
+              name="ProductTransactionReport"
+              component={ProductTransactionReportScreen}
+              options={{ title: 'Product Transaction History' }}
+            />
+            <Stack.Screen
+              name="UserManual"
+              component={UserManualScreen}
+              options={{ title: 'User Manual' }}
+            />
+            <Stack.Screen
+              name="EJournalReport"
+              component={EJournalReportScreen}
+              options={{ title: 'eJournal Report' }}
+            />
+            <Stack.Screen
+              name="ESalesReport"
+              component={ESalesReportScreen}
+              options={{ title: 'eSales Report' }}
+            />
           </Stack.Navigator>
         </NavigationContainer>
-        <StatusBar style="light" />
-        </AuthProvider>
-      </PaperProvider>
-    </SafeAreaProvider>
+  );
+}
+
+// Main App component - wraps with ThemeProvider
+export default function App() {
+  return (
+    <AppThemeProvider>
+      <AppContent />
+    </AppThemeProvider>
   );
 }

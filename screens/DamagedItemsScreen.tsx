@@ -430,9 +430,10 @@ export default function DamagedItemsScreen({ navigation }: Props) {
 
       <FAB
         icon="plus"
-        style={styles.fab}
+        style={[styles.fab, { backgroundColor: theme.colors.primary }]}
         onPress={openCreateSessionDialog}
         label="New Session"
+        color="#FFFFFF"
       />
 
       {/* Create Session Dialog */}
@@ -479,36 +480,58 @@ export default function DamagedItemsScreen({ navigation }: Props) {
           </Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView style={styles.dialogContent}>
-              <TextInput
-                label="Search Products"
-                value={productSearchQuery}
-                onChangeText={setProductSearchQuery}
-                mode="outlined"
-                style={styles.dialogInput}
-                right={<TextInput.Icon icon="magnify" />}
-              />
-
-              <View style={styles.productList}>
-                {filteredProducts.slice(0, 10).map((item) => (
-                  <List.Item
-                    key={item.id.toString()}
-                    title={item.name}
-                    description={`${item.code} • Stock: ${item.stock_quantity} • Cost: ₱${item.cost.toFixed(2)}`}
-                    onPress={() => setSelectedProduct(item)}
-                    style={selectedProduct?.id === item.id ? styles.selectedProduct : undefined}
-                    left={props => <List.Icon {...props} icon="package-variant" />}
+              {/* Show product search/list only when no product is selected */}
+              {!selectedProduct && (
+                <>
+                  <TextInput
+                    label="Search Products"
+                    value={productSearchQuery}
+                    onChangeText={setProductSearchQuery}
+                    mode="outlined"
+                    style={styles.dialogInput}
+                    right={<TextInput.Icon icon="magnify" />}
                   />
-                ))}
-              </View>
 
+                  <View style={styles.productList}>
+                    {filteredProducts.slice(0, 10).map((item) => (
+                      <List.Item
+                        key={item.id.toString()}
+                        title={item.name}
+                        titleNumberOfLines={1}
+                        description={`${item.code} • Stock: ${item.stock_quantity} • Cost: ₱${item.cost.toFixed(2)}`}
+                        descriptionNumberOfLines={1}
+                        onPress={() => setSelectedProduct(item)}
+                        style={styles.productListItem}
+                        left={props => <List.Icon {...props} icon="package-variant" />}
+                      />
+                    ))}
+                  </View>
+                </>
+              )}
+
+              {/* Show selected product details and form */}
               {selectedProduct && (
                 <>
-                  <Paragraph style={styles.selectedProductName}>
-                    Selected: {selectedProduct.name}
-                  </Paragraph>
-                  <Paragraph style={styles.selectedProductInfo}>
-                    Available Stock: {selectedProduct.stock_quantity} {selectedProduct.unit}
-                  </Paragraph>
+                  <View style={styles.selectedProductCard}>
+                    <View style={styles.selectedProductHeader}>
+                      <List.Icon icon="package-variant" />
+                      <View style={styles.selectedProductDetails}>
+                        <Paragraph style={styles.selectedProductName}>
+                          {selectedProduct.name}
+                        </Paragraph>
+                        <Paragraph style={styles.selectedProductInfo}>
+                          {selectedProduct.code} • Stock: {selectedProduct.stock_quantity} {selectedProduct.unit}
+                        </Paragraph>
+                      </View>
+                    </View>
+                    <Button
+                      mode="text"
+                      onPress={() => setSelectedProduct(null)}
+                      compact
+                    >
+                      Change
+                    </Button>
+                  </View>
 
                   <TextInput
                     label="Damaged Quantity *"
@@ -693,7 +716,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   addDialog: {
     maxHeight: '90%',
@@ -705,23 +728,49 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   productList: {
-    maxHeight: 200,
+    maxHeight: 250,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+  },
+  productListItem: {
+    minHeight: 60,
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
   },
   selectedProduct: {
     backgroundColor: '#E3F2FD',
   },
+  selectedProductCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#E3F2FD',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#1976D2',
+  },
+  selectedProductHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  selectedProductDetails: {
+    flex: 1,
+    marginLeft: 8,
+  },
   selectedProductName: {
     fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 8,
+    fontSize: 14,
     color: '#1976D2',
   },
   selectedProductInfo: {
-    textAlign: 'center',
     fontSize: 12,
     opacity: 0.7,
-    marginBottom: 16,
   },
   summaryContainer: {
     alignItems: 'center',

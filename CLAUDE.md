@@ -237,3 +237,53 @@ The app includes Philippine business sample data:
 # Activate the Device
 
 PS D:\NextJSProj\posmobile\posmobile> node scripts/generate-license.js 816299459fa626b9f6e5541aec3897204b60b5ea40b31cb22fa426a7044df9f3
+
+# Buid APK
+
+Here's your complete build reference:  
+ ============================================================ EAS BUILD COMMANDS - IgoroTech POS
+============================================================
+
+--- FIRST TIME SETUP (only once) ---
+npm install -g eas-cli
+eas login
+eas init
+eas build:configure --platform android
+
+--- BUILD APK (preview/testing) ---
+cd D:\NextJSProj\posmobile\posmobile
+eas build --platform android --profile preview
+
+--- BUILD APK (production/release) ---
+cd D:\NextJSProj\posmobile\posmobile
+eas build --platform android --profile production
+
+--- DAILY DEVELOPMENT (no rebuild needed) ---
+npx expo start --dev-client
+
+--- REGENERATE NATIVE FILES (if needed) ---
+npx expo prebuild --clean
+
+--- USEFUL COMMANDS ---
+eas whoami # Check logged-in account
+eas build:list # See all your builds
+eas build:view # View latest build status
+
+============================================================
+WHEN TO REBUILD
+============================================================ - Added new native package (camera, BLE, etc.) - Changed app.json plugins or permissions - Updated Expo SDK version
+
+    NO REBUILD NEEDED FOR:
+    - Screen changes, UI updates
+    - Business logic, database queries
+    - Adding JS-only packages
+
+============================================================
+
+Save this somewhere handy. After the first build, you'll mostly just use npx expo start --dev-client for daily development.
+
+eas build --platform android --profile preview │ APK │ Quick testing │  
+ ├───────────────────────────────────────────────────────┼────────┼─────────────────────────┤
+│ eas build --platform android --profile production-apk │ APK │ Production distribution │
+├───────────────────────────────────────────────────────┼────────┼─────────────────────────┤
+│ eas build --platform android --profile production │ AAB │ Play Store (later)

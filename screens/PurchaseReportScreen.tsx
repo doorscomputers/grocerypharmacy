@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Text } from 'react-native';
 import {
   Card,
   Title,
@@ -9,11 +9,15 @@ import {
   DataTable,
   Divider,
   Chip,
+  Menu,
+  TextInput,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import { ESCPOSBuilder } from '../utils/escpos';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'PurchaseReport'>;
@@ -21,15 +25,16 @@ type Props = {
 
 interface PurchaseOrder {
   id: number;
-  po_number: string;
+  purchase_number: string;
   supplier_id: number;
   supplier_name?: string;
-  order_date: string;
+  purchase_date: string;
   total_amount: number;
   paid_amount: number;
   status: string;
   payment_status: string;
   notes?: string;
+  created_at: string;
 }
 
 export default function PurchaseReportScreen({ navigation }: Props) {
@@ -42,6 +47,8 @@ export default function PurchaseReportScreen({ navigation }: Props) {
   });
   const [selectedSupplier, setSelectedSupplier] = useState<number | null>(null);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
+  const [printDialogVisible, setPrintDialogVisible] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -87,7 +94,7 @@ export default function PurchaseReportScreen({ navigation }: Props) {
 
     // Date filter using dateRange
     filtered = filtered.filter(p => {
-      const pDate = new Date(p.order_date);
+      const pDate = new Date(p.purchase_date || p.created_at);
       return pDate >= dateRange.startDate && pDate <= dateRange.endDate;
     });
 
@@ -96,7 +103,7 @@ export default function PurchaseReportScreen({ navigation }: Props) {
       filtered = filtered.filter(p => p.supplier_id === selectedSupplier);
     }
 
-    return filtered.sort((a, b) => new Date(b.order_date).getTime() - new Date(a.order_date).getTime());
+    return filtered.sort((a, b) => new Date(b.purchase_date || b.created_at).getTime() - new Date(a.purchase_date || a.created_at).getTime());
   };
 
   const filteredPurchases = getFilteredPurchases();
@@ -135,7 +142,66 @@ export default function PurchaseReportScreen({ navigation }: Props) {
   };
 
   const formatCurrency = (amount: number) => {
-    return `₱${(amount || 0).toFixed(2)}`;
+    return `₱${(amount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('PURCHASE REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .feed()
+      .println(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')}`)
+      .println(`to ${dateRange.endDate.toLocaleDateString('en-PH')}`)
+      .doubleSeparator();
+
+    builder
+      .align('left')
+      .bold(true)
+      .println('SUMMARY')
+      .bold(false)
+      .separator()
+      .leftRight('Total POs:', totals.count.toString())
+      .leftRight('Total Amount:', `P${totals.totalAmount.toFixed(2)}`)
+      .leftRight('Total Paid:', `P${totals.paidAmount.toFixed(2)}`)
+      .leftRight('Outstanding:', `P${totals.unpaidAmount.toFixed(2)}`)
+      .doubleSeparator();
+
+    builder
+      .bold(true)
+      .println('BY SUPPLIER')
+      .bold(false)
+      .separator();
+
+    suppliers.forEach(supplier => {
+      const supplierPOs = filteredPurchases.filter(p => p.supplier_id === supplier.id);
+      if (supplierPOs.length > 0) {
+        const total = supplierPOs.reduce((sum, p) => sum + (p.total_amount || 0), 0);
+        const name = supplier.name.length > printerWidth - 15
+          ? supplier.name.substring(0, printerWidth - 17) + '..'
+          : supplier.name;
+        builder.leftRight(name, `P${total.toFixed(2)}`);
+      }
+    });
+
+    builder
+      .feed()
+      .align('center')
+      .separator()
+      .println('*** END OF REPORT ***')
+      .feed(2)
+      .cut();
+
+    return builder;
   };
 
   return (
@@ -147,10 +213,22 @@ export default function PurchaseReportScreen({ navigation }: Props) {
         nestedScrollEnabled={true}
       >
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Purchase Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            All purchase orders from suppliers
-          </Paragraph>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitles}>
+              <Title style={styles.pageTitle}>Purchase Report</Title>
+              <Paragraph style={styles.pageSubtitle}>
+                All purchase orders from suppliers
+              </Paragraph>
+            </View>
+            <Button
+              mode="contained"
+              icon="printer"
+              onPress={() => setPrintDialogVisible(true)}
+              compact
+            >
+              Print
+            </Button>
+          </View>
         </View>
 
         {/* Date Filter */}
@@ -167,27 +245,47 @@ export default function PurchaseReportScreen({ navigation }: Props) {
         <Card style={styles.filterCard}>
           <Card.Content>
             <Paragraph style={styles.filterLabel}>Supplier:</Paragraph>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View style={styles.chipContainer}>
-                <Chip
-                  selected={selectedSupplier === null}
-                  onPress={() => setSelectedSupplier(null)}
-                  style={styles.chip}
+            <Menu
+              visible={supplierMenuVisible}
+              onDismiss={() => setSupplierMenuVisible(false)}
+              anchor={
+                <TouchableOpacity
+                  style={styles.dropdownButton}
+                  onPress={() => setSupplierMenuVisible(true)}
                 >
-                  All Suppliers
-                </Chip>
-                {suppliers.map(supplier => (
-                  <Chip
+                  <Text style={styles.dropdownButtonText}>
+                    {selectedSupplier
+                      ? suppliers.find(s => s.id === selectedSupplier)?.name || 'Unknown'
+                      : 'All Suppliers'}
+                  </Text>
+                  <Text style={styles.dropdownChevron}>▼</Text>
+                </TouchableOpacity>
+              }
+              contentStyle={styles.menuContent}
+            >
+              <Menu.Item
+                onPress={() => {
+                  setSelectedSupplier(null);
+                  setSupplierMenuVisible(false);
+                }}
+                title="All Suppliers"
+                leadingIcon={selectedSupplier === null ? 'check' : undefined}
+              />
+              <Divider />
+              {[...suppliers]
+                .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                .map(supplier => (
+                  <Menu.Item
                     key={supplier.id}
-                    selected={selectedSupplier === supplier.id}
-                    onPress={() => setSelectedSupplier(supplier.id)}
-                    style={styles.chip}
-                  >
-                    {supplier.name}
-                  </Chip>
+                    onPress={() => {
+                      setSelectedSupplier(supplier.id);
+                      setSupplierMenuVisible(false);
+                    }}
+                    title={supplier.name}
+                    leadingIcon={selectedSupplier === supplier.id ? 'check' : undefined}
+                  />
                 ))}
-              </View>
-            </ScrollView>
+            </Menu>
           </Card.Content>
         </Card>
 
@@ -235,9 +333,9 @@ export default function PurchaseReportScreen({ navigation }: Props) {
 
                 {filteredPurchases.map((purchase) => (
                   <DataTable.Row key={purchase.id}>
-                    <DataTable.Cell style={{ flex: 1.5 }}>{purchase.po_number}</DataTable.Cell>
+                    <DataTable.Cell style={{ flex: 1.5 }}>{purchase.purchase_number}</DataTable.Cell>
                     <DataTable.Cell style={{ flex: 2 }}>{purchase.supplier_name}</DataTable.Cell>
-                    <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(purchase.order_date)}</DataTable.Cell>
+                    <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(purchase.purchase_date || purchase.created_at)}</DataTable.Cell>
                     <DataTable.Cell numeric style={{ flex: 1.2 }}>{formatCurrency(purchase.total_amount)}</DataTable.Cell>
                     <DataTable.Cell style={{ flex: 1 }}>
                       <Chip
@@ -296,6 +394,13 @@ export default function PurchaseReportScreen({ navigation }: Props) {
           </Paragraph>
         </View>
       </ScrollView>
+
+      <PrintOptionsDialog
+        visible={printDialogVisible}
+        onDismiss={() => setPrintDialogVisible(false)}
+        title="Print Purchase Report"
+        onPrint={buildPrintReport}
+      />
     </View>
   );
 }
@@ -327,6 +432,14 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  headerTitles: {
+    flex: 1,
   },
   pageTitle: {
     fontSize: 24,
@@ -376,6 +489,31 @@ const styles = StyleSheet.create({
   },
   chip: {
     marginRight: 4,
+  },
+  dropdownButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+  },
+  dropdownButtonText: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
+  },
+  dropdownChevron: {
+    fontSize: 12,
+    color: '#666',
+    marginLeft: 8,
+  },
+  menuContent: {
+    backgroundColor: '#fff',
+    maxHeight: 300,
   },
   summaryGrid: {
     flexDirection: 'row',

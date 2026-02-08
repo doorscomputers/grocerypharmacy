@@ -176,9 +176,9 @@ export default function CustomerManagementScreen({ navigation }: Props) {
       setDialogVisible(false);
       clearForm();
       await loadData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving customer:', error);
-      Alert.alert('Error', 'Failed to save customer');
+      Alert.alert('Error', error?.message || 'Failed to save customer');
     } finally {
       setLoading(false);
     }
@@ -370,6 +370,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
         style={[styles.fab, { backgroundColor: theme.colors.primary }]}
         icon="plus"
         label="Add Customer"
+        color="#FFFFFF"
         onPress={openAddDialog}
       />
 
@@ -600,7 +601,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     margin: 16,
     right: 0,
-    bottom: 0,
+    bottom: 70,
   },
   dialog: {
     maxHeight: '85%',

@@ -54,6 +54,7 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'Stock Valuation', description: 'Total inventory value report', icon: 'currency-php', screen: 'StockValuationReport' },
         { title: 'Physical Count History', description: 'Past physical count sessions', icon: 'counter', screen: 'Reports' },
         { title: 'Damaged Items Report', description: 'History of damaged inventory', icon: 'package-variant-closed-remove', screen: 'DamagedItemsHistory' },
+        { title: 'Product Transaction History', description: 'All transactions for a product (sold, purchased, damaged, returned)', icon: 'file-document-outline', screen: 'ProductTransactionReport' },
       ]
     },
     {
@@ -78,6 +79,7 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'Sales Returns Report', description: 'Customer returns and refunds', icon: 'cash-refund', screen: 'SalesReturnsReport' },
         { title: 'Customer Payments', description: 'Collect payments from customers', icon: 'cash-plus', screen: 'CustomerPayments' },
         { title: 'Customer Ledger', description: 'Transaction history per customer', icon: 'book-account', screen: 'CustomerManagement' },
+        { title: 'Customer Reports', description: 'Invoices, returns & payments per customer', icon: 'account-details', screen: 'CustomerReport' },
       ]
     },
     {
@@ -90,6 +92,18 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'Purchase Returns Report', description: 'Returns to suppliers', icon: 'truck-delivery-outline', screen: 'PurchaseReturnsReport' },
         { title: 'Supplier Payments', description: 'Make payments to suppliers', icon: 'cash-minus', screen: 'SupplierPayments' },
         { title: 'Supplier Ledger', description: 'Transaction history per supplier', icon: 'book-account-outline', screen: 'SupplierManagement' },
+      ]
+    },
+    {
+      title: 'BIR Compliance',
+      subtitle: 'Audit trails and regulatory reports',
+      icon: 'file-document-check-outline',
+      color: '#607D8B',
+      reports: [
+        { title: 'eJournal Report', description: 'Complete audit trail for BIR compliance', icon: 'book-open-page-variant', screen: 'EJournalReport' },
+        { title: 'eSales Report', description: 'Monthly sales report for BIR submission', icon: 'file-export', screen: 'ESalesReport' },
+        { title: 'Z-Reading History', description: 'End of day report history', icon: 'calculator', screen: 'EndOfDay' },
+        { title: 'X-Reading', description: 'Mid-day inquiry report', icon: 'poll', screen: 'Reports' },
       ]
     },
   ];
