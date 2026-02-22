@@ -2,14 +2,15 @@
  * HeroSalesCard - Large prominent card for today's sales
  *
  * Displays the most important metric (total sales) prominently
- * Following research-backed POS UI patterns
+ * Responsive font and padding scaling
  */
 
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Card, Text } from 'react-native-paper';
 import { useAppTheme } from '../../contexts/ThemeContext';
-import { spacing, typography, borderRadius, shadows, layout } from '../../utils/theme';
+import { borderRadius, shadows } from '../../utils/theme';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface HeroSalesCardProps {
   totalSales: number;
@@ -25,8 +26,8 @@ export const HeroSalesCard: React.FC<HeroSalesCardProps> = ({
   dateLabel = "Today's Sales",
 }) => {
   const { colors } = useAppTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
-  // Calculate percentage change if previous period data available
   const percentChange = previousPeriodSales && previousPeriodSales > 0
     ? ((totalSales - previousPeriodSales) / previousPeriodSales) * 100
     : null;
@@ -39,27 +40,27 @@ export const HeroSalesCard: React.FC<HeroSalesCardProps> = ({
   };
 
   return (
-    <Card style={[styles.card, { backgroundColor: colors.primary }, shadows.card]}>
-      <Card.Content style={styles.content}>
-        <Text style={[styles.label, { color: colors.textOnPrimary }]}>
+    <Card style={[styles.card, { backgroundColor: colors.primary, minHeight: lo.heroCardMinHeight }, shadows.card]}>
+      <Card.Content style={[styles.content, { padding: sp.lg }]}>
+        <Text style={[styles.label, { color: colors.textOnPrimary, fontSize: fs.cardTitle }]}>
           {dateLabel}
         </Text>
 
-        <Text style={[styles.amount, { color: colors.textOnPrimary }]}>
+        <Text style={[styles.amount, { color: colors.textOnPrimary, fontSize: fs.hero }]}>
           {formatCurrency(totalSales)}
         </Text>
 
-        <View style={styles.footer}>
-          <Text style={[styles.transactions, { color: colors.textOnPrimary }]}>
+        <View style={[styles.footer, { gap: sp.md }]}>
+          <Text style={[styles.transactions, { color: colors.textOnPrimary, fontSize: fs.bodySmall }]}>
             {transactionCount} transaction{transactionCount !== 1 ? 's' : ''}
           </Text>
 
           {percentChange !== null && (
             <View style={[
               styles.changeBadge,
-              { backgroundColor: percentChange >= 0 ? 'rgba(255,255,255,0.2)' : 'rgba(255,0,0,0.2)' }
+              { backgroundColor: percentChange >= 0 ? 'rgba(255,255,255,0.2)' : 'rgba(255,0,0,0.2)', paddingHorizontal: sp.sm, paddingVertical: sp.xs }
             ]}>
-              <Text style={[styles.changeText, { color: colors.textOnPrimary }]}>
+              <Text style={[styles.changeText, { color: colors.textOnPrimary, fontSize: fs.caption }]}>
                 {percentChange >= 0 ? '↑' : '↓'} {Math.abs(percentChange).toFixed(1)}%
               </Text>
             </View>
@@ -73,40 +74,31 @@ export const HeroSalesCard: React.FC<HeroSalesCardProps> = ({
 const styles = StyleSheet.create({
   card: {
     borderRadius: borderRadius.lg,
-    marginBottom: spacing.md,
-    minHeight: layout.heroCardMinHeight,
+    marginBottom: 16,
   },
   content: {
-    padding: spacing.lg,
     alignItems: 'center',
   },
   label: {
-    fontSize: typography.cardTitle.fontSize,
     fontWeight: '600',
     opacity: 0.9,
-    marginBottom: spacing.sm,
+    marginBottom: 8,
   },
   amount: {
-    fontSize: typography.hero.fontSize,
     fontWeight: 'bold',
-    marginBottom: spacing.sm,
+    marginBottom: 8,
   },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
   },
   transactions: {
-    fontSize: typography.bodySmall.fontSize,
     opacity: 0.9,
   },
   changeBadge: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
     borderRadius: borderRadius.md,
   },
   changeText: {
-    fontSize: typography.caption.fontSize,
     fontWeight: '600',
   },
 });

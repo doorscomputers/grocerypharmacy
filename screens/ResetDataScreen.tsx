@@ -18,8 +18,9 @@ import {
   ActivityIndicator,
   Divider,
   Chip,
+  RadioButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
@@ -27,6 +28,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ScreenGuard } from '../components/RoleGuard';
 import { DatabaseBackupService } from '../utils/DatabaseBackupService';
 import { Platform } from 'react-native';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type ResetDataScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -74,7 +76,9 @@ export default function ResetDataScreen({ navigation }: Props) {
   const [passwordError, setPasswordError] = useState('');
   const [verifyingPassword, setVerifyingPassword] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [resetType, setResetType] = useState<'standard' | 'with_beginning_inventory'>('standard');
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user } = useAuth();
 
   const loadDataSummary = useCallback(async () => {
@@ -204,7 +208,14 @@ export default function ResetDataScreen({ navigation }: Props) {
       }
 
       const dbService = getDatabase();
-      const result = await dbService.resetTransactionalData();
+
+      // Call appropriate reset method based on resetType
+      let result: { success: boolean; deletedCounts: Record<string, number>; errors: string[]; productsInitialized?: number };
+      if (resetType === 'with_beginning_inventory' && user) {
+        result = await dbService.resetTransactionalDataWithBeginningInventory(user.id);
+      } else {
+        result = await dbService.resetTransactionalData();
+      }
 
       setDialogVisible(false);
       setConfirmationText('');
@@ -214,12 +225,17 @@ export default function ResetDataScreen({ navigation }: Props) {
         // Log successful reset
         await logResetOperation('SUCCESS', totalDeleted, {
           deletedCounts: result.deletedCounts,
-          backupCreated: !!backupPath
+          backupCreated: !!backupPath,
+          resetType,
+          productsInitialized: result.productsInitialized
         });
         const backupMsg = backupPath ? '\n\nA backup was created before the reset.' : '';
+        const stockMsg = resetType === 'with_beginning_inventory'
+          ? `\n\n${result.productsInitialized || 0} products initialized with 100 units each and Beginning Balance inventory records created.`
+          : '\n\nStock quantities have been reset to zero.';
         Alert.alert(
           'Reset Complete',
-          `Successfully deleted ${totalDeleted} records.\n\nAll transactional data has been cleared. Master data (Products, Suppliers, Customers, Categories, etc.) has been preserved.\n\nStock quantities have been reset to zero.${backupMsg}`,
+          `Successfully deleted ${totalDeleted} records.\n\nAll transactional data has been cleared. Master data (Products, Suppliers, Customers, Categories, etc.) has been preserved.${stockMsg}${backupMsg}`,
           [
             {
               text: 'OK',
@@ -235,11 +251,16 @@ export default function ResetDataScreen({ navigation }: Props) {
         await logResetOperation('SUCCESS', totalDeleted, {
           deletedCounts: result.deletedCounts,
           errors: result.errors,
-          hasWarnings: true
+          hasWarnings: true,
+          resetType,
+          productsInitialized: result.productsInitialized
         });
+        const stockMsg = resetType === 'with_beginning_inventory'
+          ? `\n\n${result.productsInitialized || 0} products were initialized with beginning inventory.`
+          : '';
         Alert.alert(
           'Reset Completed with Warnings',
-          `Reset completed but encountered some errors:\n\n${result.errors.join('\n')}\n\nMost data was cleared successfully.`,
+          `Reset completed but encountered some errors:\n\n${result.errors.join('\n')}\n\nMost data was cleared successfully.${stockMsg}`,
           [
             {
               text: 'OK',
@@ -334,9 +355,9 @@ export default function ResetDataScreen({ navigation }: Props) {
 
   return (
     <ScreenGuard screenName="Settings">
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <ScrollView style={styles.scrollView}>
-          <View style={styles.content}>
+          <View style={[styles.content, { padding: lo.screenPadding }]}>
             {/* Warning Card */}
             <Card style={[styles.card, styles.warningCard]}>
               <Card.Content>
@@ -357,8 +378,8 @@ export default function ResetDataScreen({ navigation }: Props) {
             {/* Preserved Data Card */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.cardTitle}>Data That Will Be PRESERVED</Title>
-                <Paragraph style={styles.cardSubtitle}>
+                <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Data That Will Be PRESERVED</Title>
+                <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
                   The following master data will NOT be deleted:
                 </Paragraph>
                 <View style={styles.chipContainer}>
@@ -374,16 +395,49 @@ export default function ResetDataScreen({ navigation }: Props) {
                   <Chip icon="check" style={styles.preserveChip}>Permissions</Chip>
                 </View>
                 <Paragraph style={[styles.noteText, { marginTop: 12 }]}>
-                  Note: Product stock quantities will be reset to zero.
+                  Note: Product stock quantities will be {resetType === 'standard' ? 'reset to zero' : 'set to 100 units each'}.
                 </Paragraph>
+              </Card.Content>
+            </Card>
+
+            {/* Reset Type Selection Card */}
+            <Card style={styles.card}>
+              <Card.Content>
+                <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Reset Type</Title>
+                <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
+                  Choose how to handle product inventory after reset:
+                </Paragraph>
+                <RadioButton.Group onValueChange={value => setResetType(value as 'standard' | 'with_beginning_inventory')} value={resetType}>
+                  <View style={styles.radioOption}>
+                    <RadioButton.Item
+                      label="Reset to Zero Stock"
+                      value="standard"
+                      style={styles.radioItem}
+                    />
+                    <Paragraph style={styles.radioDescription}>
+                      All product stock quantities will be set to 0. No inventory movement records will be created.
+                    </Paragraph>
+                  </View>
+                  <Divider style={{ marginVertical: 8 }} />
+                  <View style={styles.radioOption}>
+                    <RadioButton.Item
+                      label="Reset with Beginning Inventory (100 units)"
+                      value="with_beginning_inventory"
+                      style={styles.radioItem}
+                    />
+                    <Paragraph style={styles.radioDescription}>
+                      All active products will be set to 100 units with a "Beginning Balance" inventory movement record for audit trail.
+                    </Paragraph>
+                  </View>
+                </RadioButton.Group>
               </Card.Content>
             </Card>
 
             {/* Data Summary Card */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.cardTitle}>Data That Will Be DELETED</Title>
-                <Paragraph style={styles.cardSubtitle}>
+                <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Data That Will Be DELETED</Title>
+                <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
                   Review the data that will be permanently removed:
                 </Paragraph>
 
@@ -520,7 +574,7 @@ export default function ResetDataScreen({ navigation }: Props) {
             </Dialog.Actions>
           </Dialog>
         </Portal>
-      </SafeAreaView>
+      </View>
     </ScreenGuard>
   );
 }
@@ -647,5 +701,18 @@ const styles = StyleSheet.create({
     color: '#F44336',
     fontSize: 12,
     marginTop: 4,
+  },
+  radioOption: {
+    marginBottom: 4,
+  },
+  radioItem: {
+    paddingVertical: 4,
+  },
+  radioDescription: {
+    paddingLeft: 52,
+    fontSize: 12,
+    opacity: 0.7,
+    marginTop: -8,
+    marginBottom: 8,
   },
 });

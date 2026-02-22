@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,10 @@ import {
 } from 'react-native';
 import { IconButton, Checkbox } from 'react-native-paper';
 import { DatabaseService } from '../../database/DatabaseService';
+import POSInvoiceListPicker, { InvoiceTransaction } from './POSInvoiceListPicker';
+import POSDiscountWarningBanner from './POSDiscountWarningBanner';
+import POSTransactionCompleteDialog, { TransactionCompleteData } from './POSTransactionCompleteDialog';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface POSRefundModalProps {
   visible: boolean;
@@ -39,10 +43,16 @@ interface TransactionData {
   invoice_number: string;
   customer_id?: number;
   customer_name?: string;
+  subtotal: number;
+  tax_amount: number;
+  discount_amount: number;
   total_amount: number;
   payment_method: string;
   status: string;
   transaction_date: string;
+  sc_pwd_id?: string;
+  sc_pwd_name?: string;
+  sc_pwd_type?: 'SENIOR' | 'PWD';
   items: TransactionItem[];
 }
 
@@ -52,23 +62,58 @@ export default function POSRefundModal({
   cashierId,
   onSuccess,
 }: POSRefundModalProps) {
-  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const { sp, fs, lo } = useResponsiveTheme();
   const [refundReason, setRefundReason] = useState('');
   const [transaction, setTransaction] = useState<TransactionData | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [refundMethod, setRefundMethod] = useState<'CASH' | 'CREDIT'>('CASH');
+  const [showCompleteDialog, setShowCompleteDialog] = useState(false);
+  const [completeData, setCompleteData] = useState<TransactionCompleteData | null>(null);
+  const [cashierName, setCashierName] = useState<string>('');
 
-  const handleSearch = async () => {
-    if (!invoiceNumber.trim()) {
-      Alert.alert('Error', 'Please enter an invoice number');
-      return;
+  // Load cashier name
+  useEffect(() => {
+    const loadCashierName = async () => {
+      try {
+        const db = DatabaseService.getInstance();
+        const user = await db.getUserById(cashierId);
+        if (user) {
+          setCashierName(user.full_name || user.username);
+        }
+      } catch (error) {
+        console.error('Error loading cashier name:', error);
+      }
+    };
+    if (cashierId) {
+      loadCashierName();
     }
+  }, [cashierId]);
 
+  // Helper to set up transaction with refund properties
+  const setupTransactionForRefund = (result: any) => {
+    // Add refund properties to items
+    const itemsWithRefund = result.items.map((item: any) => ({
+      ...item,
+      refund_quantity: 0,
+      selected: false,
+    }));
+    setTransaction({ ...result, items: itemsWithRefund });
+
+    // Set default refund method based on original payment
+    if (result.payment_method === 'CHARGE_INVOICE') {
+      setRefundMethod('CREDIT');
+    } else {
+      setRefundMethod('CASH');
+    }
+  };
+
+  // Handle invoice search from the picker
+  const handleSearchInvoice = async (invoiceNumber: string) => {
     setIsSearching(true);
     try {
       const db = DatabaseService.getInstance();
-      const result = await db.searchTransactionByInvoice(invoiceNumber.trim());
+      const result = await db.searchTransactionByInvoice(invoiceNumber);
 
       if (!result) {
         Alert.alert('Not Found', 'No transaction found with that invoice number');
@@ -80,24 +125,29 @@ export default function POSRefundModal({
         Alert.alert('Invalid Status', 'Only completed transactions can be refunded');
         setTransaction(null);
       } else {
-        // Add refund properties to items
-        const itemsWithRefund = result.items.map((item: any) => ({
-          ...item,
-          refund_quantity: 0,
-          selected: false,
-        }));
-        setTransaction({ ...result, items: itemsWithRefund });
-
-        // Set default refund method based on original payment
-        if (result.payment_method === 'CHARGE_INVOICE') {
-          setRefundMethod('CREDIT');
-        } else {
-          setRefundMethod('CASH');
-        }
+        setupTransactionForRefund(result);
       }
     } catch (error) {
       console.error('Error searching transaction:', error);
       Alert.alert('Error', 'Failed to search for transaction');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Handle invoice selection from browse list
+  const handleSelectInvoice = async (invoice: InvoiceTransaction) => {
+    setIsSearching(true);
+    try {
+      const db = DatabaseService.getInstance();
+      // Fetch full transaction details including items
+      const result = await db.searchTransactionByInvoice(invoice.invoice_number || invoice.transaction_number);
+      if (result) {
+        setupTransactionForRefund(result);
+      }
+    } catch (error) {
+      console.error('Error fetching transaction details:', error);
+      Alert.alert('Error', 'Failed to load transaction details');
     } finally {
       setIsSearching(false);
     }
@@ -149,10 +199,14 @@ export default function POSRefundModal({
     }
 
     const refundTotal = calculateRefundTotal();
+    const hasDiscount = transaction.discount_amount > 0;
+    const discountWarning = hasDiscount
+      ? `\n\n⚠️ NOTE: Original transaction had a ₱${transaction.discount_amount.toFixed(2)} discount. Refund is based on actual paid amounts.`
+      : '';
 
     Alert.alert(
       'Confirm Refund',
-      `Process refund of ${formatCurrency(refundTotal)}?\n\n${selectedItems.length} item(s) will be returned to inventory.\nRefund method: ${refundMethod}`,
+      `Process refund of ${formatCurrency(refundTotal)}?\n\n${selectedItems.length} item(s) will be returned to inventory.\nRefund method: ${refundMethod}${discountWarning}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -180,19 +234,28 @@ export default function POSRefundModal({
                 created_by: cashierId,
               });
 
-              // If cash refund, record cash movement
-              if (refundMethod === 'CASH') {
-                await db.createCashMovement({
-                  movement_type: 'CASH_REFUND',
-                  amount: refundTotal,
-                  description: `Refund for ${transaction.invoice_number}`,
-                  reference_number: transaction.invoice_number,
-                  cashier_id: cashierId,
-                });
-              }
+              // Note: cash movement is already created inside processSalesReturn()
 
-              Alert.alert('Success', `Refund of ${formatCurrency(refundTotal)} processed successfully`);
-              handleClose();
+              // Prepare data for complete dialog
+              const refundRefNumber = `RTN-${Date.now().toString().slice(-6)}`;
+              setCompleteData({
+                transactionType: 'REFUND',
+                referenceNumber: refundRefNumber,
+                originalInvoice: transaction.invoice_number,
+                customerName: transaction.customer_name,
+                totalAmount: refundTotal,
+                reason: refundReason.trim(),
+                items: selectedItems.map(item => ({
+                  name: item.product_name,
+                  quantity: item.refund_quantity,
+                  unitPrice: item.unit_price,
+                  totalAmount: item.unit_price * item.refund_quantity,
+                })),
+                refundMethod: refundMethod,
+                cashierName: cashierName,
+                transactionDate: new Date(),
+              });
+              setShowCompleteDialog(true);
               onSuccess?.();
             } catch (error) {
               console.error('Error processing refund:', error);
@@ -207,11 +270,18 @@ export default function POSRefundModal({
   };
 
   const handleClose = () => {
-    setInvoiceNumber('');
     setRefundReason('');
     setTransaction(null);
     setRefundMethod('CASH');
+    setShowCompleteDialog(false);
+    setCompleteData(null);
     onClose();
+  };
+
+  const handleCompleteDialogClose = () => {
+    setShowCompleteDialog(false);
+    setCompleteData(null);
+    handleClose();
   };
 
   const formatCurrency = (value: number) => {
@@ -227,8 +297,9 @@ export default function POSRefundModal({
   ];
 
   return (
+    <>
     <Modal
-      visible={visible}
+      visible={visible && !showCompleteDialog}
       transparent
       animationType="slide"
       onRequestClose={handleClose}
@@ -237,43 +308,42 @@ export default function POSRefundModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Process Refund</Text>
+            <Text style={[styles.headerTitle, { fontSize: fs.h2 }]}>Process Refund</Text>
             <IconButton icon="close" size={24} iconColor="#FFFFFF" onPress={handleClose} />
           </View>
 
-          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-            {/* Search Box */}
-            <View style={styles.searchBox}>
-              <Text style={styles.label}>Invoice Number</Text>
-              <View style={styles.searchRow}>
-                <TextInput
-                  style={styles.searchInput}
-                  value={invoiceNumber}
-                  onChangeText={setInvoiceNumber}
-                  placeholder="Enter invoice number"
-                  placeholderTextColor="#9E9E9E"
-                  autoCapitalize="characters"
+          <ScrollView style={[styles.content, { padding: sp.md }]} showsVerticalScrollIndicator={false}>
+            {/* Invoice Picker (when no transaction selected) */}
+            {!transaction && (
+              <View style={styles.pickerContainer}>
+                <POSInvoiceListPicker
+                  onSelectInvoice={handleSelectInvoice}
+                  onSearchInvoice={handleSearchInvoice}
+                  isSearching={isSearching}
+                  accentColor="#FF9800"
+                  excludeWithReturns={true}
                 />
-                <TouchableOpacity
-                  style={styles.searchBtn}
-                  onPress={handleSearch}
-                  disabled={isSearching}
-                >
-                  {isSearching ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.searchBtnText}>Search</Text>
-                  )}
-                </TouchableOpacity>
               </View>
-            </View>
+            )}
 
             {/* Transaction Details */}
             {transaction && (
               <>
+                {/* Discount Warning Banner */}
+                {transaction.discount_amount > 0 && (
+                  <POSDiscountWarningBanner
+                    discountAmount={transaction.discount_amount}
+                    totalAmount={transaction.total_amount}
+                    originalAmount={(transaction.subtotal || 0) + (transaction.tax_amount || 0)}
+                    scPwdId={transaction.sc_pwd_id}
+                    scPwdName={transaction.sc_pwd_name}
+                    scPwdType={transaction.sc_pwd_type}
+                  />
+                )}
+
                 <View style={styles.transactionInfo}>
                   <Text style={styles.invoiceLabel}>{transaction.invoice_number}</Text>
                   <Text style={styles.transactionMeta}>
@@ -320,30 +390,30 @@ export default function POSRefundModal({
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Refund Method</Text>
                   <View style={styles.methodOptions}>
-                    <TouchableOpacity
-                      style={[styles.methodBtn, refundMethod === 'CASH' && styles.methodBtnActive]}
-                      onPress={() => setRefundMethod('CASH')}
-                    >
-                      <Text style={[styles.methodBtnText, refundMethod === 'CASH' && styles.methodBtnTextActive]}>
-                        Cash Refund
-                      </Text>
-                    </TouchableOpacity>
-                    {transaction.payment_method === 'CHARGE_INVOICE' && (
+                    {transaction.payment_method === 'CHARGE_INVOICE' ? (
                       <TouchableOpacity
-                        style={[styles.methodBtn, refundMethod === 'CREDIT' && styles.methodBtnActive]}
-                        onPress={() => setRefundMethod('CREDIT')}
+                        style={[styles.methodBtn, styles.methodBtnActive]}
+                        disabled
                       >
-                        <Text style={[styles.methodBtnText, refundMethod === 'CREDIT' && styles.methodBtnTextActive]}>
+                        <Text style={[styles.methodBtnText, styles.methodBtnTextActive]}>
                           Credit Balance
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={[styles.methodBtn, styles.methodBtnActive]}
+                        disabled
+                      >
+                        <Text style={[styles.methodBtnText, styles.methodBtnTextActive]}>
+                          Cash Refund
                         </Text>
                       </TouchableOpacity>
                     )}
                   </View>
-                  {refundMethod === 'CASH' && (
+                  {transaction.payment_method === 'CHARGE_INVOICE' ? (
+                    <Text style={styles.methodNote}>This was a Charge Invoice — refund reduces the customer's outstanding balance</Text>
+                  ) : (
                     <Text style={styles.methodNote}>Cash will be deducted from drawer balance</Text>
-                  )}
-                  {refundMethod === 'CREDIT' && (
-                    <Text style={styles.methodNote}>Amount will be credited to customer balance</Text>
                   )}
                 </View>
 
@@ -396,18 +466,20 @@ export default function POSRefundModal({
           <View style={styles.footer}>
             <TouchableOpacity
               style={styles.cancelBtn}
-              onPress={handleClose}
+              onPress={transaction ? () => setTransaction(null) : handleClose}
               disabled={isProcessing}
             >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+              <Text style={styles.cancelBtnText}>
+                {transaction ? 'Back' : 'Cancel'}
+              </Text>
             </TouchableOpacity>
             {transaction && (
               <TouchableOpacity
-                style={[styles.refundBtn, isProcessing && styles.refundBtnDisabled]}
+                style={[styles.refundBtn, (isProcessing || calculateRefundTotal() === 0) && styles.refundBtnDisabled]}
                 onPress={handleRefund}
                 disabled={isProcessing || calculateRefundTotal() === 0}
               >
-                <Text style={styles.refundBtnText}>
+                <Text style={[styles.refundBtnText, { fontSize: fs.button }]}>
                   {isProcessing ? 'Processing...' : 'Process Refund'}
                 </Text>
               </TouchableOpacity>
@@ -416,6 +488,14 @@ export default function POSRefundModal({
         </View>
       </KeyboardAvoidingView>
     </Modal>
+
+    {/* Transaction Complete Dialog with Print/Email */}
+    <POSTransactionCompleteDialog
+      visible={showCompleteDialog}
+      onClose={handleCompleteDialogClose}
+      data={completeData}
+    />
+    </>
   );
 }
 
@@ -452,6 +532,9 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+  },
+  pickerContainer: {
+    minHeight: 450,
   },
   searchBox: {
     marginBottom: 16,

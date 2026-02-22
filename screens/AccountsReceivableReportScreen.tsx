@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Text } from 'react-native';
 import {
   Card,
   Title,
@@ -15,8 +15,10 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'AccountsReceivableReport'>;
@@ -59,6 +61,7 @@ interface CustomerAging extends Customer {
 
 export default function AccountsReceivableReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [customers, setCustomers] = useState<CustomerAging[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,11 +71,24 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   useEffect(() => {
     loadData(dateRange.startDate, dateRange.endDate);
+    loadCompanySettings();
   }, [dateRange]);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -204,8 +220,8 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
 
     // Date range
     builder
-      .leftRight('From:', dateRange.startDate.toLocaleDateString('en-PH'))
-      .leftRight('To:', dateRange.endDate.toLocaleDateString('en-PH'))
+      .leftRight('From:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
       .separator();
 
     // Summary totals
@@ -238,7 +254,7 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         .bold(false)
         .separator();
 
-      customers.sort((a, b) => b.aging.total - a.aging.total).forEach((customer) => {
+      customers.sort((a, b) => a.name.localeCompare(b.name)).forEach((customer) => {
         builder.leftRight(customer.name.substring(0, 20), formatCurrency(customer.aging.total));
       });
     }
@@ -248,33 +264,163 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
       .separator()
       .align('center')
       .println('Report Generated:')
-      .println(new Date().toLocaleString('en-PH'))
+      .println(formatPrinterDateTime(new Date()))
       .feed(2)
       .cut();
 
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #9C27B0; }
+          .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          .total-box { text-align: center; background: #f3e5f5; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+          .total-amount { font-size: 28px; font-weight: bold; color: #9C27B0; }
+          .aging-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+          .aging-item { flex: 1; min-width: 100px; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; border-left: 4px solid #ccc; }
+          .aging-item.current { border-left-color: #4CAF50; }
+          .aging-item.days30 { border-left-color: #FF9800; }
+          .aging-item.days60 { border-left-color: #F44336; }
+          .aging-item.days90 { border-left-color: #B71C1C; }
+          .aging-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .aging-value { font-size: 14px; font-weight: bold; }
+          .stats-row { display: flex; justify-content: space-around; margin: 16px 0; }
+          .stat-item { text-align: center; }
+          .stat-label { font-size: 11px; color: #666; }
+          .stat-value { font-size: 18px; font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .footer-row { background-color: #e8f5e9 !important; }
+          .footer-row td { font-weight: bold; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">ACCOUNTS RECEIVABLE REPORT</div>
+        <div class="date-range">Period: ${startDateStr} to ${endDateStr}</div>
+
+        <div class="total-box">
+          <div style="font-size: 12px; color: #666;">Total Receivables</div>
+          <div class="total-amount">${formatCurrency(totals.total)}</div>
+        </div>
+
+        <div class="section-title">Aging Summary</div>
+        <div class="aging-grid">
+          <div class="aging-item current">
+            <div class="aging-label">Current (0-30)</div>
+            <div class="aging-value" style="color: #4CAF50;">${formatCurrency(totals.current)}</div>
+          </div>
+          <div class="aging-item days30">
+            <div class="aging-label">31-60 Days</div>
+            <div class="aging-value" style="color: #FF9800;">${formatCurrency(totals.days30)}</div>
+          </div>
+          <div class="aging-item days60">
+            <div class="aging-label">61-90 Days</div>
+            <div class="aging-value" style="color: #F44336;">${formatCurrency(totals.days60)}</div>
+          </div>
+          <div class="aging-item days90">
+            <div class="aging-label">90+ Days</div>
+            <div class="aging-value" style="color: #B71C1C;">${formatCurrency(totals.days90Plus)}</div>
+          </div>
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-item">
+            <div class="stat-label">Customers with Balance</div>
+            <div class="stat-value" style="color: #2196F3;">${customers.length}</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Open Invoices</div>
+            <div class="stat-value" style="color: #FF9800;">${customers.reduce((sum, c) => sum + c.transactions.length, 0)}</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Average Balance</div>
+            <div class="stat-value" style="color: #9C27B0;">${formatCurrency(customers.length > 0 ? totals.total / customers.length : 0)}</div>
+          </div>
+        </div>
+
+        ${customers.length > 0 ? `
+          <div class="section-title">Aging by Customer</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Current</th>
+                <th>31-60</th>
+                <th>61-90</th>
+                <th>90+</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${customers.sort((a, b) => a.name.localeCompare(b.name)).map(customer => `
+                <tr>
+                  <td>${customer.name}</td>
+                  <td style="color: #4CAF50;">${customer.aging.current > 0 ? formatCurrency(customer.aging.current) : '-'}</td>
+                  <td style="color: #FF9800;">${customer.aging.days30 > 0 ? formatCurrency(customer.aging.days30) : '-'}</td>
+                  <td style="color: #F44336;">${customer.aging.days60 > 0 ? formatCurrency(customer.aging.days60) : '-'}</td>
+                  <td style="color: #B71C1C;">${customer.aging.days90Plus > 0 ? formatCurrency(customer.aging.days90Plus) : '-'}</td>
+                  <td><strong>${formatCurrency(customer.aging.total)}</strong></td>
+                </tr>
+              `).join('')}
+              <tr class="footer-row">
+                <td>TOTAL</td>
+                <td style="color: #4CAF50;">${formatCurrency(totals.current)}</td>
+                <td style="color: #FF9800;">${formatCurrency(totals.days30)}</td>
+                <td style="color: #F44336;">${formatCurrency(totals.days60)}</td>
+                <td style="color: #B71C1C;">${formatCurrency(totals.days90Plus)}</td>
+                <td>${formatCurrency(totals.total)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : '<p style="text-align: center; color: #999;">No outstanding receivables</p>'}
+
+        <div class="footer">
+          <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Accounts Receivable Report</p>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Accounts Receivable Report"
+        reportFileName={`AR_Report_${dateRange.startDate.toISOString().split('T')[0]}_to_${dateRange.endDate.toISOString().split('T')[0]}`}
+        emailBody={`Please find attached the Accounts Receivable Report.\n\nPeriod: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}\nTotal Receivables: ${formatCurrency(totals.total)}\nCustomers with Balance: ${customers.length}\n\n---\nGenerated by IgoroTech POS`}
+        disabled={loading || customers.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Accounts Receivable Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Customer balances and aging analysis
-              </Paragraph>
-            </View>
-            <Button mode="contained" icon="printer" onPress={() => setPrintDialogVisible(true)} compact>Print</Button>
-          </View>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -303,7 +449,7 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         {/* Summary Totals */}
         <Card style={styles.summaryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Total Receivables</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Total Receivables</Title>
             <Title style={[styles.totalAmount, { color: '#9C27B0' }]}>
               {formatCurrency(totals.total)}
             </Title>
@@ -372,7 +518,7 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         {viewMode === 'summary' && (
           <Card style={styles.tableCard}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Customer Balances</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Customer Balances</Title>
 
               {customers.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No outstanding receivables</Paragraph>
@@ -384,7 +530,7 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
                     <DataTable.Title numeric style={{ flex: 1.5 }}>Balance</DataTable.Title>
                   </DataTable.Header>
 
-                  {customers.sort((a, b) => b.aging.total - a.aging.total).map((customer) => (
+                  {customers.sort((a, b) => a.name.localeCompare(b.name)).map((customer) => (
                     <DataTable.Row
                       key={customer.id}
                       onPress={() => setSelectedCustomer(
@@ -412,83 +558,66 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         {viewMode === 'aging' && (
           <Card style={styles.tableCard}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Aging by Customer</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Aging by Customer (A-Z)</Title>
 
               {customers.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No outstanding receivables</Paragraph>
               ) : (
-                <DataTable>
-                  <DataTable.Header>
-                    <DataTable.Title style={{ flex: 1.5 }}>Customer</DataTable.Title>
-                    <DataTable.Title numeric style={{ flex: 1 }}>Current</DataTable.Title>
-                    <DataTable.Title numeric style={{ flex: 1 }}>31-60</DataTable.Title>
-                    <DataTable.Title numeric style={{ flex: 1 }}>61-90</DataTable.Title>
-                    <DataTable.Title numeric style={{ flex: 1 }}>90+</DataTable.Title>
-                    <DataTable.Title numeric style={{ flex: 1.2 }}>Total</DataTable.Title>
-                  </DataTable.Header>
+                <ScrollView horizontal showsHorizontalScrollIndicator>
+                  <View style={{ minWidth: 600 }}>
+                    {/* Header Row */}
+                    <View style={styles.agingHeaderRow}>
+                      <Text style={[styles.agingCell, styles.agingCustomerCell, styles.agingHeaderText]}>Customer</Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, styles.agingHeaderText]}>Current</Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, styles.agingHeaderText]}>31-60</Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, styles.agingHeaderText]}>61-90</Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, styles.agingHeaderText]}>90+</Text>
+                      <Text style={[styles.agingCell, styles.agingTotalCell, styles.agingHeaderText]}>Total</Text>
+                    </View>
 
-                  {customers.sort((a, b) => b.aging.total - a.aging.total).map((customer) => (
-                    <DataTable.Row key={customer.id}>
-                      <DataTable.Cell style={{ flex: 1.5 }}>{customer.name}</DataTable.Cell>
-                      <DataTable.Cell numeric style={{ flex: 1 }}>
-                        <Paragraph style={{ color: '#4CAF50', fontSize: 12 }}>
+                    {/* Data Rows - Sorted by Customer Name A-Z */}
+                    {customers.sort((a, b) => a.name.localeCompare(b.name)).map((customer) => (
+                      <View key={customer.id} style={styles.agingDataRow}>
+                        <Text style={[styles.agingCell, styles.agingCustomerCell]} numberOfLines={1}>{customer.name}</Text>
+                        <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#4CAF50' }]}>
                           {customer.aging.current > 0 ? formatCurrency(customer.aging.current) : '-'}
-                        </Paragraph>
-                      </DataTable.Cell>
-                      <DataTable.Cell numeric style={{ flex: 1 }}>
-                        <Paragraph style={{ color: '#FF9800', fontSize: 12 }}>
+                        </Text>
+                        <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#FF9800' }]}>
                           {customer.aging.days30 > 0 ? formatCurrency(customer.aging.days30) : '-'}
-                        </Paragraph>
-                      </DataTable.Cell>
-                      <DataTable.Cell numeric style={{ flex: 1 }}>
-                        <Paragraph style={{ color: '#F44336', fontSize: 12 }}>
+                        </Text>
+                        <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#F44336' }]}>
                           {customer.aging.days60 > 0 ? formatCurrency(customer.aging.days60) : '-'}
-                        </Paragraph>
-                      </DataTable.Cell>
-                      <DataTable.Cell numeric style={{ flex: 1 }}>
-                        <Paragraph style={{ color: '#B71C1C', fontSize: 12 }}>
+                        </Text>
+                        <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#B71C1C' }]}>
                           {customer.aging.days90Plus > 0 ? formatCurrency(customer.aging.days90Plus) : '-'}
-                        </Paragraph>
-                      </DataTable.Cell>
-                      <DataTable.Cell numeric style={{ flex: 1.2 }}>
-                        <Paragraph style={{ fontWeight: 'bold', fontSize: 12 }}>
+                        </Text>
+                        <Text style={[styles.agingCell, styles.agingTotalCell, { fontWeight: 'bold' }]}>
                           {formatCurrency(customer.aging.total)}
-                        </Paragraph>
-                      </DataTable.Cell>
-                    </DataTable.Row>
-                  ))}
+                        </Text>
+                      </View>
+                    ))}
 
-                  <DataTable.Row style={{ backgroundColor: '#f0f0f0' }}>
-                    <DataTable.Cell style={{ flex: 1.5 }}>
-                      <Paragraph style={{ fontWeight: 'bold' }}>TOTAL</Paragraph>
-                    </DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1 }}>
-                      <Paragraph style={{ color: '#4CAF50', fontWeight: 'bold', fontSize: 12 }}>
+                    {/* Totals Row */}
+                    <View style={[styles.agingDataRow, { backgroundColor: '#E8EAF6' }]}>
+                      <Text style={[styles.agingCell, styles.agingCustomerCell, { fontWeight: 'bold' }]}>TOTAL</Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#4CAF50', fontWeight: 'bold' }]}>
                         {formatCurrency(totals.current)}
-                      </Paragraph>
-                    </DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1 }}>
-                      <Paragraph style={{ color: '#FF9800', fontWeight: 'bold', fontSize: 12 }}>
+                      </Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#FF9800', fontWeight: 'bold' }]}>
                         {formatCurrency(totals.days30)}
-                      </Paragraph>
-                    </DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1 }}>
-                      <Paragraph style={{ color: '#F44336', fontWeight: 'bold', fontSize: 12 }}>
+                      </Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#F44336', fontWeight: 'bold' }]}>
                         {formatCurrency(totals.days60)}
-                      </Paragraph>
-                    </DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1 }}>
-                      <Paragraph style={{ color: '#B71C1C', fontWeight: 'bold', fontSize: 12 }}>
+                      </Text>
+                      <Text style={[styles.agingCell, styles.agingAmountCell, { color: '#B71C1C', fontWeight: 'bold' }]}>
                         {formatCurrency(totals.days90Plus)}
-                      </Paragraph>
-                    </DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1.2 }}>
-                      <Paragraph style={{ fontWeight: 'bold', fontSize: 12 }}>
+                      </Text>
+                      <Text style={[styles.agingCell, styles.agingTotalCell, { fontWeight: 'bold' }]}>
                         {formatCurrency(totals.total)}
-                      </Paragraph>
-                    </DataTable.Cell>
-                  </DataTable.Row>
-                </DataTable>
+                      </Text>
+                    </View>
+                  </View>
+                </ScrollView>
               )}
             </Card.Content>
           </Card>
@@ -545,65 +674,26 @@ export default function AccountsReceivableReportScreen({ navigation }: Props) {
         )}
 
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
             Report generated on {new Date().toLocaleString('en-PH')}
           </Paragraph>
         </View>
       </ScrollView>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print AR Report"
-        onPrint={buildPrintReport}
-      />
-    </View>
+          </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 16,
@@ -691,5 +781,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.6,
     textAlign: 'center',
+  },
+  // Aging Table Styles
+  agingHeaderRow: {
+    flexDirection: 'row',
+    backgroundColor: '#E8EAF6',
+    borderBottomWidth: 2,
+    borderBottomColor: '#9C27B0',
+    paddingVertical: 10,
+  },
+  agingDataRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+    paddingVertical: 8,
+  },
+  agingCell: {
+    paddingHorizontal: 8,
+    fontSize: 13,
+  },
+  agingCustomerCell: {
+    width: 150,
+    minWidth: 150,
+  },
+  agingAmountCell: {
+    width: 80,
+    minWidth: 80,
+    textAlign: 'right',
+  },
+  agingTotalCell: {
+    width: 90,
+    minWidth: 90,
+    textAlign: 'right',
+  },
+  agingHeaderText: {
+    fontWeight: 'bold',
+    color: '#512DA8',
   },
 });

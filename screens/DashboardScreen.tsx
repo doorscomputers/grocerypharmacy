@@ -22,7 +22,6 @@ import {
   IconButton,
   Avatar,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -32,6 +31,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAppTheme } from '../contexts/ThemeContext';
 import { PermissionService } from '../utils/permissions';
 import { spacing, typography, borderRadius, shadows, layout } from '../utils/theme';
+import { useResponsive, responsiveValue, useResponsiveTheme } from '../utils/responsive';
+import { toLocalDateString } from '../utils/dateTime';
 
 // Dashboard Components
 import { HeroSalesCard } from '../components/dashboard/HeroSalesCard';
@@ -127,6 +128,8 @@ const getPresetLabel = (preset: DatePreset): string => {
 };
 
 export default function DashboardScreen({ navigation }: Props) {
+  const { width } = useResponsive();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [stats, setStats] = useState({
     sales: 0,
     transactions: 0,
@@ -265,7 +268,7 @@ export default function DashboardScreen({ navigation }: Props) {
   };
 
   const formatDateForInput = (date: Date): string => {
-    return date.toISOString().split('T')[0];
+    return toLocalDateString(date);
   };
 
   const handleCustomDateApply = () => {
@@ -410,13 +413,8 @@ export default function DashboardScreen({ navigation }: Props) {
 
   const APP_VERSION = 'v1.3.5';
 
-  const webContainerStyle = Platform.OS === 'web'
-    ? { height: 'calc(100vh - 64px)', maxHeight: 'calc(100vh - 64px)', overflow: 'hidden' as const }
-    : {};
-
-  const webScrollStyle = Platform.OS === 'web'
-    ? { flex: 1, overflow: 'auto' as const }
-    : {};
+  const webContainerStyle = {};
+  const webScrollStyle = {};
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }, webContainerStyle]}>
@@ -469,7 +467,7 @@ export default function DashboardScreen({ navigation }: Props) {
         </TouchableOpacity>
 
         {/* Hero Sales Card */}
-        <View style={styles.section}>
+        <View style={[styles.section, { paddingHorizontal: lo.screenPadding }]}>
           <HeroSalesCard
             totalSales={stats.sales}
             transactionCount={stats.transactions}
@@ -478,7 +476,7 @@ export default function DashboardScreen({ navigation }: Props) {
         </View>
 
         {/* Primary Action Buttons */}
-        <View style={styles.primaryActions}>
+        <View style={[styles.primaryActions, { gap: sp.lg, paddingHorizontal: lo.screenPadding }]}>
           <PrimaryActionButton
             label="New Sale"
             icon="cart-plus"
@@ -486,15 +484,15 @@ export default function DashboardScreen({ navigation }: Props) {
             onPress={() => navigation.navigate('Sales')}
           />
           <PrimaryActionButton
-            label="Returns"
-            icon="cash-refund"
+            label="Dashboard"
+            icon="view-dashboard"
             variant="primary"
-            onPress={() => navigation.navigate('SalesReturns')}
+            onPress={() => navigation.navigate('DashboardView')}
           />
         </View>
 
         {/* Metrics Row */}
-        <View style={styles.metricsRow}>
+        <View style={[styles.metricsRow, { gap: sp.sm, paddingHorizontal: lo.screenPadding }]}>
           <MetricCard
             label="Sales Returns"
             value={stats.salesReturns}
@@ -522,7 +520,7 @@ export default function DashboardScreen({ navigation }: Props) {
         </View>
 
         {/* Quick Actions */}
-        <View style={styles.section}>
+        <View style={[styles.section, { paddingHorizontal: lo.screenPadding }]}>
           <QuickActionRow
             title="Quick Actions"
             actions={quickActions}
@@ -533,7 +531,7 @@ export default function DashboardScreen({ navigation }: Props) {
 
         {/* Admin Tools (if admin) */}
         {user?.role === 'ADMIN' && (
-          <View style={styles.section}>
+          <View style={[styles.section, { paddingHorizontal: lo.screenPadding }]}>
             <QuickActionRow
               title="Admin Tools"
               actions={adminQuickActions}
@@ -729,9 +727,10 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
 
-  // Metrics Row
+  // Metrics Row - Responsive wrapping for small screens
   metricsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
     marginBottom: spacing.md,

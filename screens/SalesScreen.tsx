@@ -16,7 +16,7 @@ import {
   Text,
   Button,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useFocusEffect, RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
@@ -42,8 +42,10 @@ import {
   POSExchangeModal,
   POSQuickCustomerModal,
   POSUnterminatedSessionModal,
+  POSReprintModal,
 } from '../components/pos';
 import POSSeniorDiscountModal from '../components/pos/POSSeniorDiscountModal';
+import { useResponsiveTheme } from '../utils/responsive';
 import { CartItem } from '../hooks/usePOSCart';
 import ReceiptPreview, { ReceiptData } from '../components/ReceiptPreview';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
@@ -65,9 +67,38 @@ interface Props {
 export default function SalesScreen({ navigation, route }: Props) {
   const { user } = useAuth();
   const theme = useTheme();
+  const { sp, fs, lo, isPhone } = useResponsiveTheme();
   const printerService = BluetoothPrinterService.getInstance();
+
+  // Responsive style overrides (scales with screen size)
+  const actionBtnSize = isPhone ? Math.max(sp.xxl, 44) : sp.xxl + sp.sm;
+  const rs = {
+    searchSection: { paddingHorizontal: sp.sm + sp.xs, paddingVertical: sp.xs + 2 },
+    priceTypeLabel: { fontSize: fs.bodySmall },
+    priceTypeButton: { paddingHorizontal: sp.md, paddingVertical: sp.sm },
+    priceTypeButtonText: { fontSize: fs.bodySmall },
+    actionButton: { width: actionBtnSize, height: actionBtnSize },
+    actionButtonIcon: { fontSize: isPhone ? fs.h3 + 2 : fs.h2 - 2 },
+    cartHeader: { paddingHorizontal: sp.md, paddingVertical: sp.sm },
+    cartTitle: { fontSize: fs.cardTitle },
+    cartCount: { fontSize: fs.bodySmall },
+    clearButtonText: { fontSize: fs.caption },
+    cartListContent: { padding: sp.sm },
+    emptyCartIcon: { fontSize: fs.hero * 2 },
+    emptyCartTitle: { fontSize: fs.cardTitle },
+    emptyCartSubtitle: { fontSize: fs.bodySmall },
+    emptyCartPadding: { paddingVertical: sp.xxl + sp.xl },
+    checkoutSection: { paddingHorizontal: sp.md, paddingTop: sp.xs, paddingBottom: sp.xxl },
+    totalLabel: { fontSize: fs.bodySmall },
+    totalValue: { fontSize: fs.bodySmall },
+    grandTotalLabel: { fontSize: fs.cardTitle },
+    grandTotalValue: { fontSize: fs.h3 },
+    checkoutButton: { paddingVertical: sp.sm + sp.xs, borderRadius: sp.sm + sp.xs },
+    checkoutButtonText: { fontSize: fs.cardTitle },
+  };
   const searchInputRef = useRef<RNTextInput>(null);
   const productsRef = useRef<Product[]>([]);
+  const cartListRef = useRef<FlatList>(null);
 
   // Custom hooks for state management
   const {
@@ -105,6 +136,18 @@ export default function SalesScreen({ navigation, route }: Props) {
     productsRef.current = products;
   }, [products]);
 
+  // Auto-scroll cart to bottom when new item is added
+  const prevCartLengthRef = useRef(0);
+  useEffect(() => {
+    if (cart.length > prevCartLengthRef.current && cartListRef.current) {
+      // New item added - scroll to end after a short delay for render
+      setTimeout(() => {
+        cartListRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    }
+    prevCartLengthRef.current = cart.length;
+  }, [cart.length]);
+
   // Local state
   const [customers, setCustomers] = useState<any[]>([]);
   const [transactionType, setTransactionType] = useState<'CASH' | 'CREDIT'>('CASH');
@@ -134,6 +177,7 @@ export default function SalesScreen({ navigation, route }: Props) {
   const [refundModalVisible, setRefundModalVisible] = useState(false);
   const [exchangeModalVisible, setExchangeModalVisible] = useState(false);
   const [quickCustomerModalVisible, setQuickCustomerModalVisible] = useState(false);
+  const [reprintModalVisible, setReprintModalVisible] = useState(false);
 
   // Shift Management State
   const [currentShift, setCurrentShift] = useState<{id: number; beginning_cash: number} | null>(null);
@@ -315,36 +359,20 @@ export default function SalesScreen({ navigation, route }: Props) {
       );
     }
 
-    // Try partial match (barcode ends with product code or vice versa)
-    if (!product) {
-      product = currentProducts.find(p => {
-        const code = (p.code || '').toUpperCase().trim();
-        return code.endsWith(barcodeUpper) || barcodeUpper.endsWith(code);
-      });
-    }
-
     console.log('Match found:', product ? product.name : 'NONE');
     if (product) {
       addItem(product);
       setTimeout(() => searchInputRef.current?.focus(), 100);
     } else {
-      setSearchQuery(barcode);
-      setShowSearchDropdown(true);
+      Alert.alert('Product Not Found', `No product found with barcode "${barcode}".`);
     }
   }, [addItem, setSearchQuery]);
 
   // Handle checkout button
   const handleCheckout = useCallback(() => {
     if (cart.length === 0) return;
-
-    // For credit sales, require customer selection
-    if (transactionType === 'CREDIT' && !selectedCustomer) {
-      setShowCustomerDropdown(true);
-      return;
-    }
-
     setPaymentVisible(true);
-  }, [cart.length, transactionType, selectedCustomer]);
+  }, [cart.length]);
 
   // Process payment
   const handlePaymentComplete = useCallback(async (data: {
@@ -547,6 +575,96 @@ export default function SalesScreen({ navigation, route }: Props) {
     setTimeout(() => searchInputRef.current?.focus(), 100);
   }, [clearCart, refreshProducts]);
 
+  // Handle reprint from transaction history
+  const handleReprintTransaction = useCallback(async (transactionId: number) => {
+    try {
+      const dbService = getDatabase();
+
+      // Get transaction details
+      const transaction = await dbService.getTransactionById(transactionId);
+      if (!transaction) {
+        Alert.alert('Error', 'Transaction not found.');
+        return;
+      }
+
+      // Get transaction items
+      const items = await dbService.getTransactionItems(transactionId);
+
+      // Get store settings
+      const storeName = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const storeAddress = await dbService.getSetting('company_address') || '';
+      const storePhone = await dbService.getSetting('store_phone') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      const permitNumber = await dbService.getSetting('permit_number') || '';
+      const minNumber = await dbService.getSetting('min_number') || '';
+      const ptuNumber = await dbService.getSetting('ptu_number') || '';
+      const ptuDate = await dbService.getSetting('ptu_date') || '';
+      const atpNumber = await dbService.getSetting('atp_number') || '';
+      const atpDate = await dbService.getSetting('atp_date') || '';
+      const accreditationNumber = await dbService.getSetting('accreditation_number') || '';
+      const accreditationDate = await dbService.getSetting('accreditation_date') || '';
+      const serialNumberFrom = await dbService.getSetting('serial_number_from') || '';
+      const serialNumberTo = await dbService.getSetting('serial_number_to') || '';
+      const supplierName = await dbService.getSetting('supplier_name') || '';
+      const supplierAddress = await dbService.getSetting('supplier_address') || '';
+      const supplierTin = await dbService.getSetting('supplier_tin') || '';
+      const supplierAccreditation = await dbService.getSetting('supplier_accreditation') || '';
+
+      // Build receipt data
+      const reprintReceiptData: ReceiptData = {
+        businessName: storeName,
+        businessAddress: storeAddress,
+        businessPhone: storePhone,
+        tin: tin,
+        permitNumber: permitNumber,
+        minNumber: minNumber,
+        ptuNumber: ptuNumber,
+        ptuDate: ptuDate,
+        atpNumber: atpNumber,
+        atpDate: atpDate,
+        accreditationNumber: accreditationNumber,
+        accreditationDate: accreditationDate,
+        serialNumberFrom: serialNumberFrom,
+        serialNumberTo: serialNumberTo,
+        supplierName: supplierName,
+        supplierAddress: supplierAddress,
+        supplierTin: supplierTin,
+        supplierAccreditation: supplierAccreditation,
+        invoiceNumber: transaction.invoice_number,
+        transactionDate: new Date(transaction.transaction_date),
+        cashierName: transaction.cashier_name || 'Cashier',
+        items: items.map((item: any) => ({
+          name: item.product_name,
+          quantity: item.quantity,
+          unitPrice: item.unit_price,
+          totalPrice: item.total_amount,
+        })),
+        subtotal: transaction.subtotal || 0,
+        taxAmount: transaction.tax_amount || 0,
+        discountAmount: transaction.discount_amount || 0,
+        discountLabel: transaction.sc_pwd_id ? 'SC/PWD Discount' : 'Discount',
+        total: transaction.total_amount || 0,
+        vatableSales: transaction.vatable_sales || 0,
+        vatExemptSales: transaction.vat_exempt_sales || 0,
+        zeroRatedSales: transaction.zero_rated_sales || 0,
+        vatAmount: transaction.vat_amount || 0,
+        scPwdId: transaction.sc_pwd_id,
+        scPwdName: transaction.sc_pwd_name,
+        scPwdType: transaction.sc_pwd_type,
+        paymentMethod: transaction.payment_method,
+        amountTendered: transaction.amount_tendered || 0,
+        changeAmount: transaction.change_amount || 0,
+        customerName: transaction.customer_name || transaction.customer_full_name,
+      };
+
+      setReceiptData(reprintReceiptData);
+      setReceiptVisible(true);
+    } catch (error) {
+      console.error('Error loading transaction for reprint:', error);
+      Alert.alert('Error', 'Failed to load transaction details.');
+    }
+  }, []);
+
   // Handle quantity press (manual input)
   const handleQuantityPress = useCallback((item: CartItem) => {
     setSelectedItemForQty(item);
@@ -573,34 +691,38 @@ export default function SalesScreen({ navigation, route }: Props) {
   ), [incrementQuantity, decrementQuantity, removeItem, handleQuantityPress]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: '#F5F5F5' }]}>
+    <View style={[styles.container, { backgroundColor: '#F5F5F5' }]}>
       {/* ===== SEARCH BAR SECTION ===== */}
-      <View style={styles.searchSection}>
+      <View style={[styles.searchSection, rs.searchSection]}>
         {/* Price Type Selector */}
         <View style={styles.priceTypeRow}>
-          <Text style={styles.priceTypeLabel}>Price Type:</Text>
+          <Text style={[styles.priceTypeLabel, rs.priceTypeLabel]}>Price Type:</Text>
           <View style={styles.priceTypeButtons}>
             <TouchableOpacity
               style={[
                 styles.priceTypeButton,
+                rs.priceTypeButton,
                 priceType === 'retail' && styles.priceTypeButtonActive
               ]}
               onPress={() => setPriceType('retail')}
             >
               <Text style={[
                 styles.priceTypeButtonText,
+                rs.priceTypeButtonText,
                 priceType === 'retail' && styles.priceTypeButtonTextActive
               ]}>Retail</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
                 styles.priceTypeButton,
+                rs.priceTypeButton,
                 priceType === 'wholesale' && styles.priceTypeButtonActive
               ]}
               onPress={() => setPriceType('wholesale')}
             >
               <Text style={[
                 styles.priceTypeButtonText,
+                rs.priceTypeButtonText,
                 priceType === 'wholesale' && styles.priceTypeButtonTextActive
               ]}>Wholesale</Text>
             </TouchableOpacity>
@@ -644,60 +766,61 @@ export default function SalesScreen({ navigation, route }: Props) {
 
           {/* Barcode Button */}
           <TouchableOpacity
-            style={styles.actionButton}
+            style={[styles.actionButton, rs.actionButton]}
             onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleBarcodeScan })}
             activeOpacity={0.7}
           >
-            <Text style={styles.actionButtonIcon}>📷</Text>
+            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📷</Text>
           </TouchableOpacity>
 
           {/* Browse Products Button */}
           <TouchableOpacity
-            style={[styles.actionButton, styles.browseButton]}
+            style={[styles.actionButton, styles.browseButton, rs.actionButton]}
             onPress={() => setBrowseVisible(true)}
             activeOpacity={0.7}
           >
-            <Text style={styles.actionButtonIcon}>📦</Text>
+            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📦</Text>
           </TouchableOpacity>
 
           {/* Hamburger Menu Button */}
           <TouchableOpacity
-            style={[styles.actionButton, styles.menuButton]}
+            style={[styles.actionButton, styles.menuButton, rs.actionButton]}
             onPress={() => setHamburgerMenuVisible(true)}
             activeOpacity={0.7}
           >
-            <Text style={styles.actionButtonIcon}>☰</Text>
+            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>☰</Text>
           </TouchableOpacity>
         </View>
       </View>
 
       {/* ===== CART SECTION (80% of screen) ===== */}
       <View style={styles.cartSection}>
-        <View style={styles.cartHeader}>
-          <Text style={styles.cartTitle}>🛒 Cart</Text>
-          <Text style={styles.cartCount}>
+        <View style={[styles.cartHeader, rs.cartHeader]}>
+          <Text style={[styles.cartTitle, rs.cartTitle]}>🛒 Cart</Text>
+          <Text style={[styles.cartCount, rs.cartCount]}>
             {cart.length} item{cart.length !== 1 ? 's' : ''}
           </Text>
           {cart.length > 0 && (
             <TouchableOpacity onPress={clearCart} style={styles.clearButton}>
-              <Text style={styles.clearButtonText}>Clear All</Text>
+              <Text style={[styles.clearButtonText, rs.clearButtonText]}>Clear All</Text>
             </TouchableOpacity>
           )}
         </View>
 
         {/* Cart Items List */}
         <FlatList
+          ref={cartListRef}
           data={cart}
           keyExtractor={item => item.id.toString()}
           renderItem={renderCartItem}
           style={styles.cartList}
-          contentContainerStyle={styles.cartListContent}
+          contentContainerStyle={[styles.cartListContent, rs.cartListContent]}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
-            <View style={styles.emptyCart}>
-              <Text style={styles.emptyCartIcon}>🛒</Text>
-              <Text style={styles.emptyCartTitle}>Cart is empty</Text>
-              <Text style={styles.emptyCartSubtitle}>
+            <View style={[styles.emptyCart, rs.emptyCartPadding]}>
+              <Text style={[styles.emptyCartIcon, rs.emptyCartIcon]}>🛒</Text>
+              <Text style={[styles.emptyCartTitle, rs.emptyCartTitle]}>Cart is empty</Text>
+              <Text style={[styles.emptyCartSubtitle, rs.emptyCartSubtitle]}>
                 Scan a barcode or search for products
               </Text>
             </View>
@@ -706,200 +829,26 @@ export default function SalesScreen({ navigation, route }: Props) {
       </View>
 
       {/* ===== TOTALS & CHECKOUT SECTION ===== */}
-      <View style={styles.checkoutSection}>
-        {/* Transaction Type Selector */}
-        <View style={styles.transactionTypeRow}>
-          <TouchableOpacity
-            style={[
-              styles.transactionTypeButton,
-              transactionType === 'CASH' && styles.transactionTypeButtonActive,
-            ]}
-            onPress={() => {
-              setTransactionType('CASH');
-              setSelectedCustomer(null);
-              setShowCustomerDropdown(false);
-            }}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.transactionTypeIcon}>💵</Text>
-            <Text style={[
-              styles.transactionTypeText,
-              transactionType === 'CASH' && styles.transactionTypeTextActive,
-            ]}>Cash Sale</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.transactionTypeButton,
-              transactionType === 'CREDIT' && styles.transactionTypeCreditActive,
-            ]}
-            onPress={() => setTransactionType('CREDIT')}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.transactionTypeIcon}>📋</Text>
-            <Text style={[
-              styles.transactionTypeText,
-              transactionType === 'CREDIT' && styles.transactionTypeCreditTextActive,
-            ]}>Credit Sale</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Customer Selection for Credit Sales */}
-        {transactionType === 'CREDIT' && (
-          <View style={styles.customerSelectionSection}>
-            {selectedCustomer ? (
-              <View style={styles.selectedCustomerRow}>
-                <View style={styles.selectedCustomerInfo}>
-                  <Text style={styles.selectedCustomerName}>👤 {selectedCustomer.name}</Text>
-                  {selectedCustomer.outstanding_balance > 0 && (
-                    <Text style={styles.selectedCustomerBalance}>
-                      Balance: ₱{selectedCustomer.outstanding_balance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                    </Text>
-                  )}
-                </View>
-                <TouchableOpacity
-                  style={styles.changeCustomerBtn}
-                  onPress={() => {
-                    setSelectedCustomer(null);
-                    setShowCustomerDropdown(true);
-                  }}
-                >
-                  <Text style={styles.changeCustomerBtnText}>Change</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.selectCustomerBtn}
-                onPress={() => setShowCustomerDropdown(true)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.selectCustomerBtnText}>👤 Select Customer (Required)</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Customer Dropdown */}
-            {showCustomerDropdown && (
-              <View style={styles.customerDropdown}>
-                <View style={styles.customerDropdownHeader}>
-                  <RNTextInput
-                    placeholder="Search customer..."
-                    value={customerSearch}
-                    onChangeText={setCustomerSearch}
-                    style={styles.customerSearchInput}
-                  />
-                  <TouchableOpacity
-                    style={styles.quickAddCustomerBtn}
-                    onPress={() => {
-                      setShowCustomerDropdown(false);
-                      setQuickCustomerModalVisible(true);
-                    }}
-                  >
-                    <Text style={styles.quickAddCustomerBtnText}>+ Add</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.closeCustomerDropdownBtn}
-                    onPress={() => {
-                      setShowCustomerDropdown(false);
-                      setCustomerSearch('');
-                    }}
-                  >
-                    <Text style={styles.closeCustomerDropdownBtnText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-                <FlatList
-                  data={filteredCustomers.slice(0, 5)}
-                  keyExtractor={item => item.id.toString()}
-                  style={styles.customerDropdownList}
-                  renderItem={({ item }) => (
-                    <TouchableOpacity
-                      style={styles.customerDropdownItem}
-                      onPress={() => {
-                        setSelectedCustomer(item);
-                        setShowCustomerDropdown(false);
-                        setCustomerSearch('');
-                      }}
-                    >
-                      <Text style={styles.customerDropdownName}>{item.name}</Text>
-                      {item.outstanding_balance > 0 && (
-                        <Text style={styles.customerDropdownBalance}>
-                          Bal: ₱{item.outstanding_balance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                  )}
-                  ListEmptyComponent={
-                    <Text style={styles.noCustomersText}>No customers found</Text>
-                  }
-                />
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Discount Buttons */}
-        <View style={styles.discountRow}>
-          <TouchableOpacity
-            style={[
-              styles.discountButton,
-              discount.isSeniorCitizen && styles.discountButtonActive,
-              cart.length === 0 && styles.discountButtonDisabled,
-            ]}
-            onPress={cart.length === 0 ? undefined : () => setSeniorDiscountModalVisible(true)}
-            activeOpacity={cart.length === 0 ? 1 : 0.7}
-            disabled={cart.length === 0}
-          >
-            <Text style={[
-              styles.discountButtonText,
-              discount.isSeniorCitizen && styles.discountButtonTextActive,
-              cart.length === 0 && styles.discountButtonTextDisabled,
-            ]}>
-              {discount.isSeniorCitizen
-                ? `👴 SC/PWD (${discount.seniorCount}/${discount.totalCustomers})`
-                : '👴 SC/PWD'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.discountButton,
-              (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.discountButtonActive,
-              cart.length === 0 && styles.discountButtonDisabled,
-            ]}
-            onPress={cart.length === 0 ? undefined : () => setDiscountModalVisible(true)}
-            activeOpacity={cart.length === 0 ? 1 : 0.7}
-            disabled={cart.length === 0}
-          >
-            <Text style={[
-              styles.discountButtonText,
-              (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.discountButtonTextActive,
-              cart.length === 0 && styles.discountButtonTextDisabled,
-            ]}>
-              {(discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen
-                ? `Discount: ${discount.type === 'percent' ? discount.value + '%' : '₱' + discount.value}`
-                : 'Discount'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
+      <View style={[styles.checkoutSection, rs.checkoutSection]}>
         {/* Totals */}
         <View style={styles.totalsContainer}>
           {(totals.discountAmount || 0) > 0 && (
             <>
               <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>Sub-Total</Text>
-                <Text style={styles.totalValue}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                <Text style={[styles.totalLabel, rs.totalLabel]}>Sub-Total</Text>
+                <Text style={[styles.totalValue, rs.totalValue]}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
               </View>
               <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>Discount</Text>
-                <Text style={[styles.totalValue, { color: '#F44336' }]}>
+                <Text style={[styles.totalLabel, rs.totalLabel]}>Discount</Text>
+                <Text style={[styles.totalValue, rs.totalValue, { color: '#F44336' }]}>
                   -₱{(totals.discountAmount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </Text>
               </View>
             </>
           )}
           <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
-            <Text style={styles.grandTotalLabel}>TOTAL</Text>
-            <Text style={styles.grandTotalValue}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            <Text style={[styles.grandTotalLabel, rs.grandTotalLabel]}>TOTAL</Text>
+            <Text style={[styles.grandTotalValue, rs.grandTotalValue]}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           </View>
         </View>
 
@@ -907,13 +856,15 @@ export default function SalesScreen({ navigation, route }: Props) {
         <TouchableOpacity
           style={[
             styles.checkoutButton,
+            rs.checkoutButton,
+            { marginTop: sp.xs },
             cart.length === 0 && styles.checkoutButtonDisabled,
           ]}
           onPress={handleCheckout}
           disabled={cart.length === 0 || isProcessing}
           activeOpacity={0.8}
         >
-          <Text style={styles.checkoutButtonText}>
+          <Text style={[styles.checkoutButtonText, rs.checkoutButtonText]}>
             💳 CHECKOUT ₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </Text>
         </TouchableOpacity>
@@ -942,9 +893,15 @@ export default function SalesScreen({ navigation, route }: Props) {
         onQuickAddCustomer={() => {
           setQuickCustomerModalVisible(true);
         }}
+        onOpenSeniorDiscount={() => {
+          setSeniorDiscountModalVisible(true);
+        }}
+        onOpenDiscount={() => {
+          setDiscountModalVisible(true);
+        }}
         loading={isProcessing}
-        initialPaymentMethod={transactionType === 'CREDIT' ? 'CHARGE_INVOICE' : 'CASH'}
-        initialCustomer={selectedCustomer}
+        initialPaymentMethod="CASH"
+        initialCustomer={null}
       />
 
       {/* Discount Modal */}
@@ -1002,9 +959,9 @@ export default function SalesScreen({ navigation, route }: Props) {
         onRequestClose={handleCloseReceipt}
       >
         <View style={styles.receiptOverlay}>
-          <View style={styles.receiptContainer}>
+          <View style={[styles.receiptContainer, { maxWidth: lo.modalMaxWidth, padding: sp.md }]}>
             <View style={styles.receiptHeader}>
-              <Text style={styles.receiptTitle}>Transaction Complete</Text>
+              <Text style={[styles.receiptTitle, { fontSize: fs.h3 }]}>Transaction Complete</Text>
               <IconButton icon="close" size={24} onPress={handleCloseReceipt} />
             </View>
 
@@ -1040,6 +997,10 @@ export default function SalesScreen({ navigation, route }: Props) {
             setReceiptVisible(true);
           }
         }}
+        onReprintHistory={() => {
+          setHamburgerMenuVisible(false);
+          setReprintModalVisible(true);
+        }}
         onXReading={() => {
           setHamburgerMenuVisible(false);
           setXReadingModalVisible(true);
@@ -1055,10 +1016,6 @@ export default function SalesScreen({ navigation, route }: Props) {
         onPettyCash={() => {
           setHamburgerMenuVisible(false);
           setPettyCashModalVisible(true);
-        }}
-        onCashCount={() => {
-          setHamburgerMenuVisible(false);
-          navigation.navigate('CashCount');
         }}
         onRefund={() => {
           setHamburgerMenuVisible(false);
@@ -1082,20 +1039,18 @@ export default function SalesScreen({ navigation, route }: Props) {
       <POSCashFundModal
         visible={cashFundModalVisible}
         onClose={() => setCashFundModalVisible(false)}
-        onSuccess={() => {
-          setCashFundModalVisible(false);
-        }}
+        onSuccess={() => {}}
         cashierId={user?.id || 0}
+        cashierName={user?.full_name || 'Cashier'}
       />
 
       {/* Petty Cash Modal */}
       <POSPettyCashModal
         visible={pettyCashModalVisible}
         onClose={() => setPettyCashModalVisible(false)}
-        onSuccess={() => {
-          setPettyCashModalVisible(false);
-        }}
+        onSuccess={() => {}}
         cashierId={user?.id || 0}
+        cashierName={user?.full_name || 'Cashier'}
       />
 
       {/* X-Reading Modal */}
@@ -1158,6 +1113,13 @@ export default function SalesScreen({ navigation, route }: Props) {
         userId={user?.id || 0}
       />
 
+      {/* Reprint Receipt Modal */}
+      <POSReprintModal
+        visible={reprintModalVisible}
+        onClose={() => setReprintModalVisible(false)}
+        onSelectTransaction={handleReprintTransaction}
+      />
+
       {/* Unterminated Session Modal - Must close previous day's session */}
       <POSUnterminatedSessionModal
         visible={unterminatedModalVisible}
@@ -1177,7 +1139,7 @@ export default function SalesScreen({ navigation, route }: Props) {
           navigation.navigate('Dashboard');
         }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1190,7 +1152,7 @@ const styles = StyleSheet.create({
   searchSection: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
   },
@@ -1271,7 +1233,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
@@ -1302,8 +1264,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cartListContent: {
-    padding: 12,
-    paddingBottom: 16,
+    padding: 8,
+    paddingBottom: 8,
   },
   emptyCart: {
     flex: 1,
@@ -1332,8 +1294,8 @@ const styles = StyleSheet.create({
   checkoutSection: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 80,
+    paddingTop: 4,
+    paddingBottom: 48,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     elevation: 8,
@@ -1376,7 +1338,7 @@ const styles = StyleSheet.create({
     color: '#9E9E9E',
   },
   totalsContainer: {
-    marginBottom: 12,
+    marginBottom: 2,
   },
   totalRow: {
     flexDirection: 'row',
@@ -1410,7 +1372,7 @@ const styles = StyleSheet.create({
   },
   checkoutButton: {
     backgroundColor: '#2196F3',
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
   },

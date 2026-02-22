@@ -5,6 +5,7 @@ import {
   FlatList,
   Alert,
   ScrollView,
+  TouchableOpacity,
 } from 'react-native';
 import {
   Card,
@@ -20,13 +21,17 @@ import {
   Menu,
   Divider,
   DataTable,
+  Searchbar,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Supplier } from '../database/schema';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import ReportActionsBar from '../components/ReportActionsBar';
+import { ESCPOSBuilder } from '../utils/escpos';
+import { buildSupplierPaymentsHtml, buildUnpaidPayablesHtml } from '../utils/ReceiptPdfService';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type SupplierPaymentsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -48,6 +53,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
   const [agingReport, setAgingReport] = useState<any>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showUnpaidOnly, setShowUnpaidOnly] = useState(true);
 
   // Date filter
   const [dateRange, setDateRange] = useState(() => {
@@ -58,7 +64,8 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
   // Payment Dialog
   const [paymentDialogVisible, setPaymentDialogVisible] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
-  const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
+  const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
+  const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null);
   const [invoiceMenuVisible, setInvoiceMenuVisible] = useState(false);
   const [supplierInvoices, setSupplierInvoices] = useState<any[]>([]);
@@ -76,6 +83,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
   const [chequeDate, setChequeDate] = useState('');
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -139,8 +147,23 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
     }
   };
 
+  // Filter suppliers based on search query
+  const filteredSuppliers = supplierSearchQuery.trim()
+    ? suppliers.filter(s =>
+        s.name.toLowerCase().includes(supplierSearchQuery.toLowerCase()) ||
+        s.code?.toLowerCase().includes(supplierSearchQuery.toLowerCase())
+      ).slice(0, 10)
+    : [];
+
+  // Filter payables based on unpaid toggle
+  const filteredPayables = showUnpaidOnly
+    ? accountsPayable.filter(item => item.balance_amount > 0)
+    : accountsPayable;
+
   const openPaymentDialog = () => {
     setSelectedSupplier(null);
+    setSupplierSearchQuery('');
+    setShowSupplierSuggestions(false);
     setSelectedInvoice(null);
     setSupplierInvoices([]);
     setPaymentMethod('CASH');
@@ -172,9 +195,10 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
 
   const handleSupplierSelect = (supplier: Supplier) => {
     setSelectedSupplier(supplier);
+    setSupplierSearchQuery(supplier.name);
+    setShowSupplierSuggestions(false);
     setSelectedInvoice(null);
     setPaymentAmount('');
-    setSupplierMenuVisible(false);
     loadSupplierInvoices(supplier.id);
   };
 
@@ -276,7 +300,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
             <Title style={styles.paymentNumber}>{item.payment_number}</Title>
             <Paragraph style={styles.supplierName}>{item.supplier_name}</Paragraph>
             <Paragraph style={styles.paymentDate}>
-              {new Date(item.payment_date).toLocaleDateString()}
+              {new Date(item.payment_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
             </Paragraph>
           </View>
           <View style={styles.paymentDetails}>
@@ -315,7 +339,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
             <Title style={styles.purchaseNumber}>{item.purchase_number}</Title>
             <Paragraph style={styles.supplierName}>{item.supplier_name}</Paragraph>
             <Paragraph style={styles.dueDate}>
-              Due: {new Date(item.due_date).toLocaleDateString()}
+              Due: {new Date(item.due_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
             </Paragraph>
           </View>
           <View style={styles.payableDetails}>
@@ -362,6 +386,116 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
       </Card.Content>
     </Card>
   );
+
+  // Thermal print handlers for Payments tab
+  const buildPaymentsPrintData = (printerWidth: number) => {
+    const builder = new ESCPOSBuilder(printerWidth);
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .println('SUPPLIER PAYMENTS')
+      .bold(false)
+      .println(
+        `${dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })} - ${dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`
+      )
+      .separator()
+      .align('left');
+
+    // Payments list
+    filteredPayments.forEach((payment, index) => {
+      if (index > 0) builder.separator('-');
+
+      builder
+        .bold(true)
+        .println(`Payment #: ${payment.payment_number}`)
+        .bold(false)
+        .println(`Supplier: ${payment.supplier_name}`)
+        .println(`Date: ${new Date(payment.payment_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`)
+        .println(`Method: ${payment.payment_method}`)
+        .println(`Amount: P${payment.amount.toFixed(2)}`);
+
+      if (payment.reference_number) {
+        builder.println(`Ref: ${payment.reference_number}`);
+      }
+      if (payment.purchase_number) {
+        builder.println(`PO: ${payment.purchase_number}`);
+      }
+    });
+
+    // Summary
+    builder.separator();
+    const totalAmount = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
+    builder
+      .bold(true)
+      .println(`Total Payments: P${totalAmount.toFixed(2)}`)
+      .println(`Count: ${filteredPayments.length} payments`)
+      .bold(false);
+
+    builder.feed(2);
+    return builder;
+  };
+
+  const buildPaymentsPdfHtml = () => {
+    return buildSupplierPaymentsHtml(
+      filteredPayments,
+      dateRange.startDate,
+      dateRange.endDate
+    );
+  };
+
+  // Thermal print handlers for Payables tab
+  const buildPayablesPrintData = (printerWidth: number) => {
+    const builder = new ESCPOSBuilder(printerWidth);
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .println(showUnpaidOnly ? 'UNPAID SUPPLIER INVOICES' : 'SUPPLIER INVOICES')
+      .bold(false)
+      .println(`As of: ${new Date().toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`)
+      .separator()
+      .align('left');
+
+    // Payables list
+    filteredPayables.forEach((payable, index) => {
+      if (index > 0) builder.separator('-');
+
+      builder
+        .bold(true)
+        .println(payable.purchase_number)
+        .bold(false)
+        .println(`Supplier: ${payable.supplier_name}`)
+        .println(`Due: ${new Date(payable.due_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`)
+        .println(`Original: P${payable.original_amount.toFixed(2)}`)
+        .println(`Paid: P${payable.paid_amount.toFixed(2)}`)
+        .bold(true)
+        .println(`Balance: P${payable.balance_amount.toFixed(2)}`)
+        .bold(false)
+        .println(`Status: ${payable.current_status || payable.status}`);
+    });
+
+    // Summary
+    builder.separator();
+    const totalOutstanding = filteredPayables.reduce((sum, p) => sum + p.balance_amount, 0);
+    builder
+      .bold(true)
+      .println(`Total Outstanding: P${totalOutstanding.toFixed(2)}`)
+      .println(`Count: ${filteredPayables.length} invoices`)
+      .bold(false);
+
+    builder.feed(2);
+    return builder;
+  };
+
+  const buildPayablesPdfHtml = () => {
+    return buildUnpaidPayablesHtml(
+      filteredPayables,
+      showUnpaidOnly
+    );
+  };
 
   const renderAgingReport = () => (
     <Card style={styles.agingCard}>
@@ -434,6 +568,17 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                 />
               </Card.Content>
             </Card>
+
+            {/* Report Actions */}
+            <ReportActionsBar
+              onBuildPrintData={buildPaymentsPrintData}
+              onBuildPdfHtml={buildPaymentsPdfHtml}
+              reportTitle="Supplier Payments"
+              reportFileName={`supplier_payments_${dateRange.startDate.toISOString().split('T')[0]}_${dateRange.endDate.toISOString().split('T')[0]}`}
+              emailBody={`Please find attached the Supplier Payments report from ${dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })} to ${dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}.\n\nGenerated by IgoroTech POS`}
+              disabled={filteredPayments.length === 0}
+            />
+
             <FlatList
               data={filteredPayments}
               keyExtractor={(item) => item.id.toString()}
@@ -454,22 +599,49 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
         );
       case 'payables':
         return (
-          <FlatList
-            data={accountsPayable}
-            keyExtractor={(item) => item.id.toString()}
-            renderItem={renderPayable}
-            contentContainerStyle={styles.listContainer}
-            showsVerticalScrollIndicator={false}
-            refreshing={loading}
-            onRefresh={loadData}
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <Paragraph style={styles.emptyText}>
-                  No outstanding payables found.
-                </Paragraph>
-              </View>
-            }
-          />
+          <View style={{ flex: 1 }}>
+            {/* Filter Chip */}
+            <View style={styles.filterContainer}>
+              <Chip
+                selected={showUnpaidOnly}
+                onPress={() => setShowUnpaidOnly(!showUnpaidOnly)}
+                mode="outlined"
+                icon={showUnpaidOnly ? 'filter' : 'filter-off'}
+                style={styles.filterChip}
+              >
+                {showUnpaidOnly ? 'Unpaid Only' : 'Show All'}
+              </Chip>
+            </View>
+
+            {/* Report Actions */}
+            <ReportActionsBar
+              onBuildPrintData={buildPayablesPrintData}
+              onBuildPdfHtml={buildPayablesPdfHtml}
+              reportTitle={showUnpaidOnly ? "Unpaid Supplier Invoices" : "Supplier Invoices"}
+              reportFileName={`supplier_${showUnpaidOnly ? 'unpaid_' : ''}invoices_${new Date().toISOString().split('T')[0]}`}
+              emailBody={`Please find attached the ${showUnpaidOnly ? 'Unpaid ' : ''}Supplier Invoices report.\n\nGenerated by IgoroTech POS`}
+              disabled={filteredPayables.length === 0}
+            />
+
+            <FlatList
+              data={filteredPayables}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={renderPayable}
+              contentContainerStyle={styles.listContainer}
+              showsVerticalScrollIndicator={false}
+              refreshing={loading}
+              onRefresh={loadData}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Paragraph style={styles.emptyText}>
+                    {showUnpaidOnly
+                      ? 'No unpaid payables found.'
+                      : 'No payables found.'}
+                  </Paragraph>
+                </View>
+              }
+            />
+          </View>
         );
       case 'aging':
         return (
@@ -483,9 +655,9 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>Supplier Payments</Title>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
+        <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Supplier Payments</Title>
 
         {/* Tab Navigation */}
         <View style={styles.tabContainer}>
@@ -532,34 +704,72 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
           <Dialog.Title>Create Payment</Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView style={styles.dialogContent}>
-              {/* Supplier Selection */}
-              <Menu
-                visible={supplierMenuVisible}
-                onDismiss={() => setSupplierMenuVisible(false)}
-                anchor={
-                  <Button
-                    mode="outlined"
-                    onPress={() => setSupplierMenuVisible(true)}
-                    style={styles.dialogInput}
-                    icon="chevron-down"
-                    contentStyle={{ justifyContent: 'flex-start' }}
-                  >
-                    {selectedSupplier ? selectedSupplier.name : 'Select Supplier *'}
-                  </Button>
-                }
-                contentStyle={{ backgroundColor: '#ffffff', maxHeight: 300 }}
-                style={{ backgroundColor: '#ffffff' }}
-              >
-                {suppliers.map(supplier => (
-                  <Menu.Item
-                    key={supplier.id}
-                    onPress={() => handleSupplierSelect(supplier)}
-                    title={supplier.name}
-                    style={{ backgroundColor: '#ffffff' }}
-                    titleStyle={{ color: '#333333' }}
-                  />
-                ))}
-              </Menu>
+              {/* Supplier Search */}
+              <View style={styles.supplierSearchContainer}>
+                <Searchbar
+                  placeholder="Search supplier by name or code..."
+                  value={supplierSearchQuery}
+                  onChangeText={(text) => {
+                    setSupplierSearchQuery(text);
+                    setShowSupplierSuggestions(text.length > 0);
+                    if (!text) {
+                      setSelectedSupplier(null);
+                      setSupplierInvoices([]);
+                      setSelectedInvoice(null);
+                    }
+                  }}
+                  onFocus={() => setShowSupplierSuggestions(supplierSearchQuery.length > 0)}
+                  style={styles.supplierSearchBar}
+                />
+
+                {showSupplierSuggestions && filteredSuppliers.length > 0 && (
+                  <View style={styles.supplierSuggestionsContainer}>
+                    {filteredSuppliers.map((supplier) => (
+                      <TouchableOpacity
+                        key={supplier.id}
+                        style={styles.supplierSuggestionItem}
+                        onPress={() => handleSupplierSelect(supplier)}
+                      >
+                        <Paragraph style={styles.supplierSuggestionName}>{supplier.name}</Paragraph>
+                        <Paragraph style={styles.supplierSuggestionCode}>{supplier.code || ''}</Paragraph>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {showSupplierSuggestions && supplierSearchQuery.length > 0 && filteredSuppliers.length === 0 && (
+                  <View style={styles.supplierSuggestionsContainer}>
+                    <Paragraph style={styles.noSuppliersText}>No suppliers found</Paragraph>
+                  </View>
+                )}
+
+                {/* Selected Supplier Display */}
+                {selectedSupplier && !showSupplierSuggestions && (
+                  <Card style={styles.selectedSupplierCard}>
+                    <Card.Content style={styles.selectedSupplierContent}>
+                      <View style={{ flex: 1 }}>
+                        <Paragraph style={styles.selectedSupplierLabel}>Selected Supplier:</Paragraph>
+                        <Title style={styles.selectedSupplierName}>{selectedSupplier.name}</Title>
+                        {selectedSupplier.code && (
+                          <Paragraph style={styles.selectedSupplierCode}>Code: {selectedSupplier.code}</Paragraph>
+                        )}
+                      </View>
+                      <Button
+                        mode="text"
+                        compact
+                        onPress={() => {
+                          setSelectedSupplier(null);
+                          setSupplierSearchQuery('');
+                          setSupplierInvoices([]);
+                          setSelectedInvoice(null);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </Card.Content>
+                  </Card>
+                )}
+              </View>
 
               {/* Invoice Selection */}
               {selectedSupplier && (
@@ -595,7 +805,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
                         key={invoice.id}
                         onPress={() => handleInvoiceSelect(invoice)}
                         title={`${invoice.purchase_number} - Balance: ₱${invoice.balance_amount.toLocaleString()}`}
-                        description={`Due: ${new Date(invoice.due_date).toLocaleDateString()}`}
+                        description={`Due: ${new Date(invoice.due_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}`}
                         style={{ backgroundColor: '#ffffff' }}
                         titleStyle={{ color: '#333333' }}
                       />
@@ -780,7 +990,7 @@ export default function SupplierPaymentsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1031,5 +1241,71 @@ const styles = StyleSheet.create({
     color: '#666',
     fontStyle: 'italic',
     marginTop: 8,
+  },
+  supplierSearchContainer: {
+    marginBottom: 16,
+  },
+  supplierSearchBar: {
+    elevation: 0,
+    backgroundColor: '#f5f5f5',
+  },
+  supplierSuggestionsContainer: {
+    marginTop: 4,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    maxHeight: 180,
+  },
+  supplierSuggestionItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  supplierSuggestionName: {
+    fontWeight: '500',
+    flex: 1,
+  },
+  supplierSuggestionCode: {
+    color: '#666',
+    marginLeft: 8,
+  },
+  noSuppliersText: {
+    padding: 12,
+    color: '#999',
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  selectedSupplierCard: {
+    marginTop: 8,
+    backgroundColor: '#E8F5E9',
+  },
+  selectedSupplierContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  selectedSupplierLabel: {
+    fontSize: 11,
+    color: '#666',
+  },
+  selectedSupplierName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+  },
+  selectedSupplierCode: {
+    fontSize: 12,
+    color: '#666',
+  },
+  filterContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  filterChip: {
+    marginRight: 8,
   },
 });

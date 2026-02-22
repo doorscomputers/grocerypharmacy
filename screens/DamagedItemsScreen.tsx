@@ -23,11 +23,11 @@ import {
   Menu,
   Divider,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type DamagedItemsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -61,6 +61,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
   const [reasonMenuVisible, setReasonMenuVisible] = useState(false);
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -312,7 +313,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
           `Status: ${sessionDetails.status}\n` +
           `Total Items: ${sessionDetails.total_items}\n` +
           `Total Value: ₱${sessionDetails.total_value?.toFixed(2) || '0.00'}\n` +
-          `Started: ${new Date(sessionDetails.started_at).toLocaleString()}\n\n` +
+          `Started: ${new Date(sessionDetails.started_at).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}\n\n` +
           `Items:\n${itemsList || 'No items recorded'}`
         );
       }
@@ -335,7 +336,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
             <Title style={styles.sessionId}>{item.session_id}</Title>
             <Paragraph style={styles.sessionName}>{item.session_name}</Paragraph>
             <Paragraph style={styles.sessionDate}>
-              Started: {new Date(item.started_at).toLocaleString()}
+              Started: {new Date(item.started_at).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
             </Paragraph>
           </View>
           <View style={styles.sessionStats}>
@@ -398,9 +399,9 @@ export default function DamagedItemsScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>Damaged Items</Title>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
+        <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Damaged Items</Title>
         <Button
           mode="outlined"
           onPress={() => navigation.navigate('DamagedItemsHistory')}
@@ -614,7 +615,7 @@ export default function DamagedItemsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

@@ -23,7 +23,7 @@ import {
   IconButton,
   Text,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
@@ -33,6 +33,7 @@ import BluetoothPrinterService, {
   PrinterSettings,
 } from '../utils/BluetoothPrinterService';
 import { PRINTER_WIDTH } from '../utils/escpos';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PrinterSettingsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -45,6 +46,7 @@ type Props = {
 
 export default function PrinterSettingsScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [printerState, setPrinterState] = useState<PrinterState>('disconnected');
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [discoveredDevices, setDiscoveredDevices] = useState<PrinterDevice[]>([]);
@@ -102,8 +104,14 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
   const loadPrinterState = () => {
     const currentSettings = printerService.getSettings();
     setSettings(currentSettings);
-    setPrinterState(printerService.getState());
-    setConnectedDevice(printerService.getConnectedDevice());
+
+    // Use isConnected() to get accurate state - it verifies actual connection
+    const isActuallyConnected = printerService.isConnected();
+    const device = printerService.getConnectedDevice();
+
+    // Set state based on actual connection status
+    setPrinterState(isActuallyConnected ? 'connected' : 'disconnected');
+    setConnectedDevice(isActuallyConnected ? device : null);
     setDiscoveredDevices(printerService.getDiscoveredDevices());
   };
 
@@ -258,10 +266,10 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
       >
       {/* Status Card */}
@@ -357,7 +365,7 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
       {/* Printer Settings */}
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Printer Settings</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Printer Settings</Title>
 
           {/* Printer Width */}
           <View style={styles.settingItem}>
@@ -471,7 +479,7 @@ export default function PrinterSettingsScreen({ navigation }: Props) {
         </Card.Content>
       </Card>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -485,6 +493,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 32,
+    flexGrow: 1,
   },
   card: {
     marginBottom: 16,
@@ -495,9 +504,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+    flexWrap: 'wrap',
+    gap: 8,
   },
   statusChip: {
-    height: 28,
+    minHeight: 28,
+    paddingHorizontal: 12,
   },
   statusChipText: {
     color: 'white',

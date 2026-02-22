@@ -17,13 +17,14 @@ import {
   Divider,
   IconButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService, Permission } from '../utils/permissions';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PermissionManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -47,6 +48,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
   const [cashierPermissions, setCashierPermissions] = useState<RolePermission[]>([]);
   const [loading, setLoading] = useState(true);
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user, refreshPermissions } = useAuth();
 
   useEffect(() => {
@@ -201,15 +203,15 @@ export default function PermissionManagementScreen({ navigation }: Props) {
 
   return (
     <RoleGuard permission="MANAGE_PERMISSIONS">
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <View style={styles.header}>
-          <Title style={styles.title}>Permission Management</Title>
-          <Paragraph style={styles.subtitle}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <View style={[styles.header, { paddingHorizontal: lo.screenPadding }]}>
+          <Title style={[styles.title, { fontSize: fs.h2 }]}>Permission Management</Title>
+          <Paragraph style={[styles.subtitle, { fontSize: fs.body }]}>
             Control what features each role can access
           </Paragraph>
         </View>
 
-        <ScrollView style={styles.content}>
+        <ScrollView style={[styles.content, { padding: lo.screenPadding }]}>
           <View style={styles.infoCard}>
             <Card style={[styles.card, { backgroundColor: theme.colors.primaryContainer }]}>
               <Card.Content>
@@ -245,7 +247,7 @@ export default function PermissionManagementScreen({ navigation }: Props) {
             </Button>
           </View>
         </ScrollView>
-      </SafeAreaView>
+      </View>
     </RoleGuard>
   );
 }
@@ -346,7 +348,7 @@ const styles = StyleSheet.create({
   },
   footerActions: {
     paddingTop: 24,
-    paddingBottom: 16,
+    paddingBottom: 48,
     alignItems: 'center',
   },
   backButton: {

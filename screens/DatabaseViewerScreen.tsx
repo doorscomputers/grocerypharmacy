@@ -17,10 +17,10 @@ import {
   Divider,
   Chip,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type DatabaseViewerScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -38,6 +38,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   const [customQuery, setCustomQuery] = useState('');
   const [tableCounts, setTableCounts] = useState<{[key: string]: number}>({});
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const tables = [
     { name: 'inventory_movements', label: 'Item Ledger', description: 'All item movements' },
@@ -209,8 +210,8 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <ScrollView style={styles.scrollContainer}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView style={[styles.scrollContainer, { padding: lo.screenPadding }]}>
         {/* Header */}
         <Card style={styles.headerCard}>
           <Card.Content>
@@ -222,7 +223,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         {/* Quick Actions */}
         <Card style={styles.actionsCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Quick Actions</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Quick Actions</Title>
             <View style={styles.actionButtons}>
               <Button
                 mode="contained"
@@ -246,7 +247,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         {/* Table Selection */}
         <Card style={styles.tablesCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Tables</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Tables</Title>
             {tables.map((table) => (
               <List.Item
                 key={table.name}
@@ -271,7 +272,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         {/* Custom Query */}
         <Card style={styles.queryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Custom Query</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Custom Query</Title>
             <TextInput
               label="SQL Query"
               value={customQuery}
@@ -298,7 +299,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         {/* Data Display */}
         <Card style={styles.dataCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
               {currentTable === 'custom_query' ? 'Query Results' : `Table: ${currentTable}`}
             </Title>
             <Paragraph style={styles.dataCount}>
@@ -308,7 +309,7 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
           </Card.Content>
         </Card>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 

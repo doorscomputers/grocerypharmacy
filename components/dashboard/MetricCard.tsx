@@ -2,7 +2,7 @@
  * MetricCard - Compact metric display card
  *
  * Used for secondary metrics like Sales Returns, Cash Fund, Stock Alerts
- * 3-column layout on dashboard
+ * Responsive icon and font scaling
  */
 
 import React from 'react';
@@ -10,7 +10,8 @@ import { TouchableOpacity, StyleSheet } from 'react-native';
 import { Card, Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
-import { spacing, typography, borderRadius, shadows, layout } from '../../utils/theme';
+import { borderRadius, shadows, layout } from '../../utils/theme';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface MetricCardProps {
   label: string;
@@ -30,7 +31,10 @@ export const MetricCard: React.FC<MetricCardProps> = ({
   isCurrency = false,
 }) => {
   const { colors } = useAppTheme();
+  const { sp, fs } = useResponsiveTheme();
   const displayColor = color || colors.primary;
+
+  const iconSize = Math.round(fs.cardValue * 0.9);
 
   const formatValue = () => {
     if (isCurrency && typeof value === 'number') {
@@ -44,17 +48,17 @@ export const MetricCard: React.FC<MetricCardProps> = ({
 
   const CardContent = (
     <Card style={[styles.card, shadows.card]}>
-      <Card.Content style={styles.content}>
+      <Card.Content style={[styles.content, { paddingVertical: sp.md, paddingHorizontal: sp.sm }]}>
         <MaterialCommunityIcons
           name={icon}
-          size={24}
+          size={iconSize}
           color={displayColor}
           style={styles.icon}
         />
-        <Text style={[styles.value, { color: displayColor }]} numberOfLines={1}>
+        <Text style={[styles.value, { color: displayColor, fontSize: fs.cardValue - 4 }]} numberOfLines={1}>
           {formatValue()}
         </Text>
-        <Text style={[styles.label, { color: colors.textSecondary }]} numberOfLines={1}>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: fs.caption }]} numberOfLines={1}>
           {label}
         </Text>
       </Card.Content>
@@ -84,21 +88,17 @@ const styles = StyleSheet.create({
   },
   content: {
     alignItems: 'center',
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
   },
   icon: {
-    marginBottom: spacing.xs,
+    marginBottom: 4,
   },
   value: {
-    fontSize: typography.cardValue.fontSize - 4, // Slightly smaller for compact card
     fontWeight: 'bold',
     textAlign: 'center',
   },
   label: {
-    fontSize: typography.caption.fontSize,
     textAlign: 'center',
-    marginTop: spacing.xs,
+    marginTop: 4,
   },
 });
 

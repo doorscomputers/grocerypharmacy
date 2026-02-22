@@ -20,12 +20,12 @@ import {
   FAB,
   IconButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Customer } from '../database/schema';
 import { StableTextInput } from '../components/StableTextInput';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type CustomerManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -58,6 +58,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
   const [notes, setNotes] = useState('');
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -227,7 +228,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
       <Card.Content>
         <View style={styles.customerHeader}>
           <View style={styles.customerInfo}>
-            <Title style={[styles.customerName, !item.is_active && styles.inactiveText]}>
+            <Title style={[styles.customerName, { fontSize: fs.h3 }, !item.is_active && styles.inactiveText]}>
               {item.name}
             </Title>
             <Paragraph style={styles.customerCode}>Code: {item.code}</Paragraph>
@@ -328,9 +329,9 @@ export default function CustomerManagementScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>Customer Management</Title>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
+        <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Customer Management</Title>
         <Searchbar
           placeholder="Search customers..."
           onChangeText={setSearchQuery}
@@ -351,7 +352,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
         data={filteredCustomers}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderCustomer}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadData}
@@ -379,7 +380,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
         <Dialog
           visible={dialogVisible}
           onDismiss={() => setDialogVisible(false)}
-          style={styles.dialog}
+          style={[styles.dialog, { maxWidth: lo.modalMaxWidth, alignSelf: 'center', width: '100%' }]}
         >
           <Dialog.Title>
             {editingCustomer ? 'Edit Customer' : 'Add New Customer'}
@@ -483,7 +484,7 @@ export default function CustomerManagementScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

@@ -19,8 +19,12 @@ if (Platform.OS !== 'web') {
 }
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AppThemeProvider, useAppTheme } from './contexts/ThemeContext';
-import { DeviceBindingService } from './utils/DeviceBindingService';
+import { DeviceBindingService, TrialStatus } from './utils/DeviceBindingService';
 import ActivationScreen from './screens/ActivationScreen';
+import TrialBanner from './components/TrialBanner';
+
+// Module-level callback so SettingsScreen can trigger banner refresh after activation
+export let refreshTrialStatus: (() => void) | null = null;
 
 // Import screens
 import LoginScreen from './screens/LoginScreen';
@@ -56,7 +60,6 @@ import ReportsHubScreen from './screens/ReportsHubScreen';
 import SalesReturnsScreen from './screens/SalesReturnsScreen';
 import PurchaseReturnsScreen from './screens/PurchaseReturnsScreen';
 import EndOfDayScreen from './screens/EndOfDayScreen';
-import CashCountScreen from './screens/CashCountScreen';
 import PurchaseReportScreen from './screens/PurchaseReportScreen';
 import SalesReturnsReportScreen from './screens/SalesReturnsReportScreen';
 import PurchaseReturnsReportScreen from './screens/PurchaseReturnsReportScreen';
@@ -69,6 +72,8 @@ import PDCTrackingScreen from './screens/PDCTrackingScreen';
 import LicenseGeneratorScreen from './screens/LicenseGeneratorScreen';
 import StockValuationReportScreen from './screens/StockValuationReportScreen';
 import ZeroInventoryReportScreen from './screens/ZeroInventoryReportScreen';
+import TopSellingReportScreen from './screens/TopSellingReportScreen';
+import TopCustomersReportScreen from './screens/TopCustomersReportScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import CustomerReportScreen from './screens/CustomerReportScreen';
 import CustomerReportDetailScreen from './screens/CustomerReportDetailScreen';
@@ -76,10 +81,19 @@ import ProductTransactionReportScreen from './screens/ProductTransactionReportSc
 import UserManualScreen from './screens/UserManualScreen';
 import EJournalReportScreen from './screens/EJournalReportScreen';
 import ESalesReportScreen from './screens/ESalesReportScreen';
+import DashboardViewScreen from './screens/DashboardViewScreen';
+import VoidRefundExchangeReportScreen from './screens/VoidRefundExchangeReportScreen';
+import CustomerAccountStatementScreen from './screens/CustomerAccountStatementScreen';
+import SupplierAccountStatementScreen from './screens/SupplierAccountStatementScreen';
+import UpcomingPDCReportScreen from './screens/UpcomingPDCReportScreen';
+import XReadingHistoryScreen from './screens/XReadingHistoryScreen';
+import ZReadingHistoryScreen from './screens/ZReadingHistoryScreen';
+import CurrentStockLevelsScreen from './screens/CurrentStockLevelsScreen';
 
 export type RootStackParamList = {
   Login: undefined;
   Dashboard: undefined;
+  DashboardView: undefined;
   Sales: undefined;
   Products: undefined;
   Reports: undefined;
@@ -111,8 +125,7 @@ export type RootStackParamList = {
   SalesReturns: undefined;
   PurchaseReturns: undefined;
   EndOfDay: { targetDate?: string } | undefined;
-  CashCount: undefined;
-  PurchaseReport: undefined;
+  PurchaseReport: { view?: 'all' | 'by_supplier' } | undefined;
   SalesReturnsReport: undefined;
   PurchaseReturnsReport: undefined;
   AccountsReceivableReport: undefined;
@@ -124,13 +137,22 @@ export type RootStackParamList = {
   LicenseGenerator: undefined;
   StockValuationReport: undefined;
   ZeroInventoryReport: undefined;
+  TopSellingReport: undefined;
+  TopCustomersReport: undefined;
   Profile: undefined;
   CustomerReport: undefined;
   CustomerReportDetail: { customerId: number; customerName: string; reportType: string };
+  CustomerAccountStatement: undefined;
+  SupplierAccountStatement: undefined;
+  UpcomingPDCReport: undefined;
   ProductTransactionReport: undefined;
   UserManual: undefined;
   EJournalReport: undefined;
   ESalesReport: undefined;
+  VoidRefundExchangeReport: undefined;
+  XReadingHistory: undefined;
+  ZReadingHistory: undefined;
+  CurrentStockLevels: { lowStock?: boolean } | undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -159,6 +181,20 @@ function AppContent() {
   const [initializationError, setInitializationError] = useState<string | null>(null);
   const [isDeviceActivated, setIsDeviceActivated] = useState(false);
   const [isCheckingActivation, setIsCheckingActivation] = useState(true);
+  const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
+
+  // Assign the module-level callback so SettingsScreen can refresh trial banner
+  useEffect(() => {
+    refreshTrialStatus = async () => {
+      try {
+        const status = await DeviceBindingService.getTrialStatus();
+        setTrialStatus(status);
+      } catch (e) {
+        console.error('Error refreshing trial status:', e);
+      }
+    };
+    return () => { refreshTrialStatus = null; };
+  }, []);
 
   // Create dynamic theme from context
   const theme = {
@@ -224,6 +260,10 @@ function AppContent() {
       if (verificationResult.isValid) {
         setIsDeviceActivated(true);
         console.log('Device is activated');
+        // Get trial status for banner display
+        const status = await DeviceBindingService.getTrialStatus();
+        setTrialStatus(status);
+        console.log('Trial status:', status);
       } else {
         setIsDeviceActivated(false);
         console.log('Device not activated:', verificationResult.message);
@@ -329,7 +369,7 @@ function AppContent() {
     <SafeAreaProvider>
       <PaperProvider theme={theme}>
         <AuthProvider>
-          <AppNavigator theme={theme} />
+          <AppNavigator theme={theme} trialStatus={trialStatus} />
         </AuthProvider>
         <StatusBar style="dark" />
       </PaperProvider>
@@ -338,7 +378,7 @@ function AppContent() {
 }
 
 // Navigation component that respects auth state
-function AppNavigator({ theme }: { theme: any }) {
+function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialStatus | null }) {
   const { isAuthenticated, isLoading } = useAuth();
 
   // Show loading while checking session
@@ -352,7 +392,12 @@ function AppNavigator({ theme }: { theme: any }) {
   }
 
   return (
-    <NavigationContainer>
+    <View style={{ flex: 1 }}>
+      {/* Show trial banner if in trial mode */}
+      {trialStatus && trialStatus.licenseType === 'trial' && trialStatus.isTrialActive && (
+        <TrialBanner daysRemaining={trialStatus.daysRemaining} />
+      )}
+      <NavigationContainer>
       <Stack.Navigator
         id={undefined}
         initialRouteName={isAuthenticated ? "Dashboard" : "Login"}
@@ -375,6 +420,11 @@ function AppNavigator({ theme }: { theme: any }) {
               name="Dashboard"
               component={DashboardScreen}
               options={{ title: 'IgoroTech POS Dashboard' }}
+            />
+            <Stack.Screen
+              name="DashboardView"
+              component={DashboardViewScreen}
+              options={{ title: 'Business Analytics' }}
             />
             <Stack.Screen
               name="Sales"
@@ -537,11 +587,6 @@ function AppNavigator({ theme }: { theme: any }) {
               options={{ title: 'End of Day' }}
             />
             <Stack.Screen
-              name="CashCount"
-              component={CashCountScreen}
-              options={{ title: 'Cash Count', headerShown: false }}
-            />
-            <Stack.Screen
               name="PurchaseReport"
               component={PurchaseReportScreen}
               options={{ title: 'Purchase Report' }}
@@ -597,6 +642,21 @@ function AppNavigator({ theme }: { theme: any }) {
               options={{ title: 'Zero Inventory Report' }}
             />
             <Stack.Screen
+              name="CurrentStockLevels"
+              component={CurrentStockLevelsScreen}
+              options={{ title: 'Current Stock Levels' }}
+            />
+            <Stack.Screen
+              name="TopSellingReport"
+              component={TopSellingReportScreen}
+              options={{ title: 'Top Selling Products' }}
+            />
+            <Stack.Screen
+              name="TopCustomersReport"
+              component={TopCustomersReportScreen}
+              options={{ title: 'Top Customers' }}
+            />
+            <Stack.Screen
               name="Profile"
               component={ProfileScreen}
               options={{ title: 'My Profile' }}
@@ -612,6 +672,21 @@ function AppNavigator({ theme }: { theme: any }) {
               options={{ title: 'Customer Report Detail' }}
             />
             <Stack.Screen
+              name="CustomerAccountStatement"
+              component={CustomerAccountStatementScreen}
+              options={{ title: 'Customer Account Statement' }}
+            />
+            <Stack.Screen
+              name="SupplierAccountStatement"
+              component={SupplierAccountStatementScreen}
+              options={{ title: 'Supplier Account Statement' }}
+            />
+            <Stack.Screen
+              name="UpcomingPDCReport"
+              component={UpcomingPDCReportScreen}
+              options={{ title: 'Upcoming PDC Report' }}
+            />
+            <Stack.Screen
               name="ProductTransactionReport"
               component={ProductTransactionReportScreen}
               options={{ title: 'Product Transaction History' }}
@@ -624,15 +699,31 @@ function AppNavigator({ theme }: { theme: any }) {
             <Stack.Screen
               name="EJournalReport"
               component={EJournalReportScreen}
-              options={{ title: 'eJournal Report' }}
+              options={{ title: 'eSales Journal' }}
             />
             <Stack.Screen
               name="ESalesReport"
               component={ESalesReportScreen}
               options={{ title: 'eSales Report' }}
             />
+            <Stack.Screen
+              name="VoidRefundExchangeReport"
+              component={VoidRefundExchangeReportScreen}
+              options={{ title: 'Void/Refund/Exchange Report' }}
+            />
+            <Stack.Screen
+              name="XReadingHistory"
+              component={XReadingHistoryScreen}
+              options={{ title: 'X-Reading History' }}
+            />
+            <Stack.Screen
+              name="ZReadingHistory"
+              component={ZReadingHistoryScreen}
+              options={{ title: 'Z-Reading History' }}
+            />
           </Stack.Navigator>
         </NavigationContainer>
+    </View>
   );
 }
 

@@ -1,7 +1,7 @@
 # IgoroTech Mobile POS System
 # Complete User Manual & Tutorial
 
-**Version 1.0**
+**Version 1.1**
 **BIR-Compliant Point of Sale System for Philippine Businesses**
 
 ---
@@ -12,11 +12,22 @@
 2. [Getting Started](#2-getting-started)
 3. [Dashboard Overview](#3-dashboard-overview)
 4. [Making Sales (POS Terminal)](#4-making-sales-pos-terminal)
+   - 4.1-4.7 Basic Sales Operations
+   - 4.8 Voiding a Transaction
+   - 4.9 Processing Refunds
+   - 4.10 POS Menu Overview
+   - 4.11 Cash Fund (Opening Cash)
+   - 4.12 Petty Cash Withdrawal
+   - 4.13 Reprinting Receipts
+   - 4.14 Exchange Transactions
+   - 4.15 X-Reading Details
 5. [Product Management](#5-product-management)
 6. [Inventory Management](#6-inventory-management)
 7. [Customer Management](#7-customer-management)
 8. [Supplier & Purchase Management](#8-supplier--purchase-management)
 9. [Reports & BIR Compliance](#9-reports--bir-compliance)
+   - 9.4 Sales Reports (incl. Void/Refund/Exchange, Top Selling, Top Customers)
+   - 9.7 Financial Reports (incl. Account Statements, Upcoming PDC)
 10. [User Management & Permissions](#10-user-management--permissions)
 11. [Settings & Configuration](#11-settings--configuration)
 12. [Bluetooth Printing](#12-bluetooth-printing)
@@ -338,35 +349,647 @@ After completing a sale:
 - **Share**: Share via SMS, Viber, etc.
 - **New Sale**: Start a new transaction
 
-## 4.8 Voiding a Sale
+## 4.8 Voiding a Transaction
 
-If a mistake was made:
+Use void when a transaction needs to be completely cancelled (wrong entry, customer changed mind, duplicate sale).
+
+### When to Void
+- Wrong items entered
+- Customer cancelled the transaction
+- Duplicate/double entry
+- Price error discovered
+- System error occurred
+
+### How to Void a Transaction
 
 1. Tap **[≡] Menu** in Sales screen
 2. Select **"Void Transaction"**
-3. Enter the Invoice Number to void
-4. Select a reason:
-   - Wrong entry
-   - Customer cancelled
-   - System error
-   - Other (specify)
-5. Tap **Void**
+3. Find the transaction using:
+   - **Search**: Enter invoice number (e.g., INV-000125)
+   - **Browse**: Select from today's transactions list
 
-**Note**: Voided transactions are still recorded in eJournal for BIR audit trail.
+```
+┌─────────────────────────────────────┐
+│  Void Transaction              [X]  │
+├─────────────────────────────────────┤
+│  [Search Invoice] [Browse List]     │
+├─────────────────────────────────────┤
+│                                     │
+│  ┌─────────────────────────────────┐│
+│  │ INV-000125        COMPLETED    ││
+│  │ Jan 29, 2026 2:45 PM           ││
+│  │ Customer: Juan dela Cruz       ││
+│  │ Payment: Cash                  ││
+│  │─────────────────────────────────││
+│  │ Items to be restored:          ││
+│  │ Coca Cola (2)          ₱170.00 ││
+│  │ Rice 1kg                ₱55.00 ││
+│  │─────────────────────────────────││
+│  │ TOTAL AMOUNT           ₱225.00 ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  Reason for Voiding *               │
+│  [______________________________]   │
+│                                     │
+│  Quick Reasons:                     │
+│  [Customer changed mind]            │
+│  [Wrong item] [Price error]         │
+│  [Double entry] [System error]      │
+│                                     │
+│  [Back]          [Void Transaction] │
+└─────────────────────────────────────┘
+```
 
-## 4.9 Processing Returns/Refunds
+4. Select or type the void reason (required)
+5. Tap **[Void Transaction]**
+6. Confirm in the completion dialog
 
-For returned items:
+### Validation Rules
+- **Cannot void already voided transactions**
+- **Cannot void refunded transactions**
+- **Cannot void transactions from closed shifts** (after Z-Reading)
+- **Must be same day/same shift**
 
-1. Tap **[≡] Menu** → **"Sales Return"**
-2. Enter the original Invoice Number
-3. Select items being returned
-4. Enter return reason
-5. Choose refund method:
-   - Cash refund
-   - Store credit
-   - Exchange
-6. Process the return
+### Discount Warning
+If the original transaction had a discount applied, a warning banner appears:
+
+```
+┌─────────────────────────────────────┐
+│ ⚠️ DISCOUNT APPLIED                 │
+│─────────────────────────────────────│
+│ This invoice has a ₱50.00 discount  │
+│ applied. The full original amount   │
+│ of ₱500.00 will be voided.          │
+│                                     │
+│ Senior Citizen Discount:            │
+│ Maria Santos (ID: SC-12345)         │
+└─────────────────────────────────────┘
+```
+
+### What Happens When You Void
+- **Items restored to inventory** automatically
+- **Charge sales**: Customer balance is reversed
+- **Cash sales**: Cash drawer amount adjusted
+- **eJournal entry created** for BIR audit trail
+- **Void receipt generated** for printing/email
+
+### After Voiding
+
+```
+┌─────────────────────────────────────┐
+│          VOID Complete              │
+├─────────────────────────────────────┤
+│           VOID RECEIPT              │
+│          VD-001234                  │
+│     Original: INV-000125            │
+├─────────────────────────────────────┤
+│                                     │
+│         Voided Amount               │
+│          ₱225.00                    │
+│                                     │
+│   Items Restored: 2                 │
+│   ✓ Inventory updated               │
+├─────────────────────────────────────┤
+│  [Print]                 [Email]    │
+├─────────────────────────────────────┤
+│             [Done]                  │
+└─────────────────────────────────────┘
+```
+
+**Important**: Voided transactions cannot be undone. All voids are permanently recorded in the eJournal for BIR compliance.
+
+## 4.9 Processing Refunds
+
+Use refund when a customer returns merchandise for a refund (defective items, wrong purchase, customer dissatisfaction).
+
+### When to Process a Refund
+- Customer returns defective merchandise
+- Wrong item was purchased
+- Customer not satisfied with product
+- Product not as described
+
+### How to Process a Refund
+
+1. Tap **[≡] Menu** in Sales screen
+2. Select **"Process Refund"**
+3. Find the original transaction:
+   - **Search**: Enter invoice number
+   - **Browse**: Select from transaction list
+
+```
+┌─────────────────────────────────────┐
+│  Process Refund                [X]  │
+├─────────────────────────────────────┤
+│  INV-000125                         │
+│  Juan dela Cruz | Cash              │
+├─────────────────────────────────────┤
+│  Select Items to Refund             │
+│─────────────────────────────────────│
+│  [ ] Coca Cola 1.5L        ₱85.00  │
+│      Qty: [0/2] [-] [+]             │
+│─────────────────────────────────────│
+│  [✓] Rice Premium          ₱55.00  │
+│      Qty: [1/1] [-] [+]             │
+│─────────────────────────────────────│
+│                                     │
+│  Refund Method                      │
+│  [● Cash Refund] [○ Credit Balance] │
+│  Cash will be deducted from drawer  │
+│                                     │
+│  Reason for Refund *                │
+│  [______________________________]   │
+│                                     │
+│  Quick Reasons:                     │
+│  [Defective] [Wrong item]           │
+│  [Not satisfied] [Customer request] │
+│                                     │
+│  ┌─────────────────────────────────┐│
+│  │ REFUND TOTAL           ₱55.00  ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  [Back]            [Process Refund] │
+└─────────────────────────────────────┘
+```
+
+4. **Select items to refund**:
+   - Check the checkbox next to each item
+   - Use **[-]** and **[+]** to adjust quantity (for partial returns)
+
+5. **Choose refund method**:
+   - **Cash Refund**: Give cash back to customer (deducted from drawer)
+   - **Credit Balance**: Add amount to customer account (for charge invoices)
+
+6. **Enter refund reason** (required)
+7. Tap **[Process Refund]**
+
+### Partial Refunds
+
+You can refund specific items or partial quantities:
+- If customer bought 5 items, they can return just 2
+- Use the quantity controls to select how many to refund
+- Only refund what's actually being returned
+
+### Discount Warning
+
+If the original sale had a discount, the refund is calculated on the **paid amount** (after discount):
+
+```
+┌─────────────────────────────────────┐
+│ ⚠️ DISCOUNT APPLIED                 │
+│─────────────────────────────────────│
+│ This invoice has a ₱50.00 discount. │
+│                                     │
+│ Only the discounted amount of       │
+│ ₱450.00 can be refunded.            │
+│                                     │
+│ Original amount: ₱500.00            │
+└─────────────────────────────────────┘
+```
+
+### What Happens When You Refund
+- **Items returned to inventory** automatically
+- **Cash refund**: Cash deducted from drawer
+- **Credit balance**: Added to customer account
+- **eJournal entry created** for audit trail
+- **Refund receipt generated**
+
+### After Refunding
+
+```
+┌─────────────────────────────────────┐
+│         REFUND Complete             │
+├─────────────────────────────────────┤
+│          REFUND RECEIPT             │
+│          RTN-001234                 │
+│     Original: INV-000125            │
+├─────────────────────────────────────┤
+│                                     │
+│         Refund Amount               │
+│           ₱55.00                    │
+│         Method: CASH                │
+│                                     │
+│   Items Returned: 1                 │
+│   ✓ Inventory updated               │
+├─────────────────────────────────────┤
+│  [Print]                 [Email]    │
+├─────────────────────────────────────┤
+│             [Done]                  │
+└─────────────────────────────────────┘
+```
+
+**Note**: All refunds are recorded in the eJournal and appear in the Void/Refund/Exchange Report.
+
+## 4.10 POS Menu Overview (Hamburger Menu)
+
+The Sales Terminal has a hamburger menu (≡) that provides quick access to all POS operations.
+
+### Accessing the Menu
+- Tap the **[≡]** hamburger icon in the top-right corner of the Sales screen
+- Tap outside the menu or the **[X]** to close
+
+### Menu Structure
+
+```
+┌─────────────────────────────────────┐
+│  POS Menu                      [X]  │
+├─────────────────────────────────────┤
+│  RECEIPT                            │
+│    ├─ Reprint Last Receipt          │
+│    └─ Reprint Receipt (Browse)      │
+│─────────────────────────────────────│
+│  REPORTS                            │
+│    ├─ X-Reading (Mid-day)           │
+│    └─ Z-Reading (End of Day)        │
+│─────────────────────────────────────│
+│  CASH MANAGEMENT                    │
+│    ├─ Cash Count                    │
+│    ├─ Add Cash Fund                 │
+│    └─ Petty Cash Withdrawal         │
+│─────────────────────────────────────│
+│  TRANSACTIONS                       │
+│    ├─ Process Refund                │
+│    ├─ Exchange Item                 │
+│    └─ Void Transaction              │
+│─────────────────────────────────────│
+│  CUSTOMER                           │
+│    └─ Quick Add Customer            │
+└─────────────────────────────────────┘
+```
+
+### Menu Items Quick Reference
+
+| Section | Item | Description |
+|---------|------|-------------|
+| **Receipt** | Reprint Last Receipt | Print the most recent transaction receipt |
+| | Reprint Receipt | Browse and select any of today's transactions to reprint |
+| **Reports** | X-Reading | Mid-day sales inquiry (does not reset counters) |
+| | Z-Reading | End of day closing report (resets counters) |
+| **Cash Management** | Cash Count | Physical cash count verification |
+| | Add Cash Fund | Add opening or additional cash to drawer |
+| | Petty Cash Withdrawal | Record small expense withdrawals |
+| **Transactions** | Process Refund | Return items for cash or credit |
+| | Exchange Item | Swap items with replacement products |
+| | Void Transaction | Cancel a transaction and restore inventory |
+| **Customer** | Quick Add Customer | Add new customer during a sale |
+
+**Note**: Some menu items may be disabled based on your user role permissions or context (e.g., "Reprint Last Receipt" is disabled if no transaction was just completed).
+
+## 4.11 Cash Fund (Opening Cash)
+
+Cash Fund is used to add the initial cash amount to your drawer at the start of your shift, or to add additional cash during the day.
+
+### When to Use
+- **Start of shift**: Add your opening cash before making sales
+- **Mid-day**: Add additional cash if running low on change
+
+### How to Add Cash Fund
+
+1. Tap **[≡] Menu** → **Cash Management** → **Add Cash Fund**
+
+```
+┌─────────────────────────────────────┐
+│  Add Cash Fund                 [X]  │
+├─────────────────────────────────────┤
+│  Amount (PHP)                       │
+│  ┌─────────────────────────────────┐│
+│  │           5,000.00             ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  Quick Amounts:                     │
+│  [₱500] [₱1,000] [₱2,000] [₱5,000] │
+│                                     │
+│  Description                        │
+│  ┌─────────────────────────────────┐│
+│  │ Opening cash fund              ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  ℹ️ Cash fund is added to track     │
+│     opening cash. This will be      │
+│     reflected in X/Z Reading.       │
+│                                     │
+│  [Cancel]           [Add Cash Fund] │
+└─────────────────────────────────────┘
+```
+
+2. Enter the amount (or tap a quick amount button)
+3. Enter a description (e.g., "Opening cash fund", "Additional change")
+4. Tap **[Add Cash Fund]**
+
+### After Adding Cash Fund
+
+You can:
+- **Print** the cash fund receipt
+- **Export PDF** for records
+- **Email** the receipt
+
+### Where It Appears
+- **X-Reading**: Shows as "Cash Fund" in the cash drawer section
+- **Z-Reading**: Included in total cash calculations
+- **Cash Count**: Added to expected cash amount
+
+## 4.12 Petty Cash Withdrawal
+
+Petty Cash is used to withdraw small amounts from the drawer for minor business expenses.
+
+### When to Use
+- Office supplies purchase
+- Transportation expenses
+- Meals for staff
+- Small utility payments
+- Emergency expenses
+
+### How to Withdraw Petty Cash
+
+1. Tap **[≡] Menu** → **Cash Management** → **Petty Cash Withdrawal**
+
+```
+┌─────────────────────────────────────┐
+│  Petty Cash Withdrawal         [X]  │
+├─────────────────────────────────────┤
+│  Amount (PHP) *                     │
+│  ┌─────────────────────────────────┐│
+│  │             250.00             ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  Purpose/Description *              │
+│  ┌─────────────────────────────────┐│
+│  │ Office Supplies                ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  Quick Select:                      │
+│  [Office Supplies] [Transportation] │
+│  [Meals/Food] [Utilities]           │
+│  [Emergency Expense]                │
+│                                     │
+│  Approved By (Owner/Manager) *      │
+│  ┌─────────────────────────────────┐│
+│  │ Juan Santos                    ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  ⚠️ This will be DEDUCTED from      │
+│     your expected cash drawer.      │
+│                                     │
+│  [Cancel]        [Record Withdrawal]│
+└─────────────────────────────────────┘
+```
+
+2. Enter the withdrawal amount
+3. Enter or select the purpose/description
+4. Enter the approving manager's name
+5. Tap **[Record Withdrawal]**
+
+### Required Fields
+- **Amount**: How much cash is being withdrawn
+- **Purpose/Description**: What the money is for
+- **Approved By**: Name of manager/owner who approved
+
+### After Withdrawal
+
+You can:
+- **Print** the petty cash receipt (keep for records)
+- **Export PDF** for accounting
+- **Email** for documentation
+
+### Impact on Cash Drawer
+- Petty cash is **deducted** from expected cash
+- Shows in X-Reading under "Petty Cash Withdrawal"
+- Accounted for in Z-Reading cash reconciliation
+
+## 4.13 Reprinting Receipts
+
+You can reprint receipts for any completed transaction from the current day.
+
+### Option 1: Reprint Last Receipt
+
+For quickly reprinting the most recent transaction:
+
+1. Tap **[≡] Menu** → **Receipt** → **Reprint Last Receipt**
+2. Receipt prints immediately
+
+**Note**: Only available if you just completed a transaction.
+
+### Option 2: Browse and Reprint
+
+For reprinting any transaction from today:
+
+1. Tap **[≡] Menu** → **Receipt** → **Reprint Receipt**
+2. Browse today's transactions:
+
+```
+┌─────────────────────────────────────┐
+│  Reprint Receipt               [X]  │
+├─────────────────────────────────────┤
+│  Today's Transactions    5 items    │
+├─────────────────────────────────────┤
+│  INV-000125              ₱1,250.00  │
+│  2:45 PM    Juan dela Cruz   Cash   │
+│─────────────────────────────────────│
+│  INV-000124                ₱850.00  │
+│  2:32 PM    Walk-in         GCash   │
+│─────────────────────────────────────│
+│  INV-000123                ₱420.00  │
+│  2:15 PM    Maria Santos    Card    │
+│─────────────────────────────────────│
+│  INV-000122              ₱2,100.00  │
+│  1:48 PM    Walk-in         Cash    │
+│─────────────────────────────────────│
+│  INV-000121                ₱675.00  │
+│  1:20 PM    ABC Store      Charge   │
+└─────────────────────────────────────┘
+│  Tap a transaction to reprint       │
+└─────────────────────────────────────┘
+```
+
+3. Tap the transaction you want to reprint
+4. Receipt is printed or shared
+
+### Information Displayed
+- **Invoice Number**: Transaction reference
+- **Time**: When the sale was made
+- **Customer Name**: If customer was selected
+- **Amount**: Total sale amount
+- **Payment Method**: Cash, Card, GCash, etc.
+
+**Note**: Only completed (not voided) transactions appear in the list.
+
+## 4.14 Exchange Transactions
+
+Exchange allows customers to return items and get replacement items in a single transaction.
+
+### When to Use
+- Customer wants different size/color/variant
+- Customer wants to swap for a different product
+- Even exchange or with price difference
+
+### How to Process an Exchange
+
+1. Tap **[≡] Menu** → **Transactions** → **Exchange Item**
+2. Find the original transaction (Search or Browse)
+
+```
+┌─────────────────────────────────────┐
+│  Exchange Item                 [X]  │
+├─────────────────────────────────────┤
+│  INV-000125                         │
+│  Walk-in Customer                   │
+├─────────────────────────────────────┤
+│  ITEMS TO RETURN                    │
+│─────────────────────────────────────│
+│  [✓] Coca Cola 1.5L        ₱85.00  │
+│      Qty: [1/1] [-] [+]             │
+│─────────────────────────────────────│
+│  Return Value              ₱85.00   │
+├─────────────────────────────────────┤
+│  REPLACEMENT ITEMS                  │
+│─────────────────────────────────────│
+│  Search: [Pepsi_______________]     │
+│─────────────────────────────────────│
+│  Pepsi 1.5L                ₱80.00  │
+│  Qty: [1] [-] [+]              [X]  │
+│─────────────────────────────────────│
+│  New Items Value           ₱80.00   │
+├─────────────────────────────────────┤
+│  ┌─────────────────────────────────┐│
+│  │ CUSTOMER RECEIVES       ₱5.00  ││
+│  └─────────────────────────────────┘│
+│                                     │
+│  Exchange Reason *                  │
+│  [Wrong size__________________]     │
+│                                     │
+│  [Back]          [Process Exchange] │
+└─────────────────────────────────────┘
+```
+
+3. **Select items to return**:
+   - Check items being returned
+   - Adjust quantities if needed
+
+4. **Add replacement items**:
+   - Search for products by name or barcode
+   - Add items customer wants instead
+   - Adjust quantities as needed
+
+5. **Review difference**:
+   - **Customer Pays**: If new items cost more
+   - **Customer Receives**: If new items cost less
+   - **Even Exchange**: No money changes hands
+
+6. Enter exchange reason
+7. Tap **[Process Exchange]**
+
+### Difference Calculation
+
+| Scenario | Example | Result |
+|----------|---------|--------|
+| **Customer Pays** | Return ₱100 item, Get ₱150 item | Customer pays ₱50 |
+| **Customer Receives** | Return ₱150 item, Get ₱100 item | Customer gets ₱50 back |
+| **Even Exchange** | Return ₱100 item, Get ₱100 item | No payment needed |
+
+### What Happens
+- **Returned items**: Added back to inventory
+- **Replacement items**: Deducted from inventory
+- **Difference**: Handled as cash payment or refund
+- **Exchange receipt**: Generated for records
+- **eJournal entry**: Created for audit trail
+
+## 4.15 X-Reading Details (Mid-Day Inquiry)
+
+X-Reading provides a comprehensive view of your current day's sales without resetting any counters.
+
+### When to Use
+- Check sales progress during the day
+- Verify cash drawer amount mid-shift
+- Review payment method breakdown
+- Monitor void/refund activity
+
+### Accessing X-Reading
+
+1. Tap **[≡] Menu** → **Reports** → **X-Reading**
+2. View current day's summary:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  X-Reading                                      [X]  │
+│  Mid-Day Inquiry Report                              │
+│                         [Current] [History]          │
+├──────────────────────────────────────────────────────┤
+│  January 29, 2026                                    │
+│  As of 3:45 PM                                       │
+├──────────────────────────────────────────────────────┤
+│  SALES SUMMARY                                       │
+│  Transaction Count                             15    │
+│  Gross Sales                           ₱12,500.00    │
+│  Less: Discounts                         (₱500.00)   │
+│  Less: Refunds                           (₱250.00)   │
+│  ──────────────────────────────────────────────      │
+│  Net Sales                             ₱11,750.00    │
+├──────────────────────────────────────────────────────┤
+│  VAT BREAKDOWN                                       │
+│  VATable Sales                         ₱10,491.07    │
+│  VAT Amount (12%)                       ₱1,258.93    │
+│  VAT Exempt Sales                         ₱500.00    │
+│  Zero-Rated Sales                           ₱0.00    │
+├──────────────────────────────────────────────────────┤
+│  BY PAYMENT METHOD                                   │
+│  Cash Sales                    10       ₱8,500.00    │
+│  Card Sales                     2       ₱1,500.00    │
+│  GCash/Online                   2       ₱1,000.00    │
+│  Credit/Charge                  1         ₱750.00    │
+├──────────────────────────────────────────────────────┤
+│  VOIDS / REFUNDS / EXCHANGES                         │
+│  Void Count                     2         ₱500.00    │
+│  Exchange Count                 1         ₱150.00    │
+│  Refund Count                   1         ₱250.00    │
+├──────────────────────────────────────────────────────┤
+│  CUSTOMER PAYMENTS RECEIVED                          │
+│  Cash Payments                  3       ₱2,500.00    │
+│  Check Payments                 1       ₱1,000.00    │
+│  Online Payments                1         ₱500.00    │
+├──────────────────────────────────────────────────────┤
+│  CASH DRAWER                                         │
+│  Beginning Cash                         ₱2,000.00    │
+│  Add: Cash Sales                        ₱8,500.00    │
+│  Add: Cash Fund                         ₱5,000.00    │
+│  Add: Cash AR Payments                  ₱2,500.00    │
+│  Less: Petty Cash                        (₱250.00)   │
+│  Less: Cash Refunds                      (₱100.00)   │
+│  ──────────────────────────────────────────────      │
+│  Expected Cash                         ₱17,650.00    │
+├──────────────────────────────────────────────────────┤
+│  [Print]    [PDF]    [Email]                         │
+├──────────────────────────────────────────────────────┤
+│  [Close]                      [Save X-Reading]       │
+└──────────────────────────────────────────────────────┘
+```
+
+### X-Reading Sections Explained
+
+| Section | What It Shows |
+|---------|---------------|
+| **Sales Summary** | Total transactions, gross/net sales, discounts, refunds |
+| **VAT Breakdown** | VATable, VAT amount, exempt, zero-rated breakdown |
+| **By Payment Method** | Count and amount per payment type |
+| **Voids/Refunds/Exchanges** | Count and amount of transaction reversals |
+| **Customer Payments** | AR collections received by payment method |
+| **Cash Drawer** | Cash flow calculation showing expected cash |
+
+### X-Reading History
+
+Tap the **[History]** tab to view previously saved X-Readings:
+- Last 30 saved X-Readings displayed
+- Tap any entry to view full details
+- Can print or email from history
+
+### Key Differences from Z-Reading
+
+| Feature | X-Reading | Z-Reading |
+|---------|-----------|-----------|
+| **Resets counters** | No | Yes |
+| **Frequency** | Multiple times/day | Once at end of day |
+| **Purpose** | Inquiry/monitoring | Day closing |
+| **Required by BIR** | Optional | Mandatory |
+
+**Remember**: X-Reading does NOT close your day. Always do Z-Reading at end of business!
 
 ---
 
@@ -868,6 +1491,102 @@ As a Philippine business, you must comply with BIR regulations:
 - Reasons for returns
 - Impact on sales totals
 
+### Void/Refund/Exchange Report
+
+A comprehensive audit report for all transaction reversals.
+
+1. Go to **Reports Hub** → **Void/Refund/Exchange Report**
+2. Select date range
+3. Use tabs to switch between:
+   - **Voids**: Cancelled transactions
+   - **Refunds**: Customer returns
+   - **Exchanges**: Item swaps
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Void/Refund/Exchange Report                         │
+├──────────────────────────────────────────────────────┤
+│  [Voids]  [Refunds]  [Exchanges]                     │
+├──────────────────────────────────────────────────────┤
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐       │
+│  │  VOIDS     │ │  REFUNDS   │ │ EXCHANGES  │       │
+│  │    5       │ │     3      │ │     2      │       │
+│  │ ₱2,500.00  │ │ ₱1,250.00  │ │   ₱450.00  │       │
+│  └────────────┘ └────────────┘ └────────────┘       │
+├──────────────────────────────────────────────────────┤
+│  Invoice      Date       Amount     Reason          │
+│  VD-00123    Jan 29     ₱500.00    Wrong item       │
+│  VD-00122    Jan 29     ₱750.00    Customer cancel  │
+│  VD-00121    Jan 28     ₱1,250.00  Price error      │
+└──────────────────────────────────────────────────────┘
+```
+
+- Tap any transaction to view full details
+- Export to PDF or print for auditing
+
+### Top Selling Products Report
+
+Analyze your best-performing products.
+
+1. Go to **Reports Hub** → **Top Selling Products**
+2. Select date range (All Time, Year, Month, Week)
+3. Sort by Quantity Sold or Revenue
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Top Selling Products                                │
+├──────────────────────────────────────────────────────┤
+│  Period: [This Month ▼]   Sort: [Revenue ▼]         │
+├──────────────────────────────────────────────────────┤
+│  Rank  Product              Qty Sold    Revenue      │
+│  ─────────────────────────────────────────────────── │
+│  🥇 1  Coca Cola 1.5L         250     ₱21,250.00    │
+│  🥈 2  Rice Premium (kg)      180     ₱9,900.00     │
+│  🥉 3  Cooking Oil 1L         120     ₱10,200.00    │
+│     4  Sardines Can           95      ₱2,375.00     │
+│     5  Instant Coffee         88      ₱3,520.00     │
+├──────────────────────────────────────────────────────┤
+│  Total Products: 45    Total Qty: 1,250             │
+│  Total Revenue: ₱125,450.00                         │
+│  Top 10 Share: 68%                                  │
+└──────────────────────────────────────────────────────┘
+```
+
+- Gold/Silver/Bronze badges for top 3 products
+- Shows category information
+- Export to PDF or print
+
+### Top Customers Report
+
+Identify your most valuable customers.
+
+1. Go to **Reports Hub** → **Top Customers**
+2. Select date range
+3. Sort by Total Purchases or Transaction Count
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Top Customers                                       │
+├──────────────────────────────────────────────────────┤
+│  Period: [This Month ▼]   Sort: [Total Purchases ▼] │
+├──────────────────────────────────────────────────────┤
+│  Rank  Customer             Transactions  Total      │
+│  ─────────────────────────────────────────────────── │
+│  🥇 1  ABC Trading Co.          15      ₱45,250.00   │
+│  🥈 2  Juan dela Cruz           12      ₱28,500.00   │
+│  🥉 3  Maria Santos              8      ₱15,200.00   │
+│     4  XYZ Store                 6      ₱12,800.00   │
+│     5  Pedro Reyes               5       ₱8,500.00   │
+├──────────────────────────────────────────────────────┤
+│  Total Customers: 85    Avg Customer Value: ₱1,475  │
+│  Top 10 Revenue Share: 72%                          │
+└──────────────────────────────────────────────────────┘
+```
+
+- Shows transaction count per customer
+- Average customer value calculation
+- Export to PDF or print
+
 ## 9.5 eJournal (Audit Trail)
 
 The eJournal automatically records:
@@ -900,6 +1619,117 @@ The eJournal automatically records:
 | Accounts Receivable | Customer balances owed |
 | Accounts Payable | Amounts owed to suppliers |
 | Purchase Report | All supplier purchases |
+
+### Customer Account Statement
+
+View detailed transaction history for a specific customer.
+
+1. Go to **Reports Hub** → **Customer Account Statement**
+2. Select a customer
+3. Select date range (optional)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Customer Account Statement                          │
+├──────────────────────────────────────────────────────┤
+│  Customer: ABC Trading Co.                           │
+│  Current Balance: ₱15,250.00                         │
+│  Credit Limit: ₱50,000.00                           │
+├──────────────────────────────────────────────────────┤
+│  Date        Reference      Debit      Credit       │
+│  ─────────────────────────────────────────────────── │
+│  Jan 29      INV-000125    ₱5,500.00      -         │
+│  Jan 28      PMT-000045        -      ₱3,000.00     │
+│  Jan 27      INV-000118    ₱8,250.00      -         │
+│  Jan 25      INV-000112    ₱4,500.00      -         │
+│  ─────────────────────────────────────────────────── │
+│  TOTALS                   ₱18,250.00   ₱3,000.00    │
+├──────────────────────────────────────────────────────┤
+│  Opening Balance:           ₱0.00                   │
+│  Total Charges:        ₱18,250.00                   │
+│  Total Payments:       (₱3,000.00)                  │
+│  Ending Balance:       ₱15,250.00                   │
+└──────────────────────────────────────────────────────┘
+```
+
+- Shows all invoices (charges) and payments
+- Running balance calculation
+- Export to PDF for customer statements
+
+### Supplier Account Statement
+
+View detailed transaction history for a specific supplier.
+
+1. Go to **Reports Hub** → **Supplier Account Statement**
+2. Select a supplier
+3. Select date range (optional)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Supplier Account Statement                          │
+├──────────────────────────────────────────────────────┤
+│  Supplier: Metro Wholesale Inc.                      │
+│  Current Balance: ₱25,750.00                         │
+├──────────────────────────────────────────────────────┤
+│  Date        Reference      Debit      Credit       │
+│  ─────────────────────────────────────────────────── │
+│  Jan 29      PO-000045    ₱12,500.00      -         │
+│  Jan 27      PAY-000018       -       ₱8,000.00     │
+│  Jan 25      PO-000042    ₱15,250.00      -         │
+│  Jan 20      PO-000038     ₱6,000.00      -         │
+│  ─────────────────────────────────────────────────── │
+│  TOTALS                   ₱33,750.00   ₱8,000.00    │
+├──────────────────────────────────────────────────────┤
+│  Opening Balance:           ₱0.00                   │
+│  Total Purchases:      ₱33,750.00                   │
+│  Total Payments:       (₱8,000.00)                  │
+│  Ending Balance:       ₱25,750.00                   │
+└──────────────────────────────────────────────────────┘
+```
+
+- Shows all purchase orders and payments made
+- Track amounts owed to each supplier
+- Export to PDF for records
+
+### Upcoming PDC Report
+
+Track post-dated checks (PDC) that need to be funded.
+
+1. Go to **Reports Hub** → **Upcoming PDC Report**
+2. Select period (7 days, 14 days, 30 days, All Pending)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Upcoming PDC Report                                 │
+├──────────────────────────────────────────────────────┤
+│  Period: [Next 14 Days ▼]                           │
+├──────────────────────────────────────────────────────┤
+│  FUNDING SUMMARY                                     │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐       │
+│  │ This Week  │ │ Next Week  │ │ This Month │       │
+│  │ ₱15,000.00 │ │ ₱22,500.00 │ │ ₱45,000.00 │       │
+│  └────────────┘ └────────────┘ └────────────┘       │
+├──────────────────────────────────────────────────────┤
+│  Check#      Supplier         Date      Amount       │
+│  ─────────────────────────────────────────────────── │
+│  🔴 CHK-001  Metro Wholesale  Jan 30   ₱8,000.00    │
+│  🟠 CHK-002  ABC Supplies     Feb 01   ₱7,000.00    │
+│  🟡 CHK-003  XYZ Trading      Feb 05   ₱12,500.00   │
+│  🟢 CHK-004  123 Distributor  Feb 15   ₱10,000.00   │
+├──────────────────────────────────────────────────────┤
+│  Total Funding Required: ₱37,500.00                 │
+└──────────────────────────────────────────────────────┘
+```
+
+**Color Indicators:**
+- 🔴 **Red**: Due within 3 days (urgent)
+- 🟠 **Orange**: Due within 7 days
+- 🟡 **Yellow**: Due within 14 days
+- 🟢 **Green**: Due beyond 14 days
+
+- Plan cash flow for upcoming check payments
+- Avoid bounced checks with advance notice
+- Export to PDF for financial planning
 
 ---
 
@@ -1311,21 +2141,35 @@ If you encounter issues not covered here:
 - [ ] Check if system asks for unterminated sessions
 - [ ] Complete any pending Z-Readings
 - [ ] Start shift (if prompted)
+- [ ] **Add Cash Fund** (opening cash amount)
 - [ ] Test printer connection
 
 ### During Operations
 - [ ] Process sales as customers come
 - [ ] Apply discounts as needed (SC/PWD, promo)
-- [ ] Handle returns/refunds properly
+- [ ] Handle returns/refunds/exchanges properly
 - [ ] Record customer payments
+- [ ] **Record petty cash** when withdrawing for expenses
+- [ ] **Reprint receipts** if customer requests
 
 ### End of Day
+- [ ] Review X-Reading (optional, for mid-day check)
 - [ ] Do Cash Count (count physical cash)
-- [ ] Generate X-Reading (optional, for review)
+- [ ] Compare expected vs actual cash
 - [ ] Generate Z-Reading (REQUIRED)
 - [ ] Print and file Z-Reading report
 - [ ] Create backup
 - [ ] Turn off printer
+
+## POS Menu Quick Reference
+
+| Menu Section | Items |
+|--------------|-------|
+| **Receipt** | Reprint Last Receipt, Reprint Receipt (Browse) |
+| **Reports** | X-Reading, Z-Reading |
+| **Cash Management** | Cash Count, Add Cash Fund, Petty Cash Withdrawal |
+| **Transactions** | Process Refund, Exchange Item, Void Transaction |
+| **Customer** | Quick Add Customer |
 
 ## Keyboard Shortcuts (Physical Keyboard)
 
@@ -1390,9 +2234,19 @@ Accred #: 000-000000000-00000
 
 ## Document Information
 
-**Manual Version**: 1.0
-**Last Updated**: January 29, 2026
-**Applicable Software Version**: IgoroTech Mobile POS v1.0
+**Manual Version**: 1.1
+**Last Updated**: February 10, 2026
+**Applicable Software Version**: IgoroTech Mobile POS v1.1
+
+**What's New in v1.1**:
+- Expanded Sales Terminal documentation (Sections 4.8-4.15)
+- Added Cash Fund and Petty Cash documentation
+- Added Receipt Reprinting documentation
+- Added Exchange Transaction documentation
+- Added detailed X-Reading documentation
+- Added new reports: Void/Refund/Exchange, Top Selling, Top Customers
+- Added Account Statements and Upcoming PDC Report documentation
+- Updated Quick Reference with POS Menu guide
 
 **BIR Compliance**:
 - Revenue Regulations No. 7-2024 (Invoice Transition)

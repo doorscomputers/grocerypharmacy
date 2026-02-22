@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,10 @@ import {
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
 import { DatabaseService } from '../../database/DatabaseService';
+import POSInvoiceListPicker, { InvoiceTransaction } from './POSInvoiceListPicker';
+import POSDiscountWarningBanner from './POSDiscountWarningBanner';
+import POSTransactionCompleteDialog, { TransactionCompleteData } from './POSTransactionCompleteDialog';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface POSVoidModalProps {
   visible: boolean;
@@ -27,10 +31,16 @@ interface TransactionData {
   invoice_number: string;
   transaction_number: string;
   customer_name?: string;
+  subtotal: number;
+  tax_amount: number;
+  discount_amount: number;
   total_amount: number;
   payment_method: string;
   status: string;
   transaction_date: string;
+  sc_pwd_id?: string;
+  sc_pwd_name?: string;
+  sc_pwd_type?: 'SENIOR' | 'PWD';
   items: Array<{
     product_name: string;
     quantity: number;
@@ -45,38 +55,113 @@ export default function POSVoidModal({
   cashierId,
   onSuccess,
 }: POSVoidModalProps) {
-  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const { sp, fs, lo } = useResponsiveTheme();
   const [voidReason, setVoidReason] = useState('');
   const [transaction, setTransaction] = useState<TransactionData | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isVoiding, setIsVoiding] = useState(false);
+  const [showCompleteDialog, setShowCompleteDialog] = useState(false);
+  const [completeData, setCompleteData] = useState<TransactionCompleteData | null>(null);
+  const [cashierName, setCashierName] = useState<string>('');
 
-  const handleSearch = async () => {
-    if (!invoiceNumber.trim()) {
-      Alert.alert('Error', 'Please enter an invoice number');
-      return;
+  // Load cashier name
+  useEffect(() => {
+    const loadCashierName = async () => {
+      try {
+        const db = DatabaseService.getInstance();
+        const user = await db.getUserById(cashierId);
+        if (user) {
+          setCashierName(user.full_name || user.username);
+        }
+      } catch (error) {
+        console.error('Error loading cashier name:', error);
+      }
+    };
+    if (cashierId) {
+      loadCashierName();
+    }
+  }, [cashierId]);
+
+  // Validate transaction can be voided
+  const validateTransactionForVoid = async (result: any): Promise<boolean> => {
+    if (!result) {
+      Alert.alert('Not Found', 'No transaction found with that invoice number');
+      return false;
     }
 
+    if (result.status === 'VOID') {
+      Alert.alert('Already Voided', 'This transaction has already been voided');
+      return false;
+    }
+
+    if (result.status === 'REFUNDED') {
+      Alert.alert('Cannot Void', 'This transaction has been refunded and cannot be voided.\n\nRefunded transactions cannot be voided because items have already been returned to inventory.');
+      return false;
+    }
+
+    // Check if transaction has any associated returns (partial refunds or exchanges)
+    const db = DatabaseService.getInstance();
+    const returns = await db.getSalesReturnsByTransaction(result.id);
+    if (returns && returns.length > 0) {
+      Alert.alert('Cannot Void', 'This transaction has associated refunds or exchanges and cannot be voided.\n\nPlease void the refund/exchange first or process items individually.');
+      return false;
+    }
+
+    if (result.status !== 'COMPLETED') {
+      Alert.alert('Invalid Status', 'Only completed transactions can be voided');
+      return false;
+    }
+
+    // NEW: Check if transaction belongs to a closed shift
+    const shiftCheck = await db.isTransactionInClosedShift(result.id);
+    if (shiftCheck.isClosedShift) {
+      Alert.alert(
+        'Shift Closed',
+        'This transaction belongs to a closed shift and cannot be voided.\n\nTransactions can only be voided during the shift they were created in. Once a shift is closed or End of Day is performed, transactions from that shift are locked.\n\nShift ID: ' + (shiftCheck.shiftId || 'Unknown'),
+        [{ text: 'OK' }]
+      );
+      return false;
+    }
+
+    return true;
+  };
+
+  // Handle invoice search from the picker
+  const handleSearchInvoice = async (invoiceNumber: string) => {
     setIsSearching(true);
     try {
       const db = DatabaseService.getInstance();
-      const result = await db.searchTransactionByInvoice(invoiceNumber.trim());
+      const result = await db.searchTransactionByInvoice(invoiceNumber);
 
-      if (!result) {
-        Alert.alert('Not Found', 'No transaction found with that invoice number');
-        setTransaction(null);
-      } else if (result.status === 'VOID') {
-        Alert.alert('Already Voided', 'This transaction has already been voided');
-        setTransaction(null);
-      } else if (result.status !== 'COMPLETED') {
-        Alert.alert('Invalid Status', 'Only completed transactions can be voided');
-        setTransaction(null);
-      } else {
+      if (await validateTransactionForVoid(result)) {
         setTransaction(result);
+      } else {
+        setTransaction(null);
       }
     } catch (error) {
       console.error('Error searching transaction:', error);
       Alert.alert('Error', 'Failed to search for transaction');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Handle invoice selection from browse list
+  const handleSelectInvoice = async (invoice: InvoiceTransaction) => {
+    setIsSearching(true);
+    try {
+      const db = DatabaseService.getInstance();
+      // Fetch full transaction details including items
+      const result = await db.searchTransactionByInvoice(invoice.invoice_number || invoice.transaction_number);
+
+      if (await validateTransactionForVoid(result)) {
+        setTransaction(result);
+      } else {
+        setTransaction(null);
+      }
+    } catch (error) {
+      console.error('Error fetching transaction details:', error);
+      Alert.alert('Error', 'Failed to load transaction details');
     } finally {
       setIsSearching(false);
     }
@@ -90,9 +175,14 @@ export default function POSVoidModal({
       return;
     }
 
+    const hasDiscount = transaction.discount_amount > 0;
+    const discountWarning = hasDiscount
+      ? `\n\n⚠️ NOTE: This transaction has a ₱${transaction.discount_amount.toFixed(2)} discount applied.`
+      : '';
+
     Alert.alert(
       'Confirm Void',
-      `Are you sure you want to void this transaction?\n\nInvoice: ${transaction.invoice_number}\nAmount: ₱${transaction.total_amount.toFixed(2)}\n\nThis action will:\n• Restore all item quantities to inventory\n• Mark the transaction as VOID\n• Update accounts if applicable\n\nThis cannot be undone.`,
+      `Are you sure you want to void this transaction?\n\nInvoice: ${transaction.invoice_number}\nAmount: ₱${transaction.total_amount.toFixed(2)}${discountWarning}\n\nThis action will:\n• Restore all item quantities to inventory\n• Mark the transaction as VOID\n• Update accounts if applicable\n\nThis cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -108,8 +198,25 @@ export default function POSVoidModal({
                 void_by: cashierId,
               });
 
-              Alert.alert('Success', 'Transaction voided successfully. Inventory has been restored.');
-              handleClose();
+              // Prepare data for complete dialog
+              const voidRefNumber = `VOID-${transaction.invoice_number}`;
+              setCompleteData({
+                transactionType: 'VOID',
+                referenceNumber: voidRefNumber,
+                originalInvoice: transaction.invoice_number,
+                customerName: transaction.customer_name,
+                totalAmount: transaction.total_amount,
+                reason: voidReason.trim(),
+                items: transaction.items?.map(item => ({
+                  name: item.product_name,
+                  quantity: item.quantity,
+                  unitPrice: item.unit_price,
+                  totalAmount: item.total_amount,
+                })) || [],
+                cashierName: cashierName,
+                transactionDate: new Date(),
+              });
+              setShowCompleteDialog(true);
               onSuccess?.();
             } catch (error) {
               console.error('Error voiding transaction:', error);
@@ -124,10 +231,17 @@ export default function POSVoidModal({
   };
 
   const handleClose = () => {
-    setInvoiceNumber('');
     setVoidReason('');
     setTransaction(null);
+    setShowCompleteDialog(false);
+    setCompleteData(null);
     onClose();
+  };
+
+  const handleCompleteDialogClose = () => {
+    setShowCompleteDialog(false);
+    setCompleteData(null);
+    handleClose();
   };
 
   const formatCurrency = (value: number) => {
@@ -155,8 +269,9 @@ export default function POSVoidModal({
   ];
 
   return (
+    <>
     <Modal
-      visible={visible}
+      visible={visible && !showCompleteDialog}
       transparent
       animationType="slide"
       onRequestClose={handleClose}
@@ -165,43 +280,45 @@ export default function POSVoidModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Void Transaction</Text>
+            <Text style={[styles.headerTitle, { fontSize: fs.h2 }]}>Void Transaction</Text>
             <IconButton icon="close" size={24} iconColor="#FFFFFF" onPress={handleClose} />
           </View>
 
-          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-            {/* Search Box */}
-            <View style={styles.searchBox}>
-              <Text style={styles.label}>Invoice/Transaction Number</Text>
-              <View style={styles.searchRow}>
-                <TextInput
-                  style={styles.searchInput}
-                  value={invoiceNumber}
-                  onChangeText={setInvoiceNumber}
-                  placeholder="Enter invoice number"
-                  placeholderTextColor="#9E9E9E"
-                  autoCapitalize="characters"
+          <ScrollView style={[styles.content, { padding: sp.md }]} showsVerticalScrollIndicator={false}>
+            {/* Invoice Picker (when no transaction selected) */}
+            {!transaction && (
+              <View style={styles.pickerContainer}>
+                <POSInvoiceListPicker
+                  onSelectInvoice={handleSelectInvoice}
+                  onSearchInvoice={handleSearchInvoice}
+                  isSearching={isSearching}
+                  accentColor="#D32F2F"
+                  excludeWithReturns={true}
+                  cashierId={cashierId}
+                  todayOnly={true}
+                  excludeClosedShifts={true}
                 />
-                <TouchableOpacity
-                  style={styles.searchBtn}
-                  onPress={handleSearch}
-                  disabled={isSearching}
-                >
-                  {isSearching ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.searchBtnText}>Search</Text>
-                  )}
-                </TouchableOpacity>
               </View>
-            </View>
+            )}
 
             {/* Transaction Details */}
             {transaction && (
               <>
+                {/* Discount Warning Banner */}
+                {transaction.discount_amount > 0 && (
+                  <POSDiscountWarningBanner
+                    discountAmount={transaction.discount_amount}
+                    totalAmount={transaction.total_amount}
+                    originalAmount={(transaction.subtotal || 0) + (transaction.tax_amount || 0)}
+                    scPwdId={transaction.sc_pwd_id}
+                    scPwdName={transaction.sc_pwd_name}
+                    scPwdType={transaction.sc_pwd_type}
+                  />
+                )}
+
                 <View style={styles.transactionBox}>
                   <View style={styles.transactionHeader}>
                     <Text style={styles.invoiceLabel}>{transaction.invoice_number}</Text>
@@ -286,18 +403,20 @@ export default function POSVoidModal({
           <View style={styles.footer}>
             <TouchableOpacity
               style={styles.cancelBtn}
-              onPress={handleClose}
+              onPress={transaction ? () => setTransaction(null) : handleClose}
               disabled={isVoiding}
             >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+              <Text style={styles.cancelBtnText}>
+                {transaction ? 'Back' : 'Cancel'}
+              </Text>
             </TouchableOpacity>
             {transaction && (
               <TouchableOpacity
-                style={[styles.voidBtn, isVoiding && styles.voidBtnDisabled]}
+                style={[styles.voidBtn, (isVoiding || !voidReason.trim()) && styles.voidBtnDisabled]}
                 onPress={handleVoid}
                 disabled={isVoiding || !voidReason.trim()}
               >
-                <Text style={styles.voidBtnText}>
+                <Text style={[styles.voidBtnText, { fontSize: fs.button }]}>
                   {isVoiding ? 'Voiding...' : 'Void Transaction'}
                 </Text>
               </TouchableOpacity>
@@ -306,6 +425,14 @@ export default function POSVoidModal({
         </View>
       </KeyboardAvoidingView>
     </Modal>
+
+    {/* Transaction Complete Dialog with Print/Email */}
+    <POSTransactionCompleteDialog
+      visible={showCompleteDialog}
+      onClose={handleCompleteDialogClose}
+      data={completeData}
+    />
+    </>
   );
 }
 
@@ -344,6 +471,9 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+  },
+  pickerContainer: {
+    minHeight: 450,
   },
   searchBox: {
     marginBottom: 16,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import {
   Card,
   Title,
@@ -12,12 +12,14 @@ import {
   TextInput,
   SegmentedButtons,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'StockValuationReport'>;
@@ -25,13 +27,13 @@ type Props = {
 
 interface Product {
   id: number;
-  product_code: string;
+  code: string;
   name: string;
   description?: string;
   category_id?: number;
   category_name?: string;
-  cost_price: number;
-  selling_price: number;
+  cost: number;
+  price: number;
   stock_quantity: number;
   reorder_level: number;
   is_active: boolean;
@@ -46,13 +48,14 @@ type ViewMode = 'summary' | 'byProduct' | 'byCategory';
 
 export default function StockValuationReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('summary');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -60,20 +63,36 @@ export default function StockValuationReportScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const loadData = async () => {
     try {
       setLoading(true);
       const dbService = getDatabase();
 
-      const productsData = await dbService.getProducts();
+      // Get all products with details (no limit for valuation report)
+      const productsData = await dbService.getProductsWithDetails(true, 10000, '');
+      console.log('Stock Valuation - Loaded products:', productsData.length);
       setProducts(productsData);
 
       const categoriesData = await dbService.getCategories(false);
       setCategories(categoriesData);
     } catch (error) {
       console.error('Error loading stock valuation data:', error);
+      Alert.alert('Error', 'Failed to load stock valuation data. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -87,7 +106,7 @@ export default function StockValuationReportScreen({ navigation }: Props) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(p =>
         p.name.toLowerCase().includes(query) ||
-        p.product_code?.toLowerCase().includes(query)
+        p.code?.toLowerCase().includes(query)
       );
     }
 
@@ -101,18 +120,26 @@ export default function StockValuationReportScreen({ navigation }: Props) {
   // Calculate totals
   const totals = useMemo(() => {
     const activeProducts = products.filter(p => p.is_active);
+    console.log('Stock Valuation - Active products:', activeProducts.length);
 
     const totalCostValue = activeProducts.reduce(
-      (sum, p) => sum + (p.cost_price || 0) * (p.stock_quantity || 0), 0
+      (sum, p) => sum + (p.cost || 0) * (p.stock_quantity || 0), 0
     );
     const totalRetailValue = activeProducts.reduce(
-      (sum, p) => sum + (p.selling_price || 0) * (p.stock_quantity || 0), 0
+      (sum, p) => sum + (p.price || 0) * (p.stock_quantity || 0), 0
     );
     const totalUnits = activeProducts.reduce(
       (sum, p) => sum + (p.stock_quantity || 0), 0
     );
     const potentialProfit = totalRetailValue - totalCostValue;
     const profitMargin = totalCostValue > 0 ? (potentialProfit / totalCostValue) * 100 : 0;
+
+    console.log('Stock Valuation - Totals:', {
+      totalCostValue,
+      totalRetailValue,
+      totalUnits,
+      productCount: activeProducts.length
+    });
 
     return {
       totalCostValue,
@@ -152,8 +179,8 @@ export default function StockValuationReportScreen({ navigation }: Props) {
 
       breakdown[catId].product_count += 1;
       breakdown[catId].total_units += p.stock_quantity || 0;
-      breakdown[catId].cost_value += (p.cost_price || 0) * (p.stock_quantity || 0);
-      breakdown[catId].retail_value += (p.selling_price || 0) * (p.stock_quantity || 0);
+      breakdown[catId].cost_value += (p.cost || 0) * (p.stock_quantity || 0);
+      breakdown[catId].retail_value += (p.price || 0) * (p.stock_quantity || 0);
     });
 
     return Object.values(breakdown).sort((a, b) => b.retail_value - a.retail_value);
@@ -177,8 +204,8 @@ export default function StockValuationReportScreen({ navigation }: Props) {
       .normalSize()
       .bold(false)
       .feed()
-      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
-      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatPrinterDate(now))
+      .println(formatPrinterDateTime(now).split(' ').slice(-2).join(' '))
       .doubleSeparator();
 
     // Summary
@@ -226,6 +253,160 @@ export default function StockValuationReportScreen({ navigation }: Props) {
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = formatPrinterDate(now);
+    const timeStr = formatPrinterDateTime(now).split(' ').slice(-2).join(' ');
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .text-center { text-align: center; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+          .summary-item { flex: 1; min-width: 120px; padding: 10px; background: #f9f9f9; border-radius: 5px; text-align: center; }
+          .summary-label { font-size: 10px; color: #666; }
+          .summary-value { font-size: 14px; font-weight: bold; }
+          .primary { color: #1976D2; }
+          .success { color: #4CAF50; }
+          .warning { color: #FF9800; }
+          .purple { color: #9C27B0; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+          .total-row { background-color: #E8F5E9; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">STOCK VALUATION REPORT</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Summary</div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Total Products</div>
+              <div class="summary-value">${totals.productCount}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Units</div>
+              <div class="summary-value">${totals.totalUnits.toLocaleString()}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Cost Value</div>
+              <div class="summary-value primary">${formatCurrency(totals.totalCostValue)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Retail Value</div>
+              <div class="summary-value success">${formatCurrency(totals.totalRetailValue)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Potential Profit</div>
+              <div class="summary-value warning">${formatCurrency(totals.potentialProfit)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Profit Margin</div>
+              <div class="summary-value purple">${totals.profitMargin.toFixed(1)}%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Valuation by Category</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th class="text-right">Products</th>
+                <th class="text-right">Units</th>
+                <th class="text-right">Cost Value</th>
+                <th class="text-right">Retail Value</th>
+                <th class="text-right">Profit</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${categoryBreakdown.map(cat => {
+                const profit = cat.retail_value - cat.cost_value;
+                return `
+                  <tr>
+                    <td>${cat.category_name}</td>
+                    <td class="text-right">${cat.product_count}</td>
+                    <td class="text-right">${cat.total_units}</td>
+                    <td class="text-right">${formatCurrency(cat.cost_value)}</td>
+                    <td class="text-right">${formatCurrency(cat.retail_value)}</td>
+                    <td class="text-right warning">${formatCurrency(profit)}</td>
+                  </tr>
+                `;
+              }).join('')}
+              <tr class="total-row">
+                <td><strong>TOTAL</strong></td>
+                <td class="text-right"><strong>${totals.productCount}</strong></td>
+                <td class="text-right"><strong>${totals.totalUnits.toLocaleString()}</strong></td>
+                <td class="text-right"><strong>${formatCurrency(totals.totalCostValue)}</strong></td>
+                <td class="text-right"><strong>${formatCurrency(totals.totalRetailValue)}</strong></td>
+                <td class="text-right"><strong>${formatCurrency(totals.potentialProfit)}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Top Products by Value (${filteredProducts.length} total)</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Product Name</th>
+                <th class="text-right">Stock</th>
+                <th class="text-right">Cost</th>
+                <th class="text-right">Retail</th>
+                <th class="text-right">Cost Value</th>
+                <th class="text-right">Retail Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredProducts.slice(0, 30).map(product => `
+                <tr>
+                  <td>${product.code || '-'}</td>
+                  <td>${product.name}</td>
+                  <td class="text-right">${product.stock_quantity}</td>
+                  <td class="text-right">${formatCurrency(product.cost || 0)}</td>
+                  <td class="text-right">${formatCurrency(product.price || 0)}</td>
+                  <td class="text-right">${formatCurrency((product.cost || 0) * (product.stock_quantity || 0))}</td>
+                  <td class="text-right">${formatCurrency((product.price || 0) * (product.stock_quantity || 0))}</td>
+                </tr>
+              `).join('')}
+              ${filteredProducts.length > 30 ? `<tr><td colspan="7" class="text-center"><em>...and ${filteredProducts.length - 30} more products</em></td></tr>` : ''}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="footer">
+          Report generated on ${formatPrinterDateTime(now)}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
+  };
+
   // Paginated products
   const paginatedProducts = useMemo(() => {
     const start = currentPage * itemsPerPage;
@@ -238,7 +419,7 @@ export default function StockValuationReportScreen({ navigation }: Props) {
     <View>
       <Card style={styles.summaryCard}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Stock Valuation Summary</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Stock Valuation Summary</Title>
           <Divider style={styles.divider} />
 
           <View style={styles.summaryGrid}>
@@ -288,28 +469,30 @@ export default function StockValuationReportScreen({ navigation }: Props) {
 
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Valuation by Category</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Valuation by Category</Title>
           <Divider style={styles.divider} />
 
-          <DataTable>
-            <DataTable.Header>
-              <DataTable.Title>Category</DataTable.Title>
-              <DataTable.Title numeric>Products</DataTable.Title>
-              <DataTable.Title numeric>Units</DataTable.Title>
-              <DataTable.Title numeric>Cost Value</DataTable.Title>
-              <DataTable.Title numeric>Retail Value</DataTable.Title>
-            </DataTable.Header>
+          <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+            <DataTable style={{ minWidth: 700 }}>
+              <DataTable.Header>
+                <DataTable.Title style={{ width: 180 }}>Category</DataTable.Title>
+                <DataTable.Title numeric style={{ width: 100 }}>Products</DataTable.Title>
+                <DataTable.Title numeric style={{ width: 80 }}>Units</DataTable.Title>
+                <DataTable.Title numeric style={{ width: 150 }}>Cost Value</DataTable.Title>
+                <DataTable.Title numeric style={{ width: 150 }}>Retail Value</DataTable.Title>
+              </DataTable.Header>
 
-            {categoryBreakdown.map((cat) => (
-              <DataTable.Row key={cat.category_id}>
-                <DataTable.Cell>{cat.category_name}</DataTable.Cell>
-                <DataTable.Cell numeric>{cat.product_count}</DataTable.Cell>
-                <DataTable.Cell numeric>{cat.total_units}</DataTable.Cell>
-                <DataTable.Cell numeric>{formatCurrency(cat.cost_value)}</DataTable.Cell>
-                <DataTable.Cell numeric>{formatCurrency(cat.retail_value)}</DataTable.Cell>
-              </DataTable.Row>
-            ))}
-          </DataTable>
+              {categoryBreakdown.map((cat) => (
+                <DataTable.Row key={cat.category_id}>
+                  <DataTable.Cell style={{ width: 180 }}>{cat.category_name}</DataTable.Cell>
+                  <DataTable.Cell numeric style={{ width: 100 }}>{cat.product_count}</DataTable.Cell>
+                  <DataTable.Cell numeric style={{ width: 80 }}>{cat.total_units}</DataTable.Cell>
+                  <DataTable.Cell numeric style={{ width: 150 }}>{formatCurrency(cat.cost_value)}</DataTable.Cell>
+                  <DataTable.Cell numeric style={{ width: 150 }}>{formatCurrency(cat.retail_value)}</DataTable.Cell>
+                </DataTable.Row>
+              ))}
+            </DataTable>
+          </ScrollView>
         </Card.Content>
       </Card>
     </View>
@@ -318,7 +501,7 @@ export default function StockValuationReportScreen({ navigation }: Props) {
   const renderProductView = () => (
     <Card style={styles.card}>
       <Card.Content>
-        <Title style={styles.sectionTitle}>Stock Valuation by Product</Title>
+        <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Stock Valuation by Product</Title>
         <Divider style={styles.divider} />
 
         <TextInput
@@ -357,33 +540,35 @@ export default function StockValuationReportScreen({ navigation }: Props) {
           Showing {paginatedProducts.length} of {filteredProducts.length} products
         </Paragraph>
 
-        <DataTable>
-          <DataTable.Header>
-            <DataTable.Title>Code</DataTable.Title>
-            <DataTable.Title style={{ flex: 2 }}>Product Name</DataTable.Title>
-            <DataTable.Title numeric>Stock</DataTable.Title>
-            <DataTable.Title numeric>Cost</DataTable.Title>
-            <DataTable.Title numeric>Retail</DataTable.Title>
-            <DataTable.Title numeric>Cost Value</DataTable.Title>
-            <DataTable.Title numeric>Retail Value</DataTable.Title>
-          </DataTable.Header>
+        <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+          <DataTable style={{ minWidth: 800 }}>
+            <DataTable.Header>
+              <DataTable.Title style={{ width: 100 }}>Code</DataTable.Title>
+              <DataTable.Title style={{ width: 200 }}>Product Name</DataTable.Title>
+              <DataTable.Title numeric style={{ width: 80 }}>Stock</DataTable.Title>
+              <DataTable.Title numeric style={{ width: 100 }}>Cost</DataTable.Title>
+              <DataTable.Title numeric style={{ width: 100 }}>Retail</DataTable.Title>
+              <DataTable.Title numeric style={{ width: 120 }}>Cost Value</DataTable.Title>
+              <DataTable.Title numeric style={{ width: 120 }}>Retail Value</DataTable.Title>
+            </DataTable.Header>
 
-          {paginatedProducts.map((product) => (
-            <DataTable.Row key={product.id}>
-              <DataTable.Cell>{product.product_code || '-'}</DataTable.Cell>
-              <DataTable.Cell style={{ flex: 2 }}>{product.name}</DataTable.Cell>
-              <DataTable.Cell numeric>{product.stock_quantity}</DataTable.Cell>
-              <DataTable.Cell numeric>{formatCurrency(product.cost_price || 0)}</DataTable.Cell>
-              <DataTable.Cell numeric>{formatCurrency(product.selling_price || 0)}</DataTable.Cell>
-              <DataTable.Cell numeric>
-                {formatCurrency((product.cost_price || 0) * (product.stock_quantity || 0))}
-              </DataTable.Cell>
-              <DataTable.Cell numeric>
-                {formatCurrency((product.selling_price || 0) * (product.stock_quantity || 0))}
-              </DataTable.Cell>
-            </DataTable.Row>
-          ))}
-        </DataTable>
+            {paginatedProducts.map((product) => (
+              <DataTable.Row key={product.id}>
+                <DataTable.Cell style={{ width: 100 }}>{product.code || '-'}</DataTable.Cell>
+                <DataTable.Cell style={{ width: 200 }}>{product.name}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ width: 80 }}>{product.stock_quantity}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ width: 100 }}>{formatCurrency(product.cost || 0)}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ width: 100 }}>{formatCurrency(product.price || 0)}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ width: 120 }}>
+                  {formatCurrency((product.cost || 0) * (product.stock_quantity || 0))}
+                </DataTable.Cell>
+                <DataTable.Cell numeric style={{ width: 120 }}>
+                  {formatCurrency((product.price || 0) * (product.stock_quantity || 0))}
+                </DataTable.Cell>
+              </DataTable.Row>
+            ))}
+          </DataTable>
+        </ScrollView>
 
         {totalPages > 1 && (
           <DataTable.Pagination
@@ -401,10 +586,10 @@ export default function StockValuationReportScreen({ navigation }: Props) {
           <Title style={styles.totalLabel}>Filtered Total:</Title>
           <View style={styles.totalValues}>
             <Paragraph>
-              Cost: {formatCurrency(filteredProducts.reduce((sum, p) => sum + (p.cost_price || 0) * (p.stock_quantity || 0), 0))}
+              Cost: {formatCurrency(filteredProducts.reduce((sum, p) => sum + (p.cost || 0) * (p.stock_quantity || 0), 0))}
             </Paragraph>
             <Paragraph>
-              Retail: {formatCurrency(filteredProducts.reduce((sum, p) => sum + (p.selling_price || 0) * (p.stock_quantity || 0), 0))}
+              Retail: {formatCurrency(filteredProducts.reduce((sum, p) => sum + (p.price || 0) * (p.stock_quantity || 0), 0))}
             </Paragraph>
           </View>
         </View>
@@ -415,7 +600,7 @@ export default function StockValuationReportScreen({ navigation }: Props) {
   const renderCategoryView = () => (
     <Card style={styles.card}>
       <Card.Content>
-        <Title style={styles.sectionTitle}>Detailed Category Breakdown</Title>
+        <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Detailed Category Breakdown</Title>
         <Divider style={styles.divider} />
 
         {categoryBreakdown.map((cat) => {
@@ -469,31 +654,19 @@ export default function StockValuationReportScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['bottom']}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Stock Valuation Report"
+        reportFileName="StockValuationReport"
+        disabled={products.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
       >
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Stock Valuation Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Total inventory value at cost and retail prices
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-            >
-              Print
-            </Button>
-          </View>
-        </View>
-
         <SegmentedButtons
           value={viewMode}
           onValueChange={(value) => setViewMode(value as ViewMode)}
@@ -507,8 +680,30 @@ export default function StockValuationReportScreen({ navigation }: Props) {
 
         {loading ? (
           <Card style={styles.card}>
-            <Card.Content>
-              <Paragraph>Loading stock valuation data...</Paragraph>
+            <Card.Content style={{ alignItems: 'center', paddingVertical: 48 }}>
+              <ActivityIndicator size="large" color={theme.colors.primary} />
+              <Paragraph style={{ marginTop: 12, opacity: 0.7 }}>Loading stock valuation data...</Paragraph>
+            </Card.Content>
+          </Card>
+        ) : products.length === 0 ? (
+          <Card style={styles.card}>
+            <Card.Content style={{ alignItems: 'center', paddingVertical: 48 }}>
+              <Title style={[styles.emptyTitle, { fontSize: 20 }]}>No Products Found</Title>
+              <Paragraph style={[styles.emptyText, { fontSize: 14 }]}>
+                There are no active products in your inventory.{'\n'}
+                Add products first to see the stock valuation report.
+              </Paragraph>
+              <Button
+                mode="contained"
+                onPress={() => navigation.navigate('Products')}
+                style={{ marginTop: 16 }}
+                icon="plus"
+              >
+                Add Products
+              </Button>
+              <Button mode="outlined" onPress={loadData} style={{ marginTop: 8 }} icon="refresh">
+                Refresh
+              </Button>
             </Card.Content>
           </Card>
         ) : (
@@ -526,58 +721,20 @@ export default function StockValuationReportScreen({ navigation }: Props) {
         </View>
       </ScrollView>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Stock Valuation Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+      </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   segmentedButtons: {
     marginBottom: 16,
@@ -678,5 +835,17 @@ const styles = StyleSheet.create({
   },
   refreshButton: {
     minWidth: 150,
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    textAlign: 'center',
+    opacity: 0.7,
+    marginBottom: 16,
   },
 });

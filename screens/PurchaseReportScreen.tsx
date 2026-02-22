@@ -1,26 +1,27 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Text } from 'react-native';
 import {
   Card,
   Title,
   Paragraph,
-  Button,
   useTheme,
   DataTable,
   Divider,
   Chip,
   Menu,
-  TextInput,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'PurchaseReport'>;
+  route: RouteProp<RootStackParamList, 'PurchaseReport'>;
 };
 
 interface PurchaseOrder {
@@ -37,8 +38,12 @@ interface PurchaseOrder {
   created_at: string;
 }
 
-export default function PurchaseReportScreen({ navigation }: Props) {
+export default function PurchaseReportScreen({ navigation, route }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
+  const viewParam = route.params?.view || 'all';
+  const isBySupplier = viewParam === 'by_supplier';
+
   const [purchases, setPurchases] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState(() => {
@@ -48,11 +53,31 @@ export default function PurchaseReportScreen({ navigation }: Props) {
   const [selectedSupplier, setSelectedSupplier] = useState<number | null>(null);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
+
+  // Set the navigation title based on view
+  useEffect(() => {
+    navigation.setOptions({
+      title: isBySupplier ? 'Purchases by Supplier' : 'Purchase Report',
+    });
+  }, [isBySupplier, navigation]);
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -67,17 +92,17 @@ export default function PurchaseReportScreen({ navigation }: Props) {
 
       // Load suppliers
       const suppliersData = await dbService.getSuppliers();
-      setSuppliers(suppliersData);
+      setSuppliers(suppliersData || []);
 
       // Load purchases
       const purchasesData = await dbService.getPurchaseOrders();
 
       // Enrich with supplier names
-      const enrichedPurchases = purchasesData.map((po: any) => {
-        const supplier = suppliersData.find((s: any) => s.id === po.supplier_id);
+      const enrichedPurchases = (purchasesData || []).map((po: any) => {
+        const supplier = (suppliersData || []).find((s: any) => s.id === po.supplier_id);
         return {
           ...po,
-          supplier_name: supplier?.name || 'Unknown Supplier',
+          supplier_name: po.supplier_name || supplier?.name || 'Unknown Supplier',
         };
       });
 
@@ -92,7 +117,7 @@ export default function PurchaseReportScreen({ navigation }: Props) {
   const getFilteredPurchases = () => {
     let filtered = [...purchases];
 
-    // Date filter using dateRange
+    // Date filter
     filtered = filtered.filter(p => {
       const pDate = new Date(p.purchase_date || p.created_at);
       return pDate >= dateRange.startDate && pDate <= dateRange.endDate;
@@ -103,7 +128,9 @@ export default function PurchaseReportScreen({ navigation }: Props) {
       filtered = filtered.filter(p => p.supplier_id === selectedSupplier);
     }
 
-    return filtered.sort((a, b) => new Date(b.purchase_date || b.created_at).getTime() - new Date(a.purchase_date || a.created_at).getTime());
+    return filtered.sort((a, b) =>
+      new Date(b.purchase_date || b.created_at).getTime() - new Date(a.purchase_date || a.created_at).getTime()
+    );
   };
 
   const filteredPurchases = getFilteredPurchases();
@@ -115,25 +142,30 @@ export default function PurchaseReportScreen({ navigation }: Props) {
     unpaidAmount: filteredPurchases.reduce((sum, p) => sum + ((p.total_amount || 0) - (p.paid_amount || 0)), 0),
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'RECEIVED': return '#4CAF50';
-      case 'PENDING': return '#FF9800';
-      case 'CANCELLED': return '#F44336';
-      default: return '#757575';
-    }
-  };
+  // Build supplier aggregation
+  const supplierSummaries = suppliers
+    .map(supplier => {
+      const supplierPOs = filteredPurchases.filter(p => p.supplier_id === supplier.id);
+      if (supplierPOs.length === 0) return null;
+      const total = supplierPOs.reduce((sum, p) => sum + (p.total_amount || 0), 0);
+      const paid = supplierPOs.reduce((sum, p) => sum + (p.paid_amount || 0), 0);
+      const unpaid = total - paid;
+      return { ...supplier, poCount: supplierPOs.length, total, paid, unpaid };
+    })
+    .filter(Boolean) as any[];
 
   const getPaymentStatusColor = (status: string) => {
     switch (status) {
-      case 'PAID': return '#4CAF50';
-      case 'PARTIAL': return '#FF9800';
-      case 'UNPAID': return '#F44336';
+      case 'PAID': case 'RECEIVED': return '#4CAF50';
+      case 'PARTIAL': case 'PARTIALLY_RECEIVED': return '#FF9800';
+      case 'UNPAID': case 'DRAFT': case 'ORDERED': return '#F44336';
+      case 'CANCELLED': return '#9E9E9E';
       default: return '#757575';
     }
   };
 
   const formatDate = (dateStr: string) => {
+    if (!dateStr) return '-';
     return new Date(dateStr).toLocaleDateString('en-PH', {
       year: 'numeric',
       month: 'short',
@@ -145,6 +177,21 @@ export default function PurchaseReportScreen({ navigation }: Props) {
     return `₱${(amount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
+  const formatDateForPrint = (d: Date): string => {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  };
+
+  const formatTimeForPrint = (d: Date): string => {
+    let h = d.getHours();
+    const m = d.getMinutes().toString().padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${h}:${m} ${ampm}`;
+  };
+
+  const reportTitle = isBySupplier ? 'PURCHASES BY SUPPLIER' : 'PURCHASE REPORT';
+
   const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
     const builder = new ESCPOSBuilder(printerWidth);
     const now = new Date();
@@ -153,15 +200,15 @@ export default function PurchaseReportScreen({ navigation }: Props) {
       .align('center')
       .bold(true)
       .doubleSize()
-      .println('PURCHASE REPORT')
+      .println(reportTitle)
       .normalSize()
       .bold(false)
       .feed()
-      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
-      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatDateForPrint(now))
+      .println(formatTimeForPrint(now))
       .feed()
-      .println(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')}`)
-      .println(`to ${dateRange.endDate.toLocaleDateString('en-PH')}`)
+      .println(`Period: ${formatDateForPrint(dateRange.startDate)}`)
+      .println(`to ${formatDateForPrint(dateRange.endDate)}`)
       .doubleSeparator();
 
     builder
@@ -176,22 +223,43 @@ export default function PurchaseReportScreen({ navigation }: Props) {
       .leftRight('Outstanding:', `P${totals.unpaidAmount.toFixed(2)}`)
       .doubleSeparator();
 
+    // By Supplier section
     builder
       .bold(true)
       .println('BY SUPPLIER')
       .bold(false)
       .separator();
 
-    suppliers.forEach(supplier => {
-      const supplierPOs = filteredPurchases.filter(p => p.supplier_id === supplier.id);
-      if (supplierPOs.length > 0) {
-        const total = supplierPOs.reduce((sum, p) => sum + (p.total_amount || 0), 0);
-        const name = supplier.name.length > printerWidth - 15
-          ? supplier.name.substring(0, printerWidth - 17) + '..'
-          : supplier.name;
-        builder.leftRight(name, `P${total.toFixed(2)}`);
-      }
+    supplierSummaries.forEach(s => {
+      const name = s.name.length > printerWidth - 15
+        ? s.name.substring(0, printerWidth - 17) + '..'
+        : s.name;
+      builder.leftRight(name, `P${s.total.toFixed(2)}`);
+      builder.leftRight(`  ${s.poCount} POs`, `Unpaid: P${s.unpaid.toFixed(2)}`);
     });
+
+    if (supplierSummaries.length === 0) {
+      builder.println('No purchases found');
+    }
+
+    if (!isBySupplier) {
+      // Detail section for full purchase report
+      builder.doubleSeparator();
+      builder
+        .bold(true)
+        .println('PURCHASE ORDERS')
+        .bold(false)
+        .separator();
+
+      filteredPurchases.forEach(po => {
+        builder.leftRight(po.purchase_number || '-', `P${(po.total_amount || 0).toFixed(2)}`);
+        builder.leftRight(po.supplier_name || '-', po.status || 'DRAFT');
+      });
+
+      if (filteredPurchases.length === 0) {
+        builder.println('No purchase orders found');
+      }
+    }
 
     builder
       .feed()
@@ -204,33 +272,151 @@ export default function PurchaseReportScreen({ navigation }: Props) {
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = formatDateForPrint(now);
+    const timeStr = formatTimeForPrint(now);
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .text-center { text-align: center; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+          .summary-item { flex: 1; min-width: 120px; padding: 10px; background: #f9f9f9; border-radius: 5px; text-align: center; }
+          .summary-label { font-size: 10px; color: #666; }
+          .summary-value { font-size: 14px; font-weight: bold; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">${isBySupplier ? 'PURCHASES BY SUPPLIER' : 'PURCHASE REPORT'}</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+          <div class="date-time">Period: ${formatDateForPrint(dateRange.startDate)} to ${formatDateForPrint(dateRange.endDate)}</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Summary</div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Total POs</div>
+              <div class="summary-value">${totals.count}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Amount</div>
+              <div class="summary-value">${formatCurrency(totals.totalAmount)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Paid</div>
+              <div class="summary-value">${formatCurrency(totals.paidAmount)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Outstanding</div>
+              <div class="summary-value" style="color: #F44336;">${formatCurrency(totals.unpaidAmount)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">By Supplier</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Supplier</th>
+                <th class="text-right">POs</th>
+                <th class="text-right">Total</th>
+                <th class="text-right">Paid</th>
+                <th class="text-right">Unpaid</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${supplierSummaries.length === 0 ? '<tr><td colspan="5" class="text-center">No purchases found</td></tr>' : ''}
+              ${supplierSummaries.map(s => `
+                <tr>
+                  <td>${s.name}</td>
+                  <td class="text-right">${s.poCount}</td>
+                  <td class="text-right">${formatCurrency(s.total)}</td>
+                  <td class="text-right">${formatCurrency(s.paid)}</td>
+                  <td class="text-right" style="color: ${s.unpaid > 0 ? '#F44336' : '#4CAF50'};">${formatCurrency(s.unpaid)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>`;
+
+    if (!isBySupplier) {
+      html += `
+        <div class="section">
+          <div class="section-title">Purchase Orders (${filteredPurchases.length})</div>
+          <table>
+            <thead>
+              <tr>
+                <th>PO #</th>
+                <th>Supplier</th>
+                <th>Date</th>
+                <th class="text-right">Amount</th>
+                <th class="text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredPurchases.length === 0 ? '<tr><td colspan="5" class="text-center">No purchase orders found</td></tr>' : ''}
+              ${filteredPurchases.map(purchase => `
+                <tr>
+                  <td>${purchase.purchase_number || '-'}</td>
+                  <td>${purchase.supplier_name || '-'}</td>
+                  <td>${formatDate(purchase.purchase_date || purchase.created_at)}</td>
+                  <td class="text-right">${formatCurrency(purchase.total_amount)}</td>
+                  <td class="text-center">${purchase.status || 'DRAFT'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    html += `
+        <div class="footer">
+          Report generated on ${dateStr} ${timeStr}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle={isBySupplier ? 'Purchases by Supplier' : 'Purchase Report'}
+        reportFileName={isBySupplier ? 'PurchasesBySupplier' : 'PurchaseReport'}
+        disabled={filteredPurchases.length === 0 && supplierSummaries.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Purchase Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                All purchase orders from suppliers
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-            >
-              Print
-            </Button>
-          </View>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -244,7 +430,7 @@ export default function PurchaseReportScreen({ navigation }: Props) {
         {/* Supplier Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
-            <Paragraph style={styles.filterLabel}>Supplier:</Paragraph>
+            <Paragraph style={[styles.filterLabel, { fontSize: fs.bodySmall }]}>Supplier:</Paragraph>
             <Menu
               visible={supplierMenuVisible}
               onDismiss={() => setSupplierMenuVisible(false)}
@@ -292,7 +478,7 @@ export default function PurchaseReportScreen({ navigation }: Props) {
         {/* Summary */}
         <Card style={styles.summaryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Summary</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Summary</Title>
             <View style={styles.summaryGrid}>
               <View style={styles.summaryItem}>
                 <Paragraph style={styles.summaryLabel}>Total POs</Paragraph>
@@ -314,37 +500,31 @@ export default function PurchaseReportScreen({ navigation }: Props) {
           </Card.Content>
         </Card>
 
-        {/* Purchase List */}
+        {/* By Supplier Breakdown - shown for both views */}
         <Card style={styles.tableCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Purchase Orders ({filteredPurchases.length})</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>By Supplier</Title>
 
-            {filteredPurchases.length === 0 ? (
-              <Paragraph style={styles.emptyText}>No purchase orders found</Paragraph>
+            {supplierSummaries.length === 0 ? (
+              <Paragraph style={styles.emptyText}>No purchases found for selected period</Paragraph>
             ) : (
               <DataTable>
                 <DataTable.Header>
-                  <DataTable.Title style={{ flex: 1.5 }}>PO #</DataTable.Title>
                   <DataTable.Title style={{ flex: 2 }}>Supplier</DataTable.Title>
-                  <DataTable.Title style={{ flex: 1.2 }}>Date</DataTable.Title>
-                  <DataTable.Title numeric style={{ flex: 1.2 }}>Amount</DataTable.Title>
-                  <DataTable.Title style={{ flex: 1 }}>Status</DataTable.Title>
+                  <DataTable.Title numeric style={{ flex: 1 }}>POs</DataTable.Title>
+                  <DataTable.Title numeric style={{ flex: 1.5 }}>Total</DataTable.Title>
+                  <DataTable.Title numeric style={{ flex: 1.5 }}>Unpaid</DataTable.Title>
                 </DataTable.Header>
 
-                {filteredPurchases.map((purchase) => (
-                  <DataTable.Row key={purchase.id}>
-                    <DataTable.Cell style={{ flex: 1.5 }}>{purchase.purchase_number}</DataTable.Cell>
-                    <DataTable.Cell style={{ flex: 2 }}>{purchase.supplier_name}</DataTable.Cell>
-                    <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(purchase.purchase_date || purchase.created_at)}</DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1.2 }}>{formatCurrency(purchase.total_amount)}</DataTable.Cell>
-                    <DataTable.Cell style={{ flex: 1 }}>
-                      <Chip
-                        compact
-                        textStyle={{ fontSize: 10, color: '#fff' }}
-                        style={{ backgroundColor: getPaymentStatusColor(purchase.payment_status) }}
-                      >
-                        {purchase.payment_status || 'UNPAID'}
-                      </Chip>
+                {supplierSummaries.map(s => (
+                  <DataTable.Row key={s.id}>
+                    <DataTable.Cell style={{ flex: 2 }}>{s.name}</DataTable.Cell>
+                    <DataTable.Cell numeric style={{ flex: 1 }}>{s.poCount}</DataTable.Cell>
+                    <DataTable.Cell numeric style={{ flex: 1.5 }}>{formatCurrency(s.total)}</DataTable.Cell>
+                    <DataTable.Cell numeric style={{ flex: 1.5 }}>
+                      <Text style={{ color: s.unpaid > 0 ? '#F44336' : '#4CAF50', fontSize: 12 }}>
+                        {formatCurrency(s.unpaid)}
+                      </Text>
                     </DataTable.Cell>
                   </DataTable.Row>
                 ))}
@@ -353,54 +533,53 @@ export default function PurchaseReportScreen({ navigation }: Props) {
           </Card.Content>
         </Card>
 
-        {/* By Supplier Breakdown */}
-        <Card style={styles.tableCard}>
-          <Card.Content>
-            <Title style={styles.sectionTitle}>By Supplier</Title>
+        {/* Purchase Orders List - only for 'all' view */}
+        {!isBySupplier && (
+          <Card style={styles.tableCard}>
+            <Card.Content>
+              <Title style={styles.sectionTitle}>Purchase Orders ({filteredPurchases.length})</Title>
 
-            <DataTable>
-              <DataTable.Header>
-                <DataTable.Title style={{ flex: 2 }}>Supplier</DataTable.Title>
-                <DataTable.Title numeric style={{ flex: 1 }}>POs</DataTable.Title>
-                <DataTable.Title numeric style={{ flex: 1.5 }}>Total</DataTable.Title>
-                <DataTable.Title numeric style={{ flex: 1.5 }}>Unpaid</DataTable.Title>
-              </DataTable.Header>
+              {filteredPurchases.length === 0 ? (
+                <Paragraph style={styles.emptyText}>No purchase orders found</Paragraph>
+              ) : (
+                <DataTable>
+                  <DataTable.Header>
+                    <DataTable.Title style={{ flex: 1.5 }}>PO #</DataTable.Title>
+                    <DataTable.Title style={{ flex: 2 }}>Supplier</DataTable.Title>
+                    <DataTable.Title style={{ flex: 1.2 }}>Date</DataTable.Title>
+                    <DataTable.Title numeric style={{ flex: 1.2 }}>Amount</DataTable.Title>
+                    <DataTable.Title style={{ flex: 1 }}>Status</DataTable.Title>
+                  </DataTable.Header>
 
-              {suppliers.map(supplier => {
-                const supplierPOs = filteredPurchases.filter(p => p.supplier_id === supplier.id);
-                if (supplierPOs.length === 0) return null;
-
-                const total = supplierPOs.reduce((sum, p) => sum + (p.total_amount || 0), 0);
-                const unpaid = supplierPOs.reduce((sum, p) => sum + ((p.total_amount || 0) - (p.paid_amount || 0)), 0);
-
-                return (
-                  <DataTable.Row key={supplier.id}>
-                    <DataTable.Cell style={{ flex: 2 }}>{supplier.name}</DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1 }}>{supplierPOs.length}</DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1.5 }}>{formatCurrency(total)}</DataTable.Cell>
-                    <DataTable.Cell numeric style={{ flex: 1.5, color: unpaid > 0 ? '#F44336' : '#4CAF50' }}>
-                      {formatCurrency(unpaid)}
-                    </DataTable.Cell>
-                  </DataTable.Row>
-                );
-              })}
-            </DataTable>
-          </Card.Content>
-        </Card>
+                  {filteredPurchases.map((purchase) => (
+                    <DataTable.Row key={purchase.id}>
+                      <DataTable.Cell style={{ flex: 1.5 }}>{purchase.purchase_number}</DataTable.Cell>
+                      <DataTable.Cell style={{ flex: 2 }}>{purchase.supplier_name}</DataTable.Cell>
+                      <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(purchase.purchase_date || purchase.created_at)}</DataTable.Cell>
+                      <DataTable.Cell numeric style={{ flex: 1.2 }}>{formatCurrency(purchase.total_amount)}</DataTable.Cell>
+                      <DataTable.Cell style={{ flex: 1 }}>
+                        <Chip
+                          compact
+                          textStyle={{ fontSize: 10, color: '#fff' }}
+                          style={{ backgroundColor: getPaymentStatusColor(purchase.status || 'DRAFT') }}
+                        >
+                          {purchase.status || 'DRAFT'}
+                        </Chip>
+                      </DataTable.Cell>
+                    </DataTable.Row>
+                  ))}
+                </DataTable>
+              )}
+            </Card.Content>
+          </Card>
+        )}
 
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
-            Report generated on {new Date().toLocaleString('en-PH')}
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
+            Report generated on {new Date().toLocaleDateString('en-PH')}
           </Paragraph>
         </View>
       </ScrollView>
-
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Purchase Report"
-        onPrint={buildPrintReport}
-      />
     </View>
   );
 }
@@ -408,57 +587,24 @@ export default function PurchaseReportScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
-    marginBottom: 16,
+    marginBottom: 12,
     elevation: 2,
   },
   summaryCard: {
-    marginBottom: 16,
+    marginBottom: 12,
     elevation: 2,
   },
   tableCard: {
-    marginBottom: 16,
+    marginBottom: 12,
     elevation: 2,
   },
   sectionTitle: {
@@ -470,25 +616,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.7,
     marginBottom: 8,
-  },
-  segmentedButtons: {
-    marginBottom: 8,
-  },
-  dateInputs: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  dateInput: {
-    flex: 1,
-  },
-  chipContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 4,
-  },
-  chip: {
-    marginRight: 4,
   },
   dropdownButton: {
     flexDirection: 'row',

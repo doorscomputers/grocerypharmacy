@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView } from 'react-native';
 import {
   Card,
   Title,
@@ -12,12 +12,13 @@ import {
   TextInput,
   List,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder, PRINTER_WIDTH } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'ZeroInventoryReport'>;
@@ -25,13 +26,13 @@ type Props = {
 
 interface Product {
   id: number;
-  product_code: string;
+  code: string;
   name: string;
   description?: string;
   category_id?: number;
   category_name?: string;
-  cost_price: number;
-  selling_price: number;
+  cost: number;
+  price: number;
   stock_quantity: number;
   reorder_level: number;
   is_active: boolean;
@@ -44,13 +45,14 @@ interface Category {
 
 export default function ZeroInventoryReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [showInactiveProducts, setShowInactiveProducts] = useState(false);
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -58,15 +60,42 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const loadData = async () => {
     try {
       setLoading(true);
       const dbService = getDatabase();
 
-      const productsData = await dbService.getProducts();
-      setProducts(productsData);
+      // Get ALL products with category_name joined - no limit since we need to find all zero-stock items
+      const db = (dbService as any).getDatabase ? (dbService as any).getDatabase() : null;
+      if (db) {
+        const productsData = await db.getAllAsync(
+          `SELECT p.id, p.code, p.name, p.description, p.price, p.cost, p.category_id,
+                  c.name as category_name, p.stock_quantity, p.reorder_level, p.is_active
+           FROM products p
+           LEFT JOIN categories c ON p.category_id = c.id
+           ORDER BY p.name`
+        );
+        setProducts(productsData);
+      } else {
+        // Fallback for web mock
+        const productsData = await dbService.getProducts(false);
+        setProducts(productsData);
+      }
 
       const categoriesData = await dbService.getCategories(false);
       setCategories(categoriesData);
@@ -91,7 +120,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(p =>
         p.name.toLowerCase().includes(query) ||
-        p.product_code?.toLowerCase().includes(query)
+        p.code?.toLowerCase().includes(query)
       );
     }
 
@@ -117,7 +146,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
 
     // Calculate lost potential revenue (based on selling price)
     const lostPotentialRevenue = activeZeroStock.reduce(
-      (sum, p) => sum + (p.selling_price || 0), 0
+      (sum, p) => sum + (p.price || 0), 0
     );
 
     return {
@@ -147,8 +176,8 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
       .normalSize()
       .bold(false)
       .feed()
-      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
-      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatPrinterDate(now))
+      .println(formatPrinterDateTime(now).split(' ').slice(-2).join(' '))
       .doubleSeparator();
 
     // Summary
@@ -192,7 +221,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
           ? product.name.substring(0, printerWidth - 14) + '..'
           : product.name;
         builder.println(name);
-        builder.leftRight(`  ${product.product_code || '-'}`, `P${(product.selling_price || 0).toFixed(2)}`);
+        builder.leftRight(`  ${product.code || '-'}`, `P${(product.price || 0).toFixed(2)}`);
       }
 
       if (zeroStockProducts.length > 30) {
@@ -211,6 +240,134 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .text-center { text-align: center; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+          .summary-item { flex: 1; min-width: 120px; padding: 10px; background: #f9f9f9; border-radius: 5px; text-align: center; }
+          .summary-label { font-size: 10px; color: #666; }
+          .summary-value { font-size: 14px; font-weight: bold; }
+          .danger { color: #F44336; }
+          .warning { color: #FF9800; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+          .status-active { color: #4CAF50; }
+          .status-inactive { color: #F44336; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">ZERO INVENTORY REPORT</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Summary</div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Products with Zero Stock</div>
+              <div class="summary-value danger">${stats.zeroStockCount}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Active Products</div>
+              <div class="summary-value">${stats.totalProducts}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Out of Stock Rate</div>
+              <div class="summary-value ${stats.percentage > 20 ? 'danger' : 'warning'}">${stats.percentage.toFixed(1)}%</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Potential Lost Revenue</div>
+              <div class="summary-value" style="color: #9C27B0;">${formatCurrency(stats.lostPotentialRevenue)}</div>
+            </div>
+          </div>
+        </div>
+
+        ${stats.byCategory.length > 0 ? `
+          <div class="section">
+            <div class="section-title">Zero Stock by Category</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th class="text-right">Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${stats.byCategory.map(([category, count]) => `
+                  <tr>
+                    <td>${category}</td>
+                    <td class="text-right danger">${count}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : ''}
+
+        <div class="section">
+          <div class="section-title">Zero Stock Products (${zeroStockProducts.length})</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Product Name</th>
+                <th>Category</th>
+                <th class="text-right">Cost</th>
+                <th class="text-right">Selling</th>
+                <th class="text-right">Reorder</th>
+                <th class="text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${zeroStockProducts.slice(0, 50).map(product => `
+                <tr>
+                  <td>${product.code || '-'}</td>
+                  <td>${product.name}</td>
+                  <td>${product.category_name || 'Uncategorized'}</td>
+                  <td class="text-right">${formatCurrency(product.cost || 0)}</td>
+                  <td class="text-right">${formatCurrency(product.price || 0)}</td>
+                  <td class="text-right">${product.reorder_level || 0}</td>
+                  <td class="text-center ${product.is_active ? 'status-active' : 'status-inactive'}">${product.is_active ? 'Active' : 'Inactive'}</td>
+                </tr>
+              `).join('')}
+              ${zeroStockProducts.length > 50 ? `<tr><td colspan="7" class="text-center"><em>...and ${zeroStockProducts.length - 50} more products</em></td></tr>` : ''}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="footer">
+          Report generated on ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
+  };
+
   // Paginated products
   const paginatedProducts = useMemo(() => {
     const start = currentPage * itemsPerPage;
@@ -220,40 +377,29 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
   const totalPages = Math.ceil(zeroStockProducts.length / itemsPerPage);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['bottom']}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Zero Inventory Report"
+        reportFileName="ZeroInventoryReport"
+        disabled={zeroStockProducts.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
       >
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Zero Inventory Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Products with no stock available
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-            >
-              Print
-            </Button>
-          </View>
-        </View>
 
         {/* Summary Card */}
         <Card style={styles.summaryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Summary</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Summary</Title>
             <Divider style={styles.divider} />
 
             <View style={styles.summaryGrid}>
               <View style={styles.summaryItem}>
-                <Paragraph style={styles.summaryLabel}>Products with Zero Stock</Paragraph>
+                <Paragraph style={[styles.summaryLabel, { fontSize: fs.bodySmall }]}>Products with Zero Stock</Paragraph>
                 <Title style={[styles.summaryValue, { color: '#F44336' }]}>
                   {stats.zeroStockCount}
                 </Title>
@@ -286,7 +432,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
         {stats.byCategory.length > 0 && (
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Zero Stock by Category</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Zero Stock by Category</Title>
               <Divider style={styles.divider} />
 
               {stats.byCategory.map(([category, count]) => (
@@ -307,7 +453,7 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
         {/* Product List */}
         <Card style={styles.card}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Zero Stock Products</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Zero Stock Products</Title>
             <Divider style={styles.divider} />
 
             <TextInput
@@ -382,11 +528,11 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
 
                   {paginatedProducts.map((product) => (
                     <DataTable.Row key={product.id}>
-                      <DataTable.Cell>{product.product_code || '-'}</DataTable.Cell>
+                      <DataTable.Cell>{product.code || '-'}</DataTable.Cell>
                       <DataTable.Cell style={{ flex: 2 }}>{product.name}</DataTable.Cell>
                       <DataTable.Cell>{product.category_name || 'Uncategorized'}</DataTable.Cell>
-                      <DataTable.Cell numeric>{formatCurrency(product.cost_price || 0)}</DataTable.Cell>
-                      <DataTable.Cell numeric>{formatCurrency(product.selling_price || 0)}</DataTable.Cell>
+                      <DataTable.Cell numeric>{formatCurrency(product.cost || 0)}</DataTable.Cell>
+                      <DataTable.Cell numeric>{formatCurrency(product.price || 0)}</DataTable.Cell>
                       <DataTable.Cell numeric>{product.reorder_level || 0}</DataTable.Cell>
                       <DataTable.Cell>
                         <Chip
@@ -428,58 +574,20 @@ export default function ZeroInventoryReportScreen({ navigation }: Props) {
         </View>
       </ScrollView>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Zero Inventory Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+      </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   card: {
     marginBottom: 16,

@@ -12,14 +12,16 @@ import {
   ActivityIndicator,
   Text,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'ESalesReport'>;
@@ -40,6 +42,7 @@ interface ESalesData {
 
 export default function ESalesReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
   const currentMonth = currentDate.getMonth() + 1;
@@ -68,10 +71,26 @@ export default function ESalesReportScreen({ navigation }: Props) {
   const [reportData, setReportData] = useState<ESalesData | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   const formatCurrency = (amount: number) =>
     `₱${(amount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  React.useEffect(() => {
+    loadCompanySettings();
+  }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('business_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('business_address') || '';
+      const tin = await dbService.getSetting('business_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const loadReport = useCallback(async () => {
     try {
@@ -185,7 +204,7 @@ export default function ESalesReportScreen({ navigation }: Props) {
       builder
         .align('center')
         .println(`Period: ${getMonthLabel(parseInt(reportData.month))} ${reportData.year}`)
-        .println(`Generated: ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}`)
+        .println(`Generated: ${formatPrinterDateTime(now)}`)
         .feed()
         .doubleSeparator()
         .align('left');
@@ -250,38 +269,101 @@ export default function ESalesReportScreen({ navigation }: Props) {
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+
+    const totalSales = reportData ? (reportData.vatableSales || 0) +
+      (reportData.vatZeroRatedSales || 0) +
+      (reportData.vatExemptSales || 0) +
+      (reportData.otherPercentageTaxSales || 0) : 0;
+    const vatAmount = reportData ? (reportData.vatableSales || 0) * 0.12 : 0;
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .highlight { background-color: #E3F2FD; }
+          .total-row { background-color: #E8F5E9; font-weight: bold; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">BIR eSALES REPORT</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+          ${reportData ? `<div class="date-time">Period: ${getMonthLabel(parseInt(reportData.month))} ${reportData.year}</div>` : ''}
+        </div>
+
+        ${reportData ? `
+          <div class="section">
+            <div class="section-title">Business Information</div>
+            <table>
+              <tr><td style="width: 40%"><strong>TIN</strong></td><td>${reportData.tin || '-'}</td></tr>
+              <tr><td><strong>Branch</strong></td><td>${reportData.branch || '-'}</td></tr>
+              <tr><td><strong>MIN</strong></td><td>${reportData.min || '-'}</td></tr>
+              <tr><td><strong>Last OR</strong></td><td>${reportData.lastOR || '-'}</td></tr>
+            </table>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Sales Summary</div>
+            <table>
+              <tr class="highlight"><td><strong>Vatable Sales</strong></td><td class="text-right">${formatCurrency(reportData.vatableSales)}</td></tr>
+              <tr><td>VAT Zero Rated Sales</td><td class="text-right">${formatCurrency(reportData.vatZeroRatedSales)}</td></tr>
+              <tr><td>VAT Exempt Sales</td><td class="text-right">${formatCurrency(reportData.vatExemptSales)}</td></tr>
+              <tr><td>Other % Tax Sales</td><td class="text-right">${formatCurrency(reportData.otherPercentageTaxSales)}</td></tr>
+              <tr class="total-row"><td><strong>TOTAL SALES</strong></td><td class="text-right">${formatCurrency(totalSales)}</td></tr>
+              <tr><td>VAT Amount (12%)</td><td class="text-right">${formatCurrency(vatAmount)}</td></tr>
+            </table>
+          </div>
+        ` : '<div class="section"><p>No report data available. Please generate a report first.</p></div>'}
+
+        <div class="footer">
+          Report generated on ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
+  };
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="eSales Report"
+        reportFileName="ESalesReport"
+        disabled={!reportData}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>BIR eSales Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Generate eSales submission file for BIR
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-              disabled={!reportData}
-            >
-              Print
-            </Button>
-          </View>
-        </View>
-
         {/* Filter Card */}
         <Card style={styles.filterCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Select Period</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Select Period</Title>
 
             {/* Year Selector */}
             <View style={styles.filterRow}>
@@ -367,7 +449,7 @@ export default function ESalesReportScreen({ navigation }: Props) {
           <>
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
                   eSales Report - {getMonthLabel(parseInt(reportData.month))} {reportData.year}
                 </Title>
 
@@ -442,7 +524,7 @@ export default function ESalesReportScreen({ navigation }: Props) {
             {/* Export Button */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Export</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Export</Title>
                 <Paragraph style={styles.exportNote}>
                   Export the report as CSV file for BIR eSales submission.
                 </Paragraph>
@@ -507,66 +589,26 @@ export default function ESalesReportScreen({ navigation }: Props) {
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
             Report generated on {new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
           </Paragraph>
         </View>
       </ScrollView>
 
-      {/* Print Dialog */}
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print eSales Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+      </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 16,

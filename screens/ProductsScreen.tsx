@@ -6,7 +6,6 @@ import {
   Alert,
   Modal,
   ScrollView,
-  Platform,
   BackHandler,
   TouchableOpacity,
   Text,
@@ -24,26 +23,20 @@ import {
   Dialog,
   Portal,
   Chip,
-  Appbar,
   Menu,
   Divider,
   TouchableRipple,
   Searchbar,
 } from 'react-native-paper';
 import { StableTextInput } from '../components/StableTextInput';
-// Conditionally import camera - not available on web
-let CameraView: any = null;
-let Camera: any = null;
-if (Platform.OS !== 'web') {
-  const cameraModule = require('expo-camera');
-  CameraView = cameraModule.CameraView;
-  Camera = cameraModule.Camera;
-}
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product as BaseProduct, Category, Brand, Unit, Size } from '../database/schema';
+import { useResponsive, responsiveValue, useResponsiveTheme } from '../utils/responsive';
+import BarcodeLabelPrintDialog from '../components/BarcodeLabelPrintDialog';
+import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 
 interface Product extends BaseProduct {
   category_name?: string;
@@ -63,6 +56,8 @@ type Props = {
 };
 
 export default function ProductsScreen({ navigation }: Props) {
+  const { width } = useResponsive();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -92,10 +87,10 @@ export default function ProductsScreen({ navigation }: Props) {
     is_vat_inclusive: true,
     is_active: true,
   });
-  const [scannerVisible, setScannerVisible] = useState(false);
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const [scanned, setScanned] = useState(false);
-  const [scannerMode, setScannerMode] = useState<'search' | 'fill'>('search'); // 'search' = search products, 'fill' = fill code field
+
+  // Label print dialog states
+  const [labelPrintDialogVisible, setLabelPrintDialogVisible] = useState(false);
+  const [selectedProductForLabel, setSelectedProductForLabel] = useState<Product | null>(null);
 
   // Dropdown modal states
   const [activeDropdown, setActiveDropdown] = useState<'category' | 'brand' | 'unit' | 'size' | null>(null);
@@ -120,10 +115,18 @@ export default function ProductsScreen({ navigation }: Props) {
 
   const theme = useTheme();
 
+  // Responsive modal width
+  const modalWidth = responsiveValue(width, {
+    smallPhone: '95%',
+    largePhone: '90%',
+    smallTablet: '80%',
+    largeTablet: 600,
+    default: '85%',
+  });
+
   useEffect(() => {
     loadProducts();
     loadMasterData();
-    getCameraPermissions();
   }, []);
 
   // Debounced search effect
@@ -134,16 +137,6 @@ export default function ProductsScreen({ navigation }: Props) {
 
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
-
-  const getCameraPermissions = async () => {
-    // Camera not available on web
-    if (Platform.OS === 'web' || !Camera) {
-      setHasPermission(false);
-      return;
-    }
-    const { status } = await Camera.requestCameraPermissionsAsync();
-    setHasPermission(status === 'granted');
-  };
 
   const loadMasterData = async () => {
     try {
@@ -369,78 +362,65 @@ export default function ProductsScreen({ navigation }: Props) {
     }
   };
 
-  const handleBarcodeScanned = ({ type, data }: { type: string; data: string }) => {
-    setScanned(true);
-    setScannerVisible(false);
+  // Barcode scan handler for 'search' mode - find product by barcode
+  const handleSearchBarcodeScan = useCallback((barcode: string) => {
+    const barcodeUpper = barcode.toUpperCase().trim();
 
-    // If in 'fill' mode (opened from Add/Edit dialog), just fill the code field
-    if (scannerMode === 'fill') {
-      setFormData(prev => ({ ...prev, code: data }));
-      setDialogVisible(true); // Reopen the dialog
-      setTimeout(() => setScanned(false), 500);
-      return;
+    // Try exact match
+    let existingProduct = products.find(p =>
+      (p.code || '').toUpperCase().trim() === barcodeUpper
+    );
+
+    // Try with leading 0 added (UPC-A to EAN-13)
+    if (!existingProduct) {
+      const withLeadingZero = '0' + barcodeUpper;
+      existingProduct = products.find(p =>
+        (p.code || '').toUpperCase().trim() === withLeadingZero
+      );
     }
 
-    // In 'search' mode - search for existing product with this barcode
-    const existingProduct = products.find(p => p.code === data);
+    // Try with leading 0 removed
+    if (!existingProduct && barcodeUpper.startsWith('0')) {
+      const withoutLeadingZero = barcodeUpper.substring(1);
+      existingProduct = products.find(p =>
+        (p.code || '').toUpperCase().trim() === withoutLeadingZero
+      );
+    }
 
     if (existingProduct) {
-      // If product exists, show it
-      setSearchQuery(data);
+      setSearchQuery(barcode);
       Alert.alert(
         'Product Found',
         `Found existing product: ${existingProduct.name}`,
         [
           { text: 'View Product', onPress: () => {} },
-          { text: 'Edit Product', onPress: () => handleEditProduct(existingProduct) }
+          { text: 'Edit Product', onPress: () => handleEditProduct(existingProduct!) }
         ]
       );
     } else {
-      // If product doesn't exist, offer to create new one
       Alert.alert(
         'New Product',
-        `Barcode scanned: ${data}\n\nThis product doesn't exist yet. Would you like to create it?`,
+        `Barcode scanned: ${barcode}\n\nThis product doesn't exist yet. Would you like to create it?`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Create Product',
             onPress: () => {
               resetForm();
-              setFormData(prev => ({ ...prev, code: data }));
+              setFormData(prev => ({ ...prev, code: barcode }));
               setDialogVisible(true);
             }
           }
         ]
       );
     }
+  }, [products]);
 
-    // Reset scanner state after a delay
-    setTimeout(() => setScanned(false), 2000);
-  };
-
-  const handleScannerPress = (mode: 'search' | 'fill' = 'search') => {
-    if (hasPermission === null) {
-      Alert.alert('Permission', 'Requesting camera permission...');
-      getCameraPermissions();
-      return;
-    }
-
-    if (hasPermission === false) {
-      Alert.alert(
-        'Camera Permission',
-        'Camera permission is required for barcode scanning. Please enable it in your device settings.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => getCameraPermissions() }
-        ]
-      );
-      return;
-    }
-
-    setScannerMode(mode);
-    setScannerVisible(true);
-    setScanned(false);
-  };
+  // Barcode scan handler for 'fill' mode - fill code field in form
+  const handleFillBarcodeScan = useCallback((barcode: string) => {
+    setFormData(prev => ({ ...prev, code: barcode }));
+    setDialogVisible(true); // Reopen the dialog
+  }, []);
 
   const handleToggleActive = async (product: Product) => {
     try {
@@ -460,6 +440,25 @@ export default function ProductsScreen({ navigation }: Props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePrintLabel = (product: Product) => {
+    // Check printer connection
+    const printerService = BluetoothPrinterService.getInstance();
+    if (!printerService.isConnected()) {
+      Alert.alert(
+        'Printer Not Connected',
+        'Please connect to a Bluetooth printer first.',
+        [
+          { text: 'Go to Settings', onPress: () => navigation.navigate('PrinterSettings') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
+    }
+
+    setSelectedProductForLabel(product);
+    setLabelPrintDialogVisible(true);
   };
 
   // Apply filters to products
@@ -674,6 +673,7 @@ export default function ProductsScreen({ navigation }: Props) {
           <View style={styles.productInfo}>
             <Title style={[
               styles.productName,
+              { fontSize: fs.h3 },
               !item.is_active && styles.inactiveText
             ]}>
               {item.name}
@@ -704,6 +704,12 @@ export default function ProductsScreen({ navigation }: Props) {
             )}
           </View>
           <View style={styles.productActions}>
+            <IconButton
+              icon="barcode"
+              size={20}
+              iconColor="#2196F3"
+              onPress={() => handlePrintLabel(item)}
+            />
             <IconButton
               icon={item.is_active ? "eye" : "eye-off"}
               size={20}
@@ -764,8 +770,8 @@ export default function ProductsScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.content}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.content, { paddingHorizontal: lo.screenPadding }]}>
         <View style={styles.searchContainer}>
           <TextInput
             label="Search Products / Scan Barcode"
@@ -774,19 +780,13 @@ export default function ProductsScreen({ navigation }: Props) {
             mode="outlined"
             style={styles.searchInput}
             placeholder="Type product name or scan barcode..."
+            left={
+              <TextInput.Icon icon="magnify" />
+            }
             right={
-              <View style={styles.searchIcons}>
-                <TextInput.Icon
-                  icon="barcode-scan"
-                  onPress={() => handleScannerPress('search')}
-                />
-                {searchQuery.length > 0 && (
-                  <TextInput.Icon
-                    icon="close"
-                    onPress={() => setSearchQuery('')}
-                  />
-                )}
-              </View>
+              searchQuery.length > 0
+                ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} />
+                : <TextInput.Icon icon="barcode-scan" onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleSearchBarcodeScan })} />
             }
           />
 
@@ -889,7 +889,7 @@ export default function ProductsScreen({ navigation }: Props) {
           keyExtractor={(item) => item.id.toString()}
           renderItem={renderProduct}
           style={styles.productList}
-          contentContainerStyle={styles.listContainer}
+          contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
           refreshing={refreshing}
           onRefresh={async () => {
             setRefreshing(true);
@@ -925,7 +925,7 @@ export default function ProductsScreen({ navigation }: Props) {
 
       {/* Add/Edit Product Dialog */}
       <Portal>
-        <Dialog visible={dialogVisible} onDismiss={handleDialogDismiss} style={styles.dialog}>
+        <Dialog visible={dialogVisible} onDismiss={handleDialogDismiss} style={[styles.dialog, { maxWidth: lo.modalMaxWidth, alignSelf: 'center', width: '100%' }]}>
           <Dialog.Title>
             {editingProduct ? 'Edit Product' : 'Add New Product'}
           </Dialog.Title>
@@ -943,7 +943,7 @@ export default function ProductsScreen({ navigation }: Props) {
                       icon="barcode-scan"
                       onPress={() => {
                         setDialogVisible(false);
-                        handleScannerPress('fill'); // Use 'fill' mode to just fill the code field
+                        navigation.navigate('BarcodeScanner', { onScan: handleFillBarcodeScan });
                       }}
                     />
                   }
@@ -1177,48 +1177,6 @@ export default function ProductsScreen({ navigation }: Props) {
         </Dialog>
       </Portal>
 
-      {/* Barcode Scanner Modal */}
-      <Modal
-        visible={scannerVisible}
-        animationType="slide"
-        onRequestClose={() => setScannerVisible(false)}
-      >
-        <View style={styles.scannerContainer}>
-          <Appbar.Header>
-            <Appbar.BackAction onPress={() => setScannerVisible(false)} />
-            <Appbar.Content title="Scan Barcode" />
-          </Appbar.Header>
-
-          {hasPermission && (
-            <CameraView
-              style={styles.camera}
-              facing="back"
-              onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
-              barcodeScannerSettings={{
-                barcodeTypes: ['ean13', 'ean8', 'code128', 'code39', 'upc_a', 'upc_e'],
-              }}
-            >
-              <View style={styles.scannerOverlay}>
-                <View style={styles.scannerFrame} />
-                <Paragraph style={styles.scannerText}>
-                  {scanned ? 'Barcode scanned! Processing...' : 'Point camera at barcode'}
-                </Paragraph>
-              </View>
-            </CameraView>
-          )}
-
-          {!hasPermission && (
-            <View style={styles.permissionContainer}>
-              <Paragraph style={styles.permissionText}>
-                Camera permission is required for barcode scanning
-              </Paragraph>
-              <Button mode="contained" onPress={getCameraPermissions}>
-                Grant Permission
-              </Button>
-            </View>
-          )}
-        </View>
-      </Modal>
 
       {/* Category Dropdown Modal */}
       <Modal
@@ -1228,7 +1186,7 @@ export default function ProductsScreen({ navigation }: Props) {
         onRequestClose={closeDropdown}
       >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
-          <View style={styles.dropdownModal}>
+          <View style={[styles.dropdownModal, { width: modalWidth }]}>
             <View style={styles.dropdownHeader}>
               <Title style={styles.dropdownTitle}>Select Category</Title>
               <Button
@@ -1279,7 +1237,7 @@ export default function ProductsScreen({ navigation }: Props) {
         onRequestClose={closeDropdown}
       >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
-          <View style={styles.dropdownModal}>
+          <View style={[styles.dropdownModal, { width: modalWidth }]}>
             <View style={styles.dropdownHeader}>
               <Title style={styles.dropdownTitle}>Select Brand</Title>
               <Button
@@ -1330,7 +1288,7 @@ export default function ProductsScreen({ navigation }: Props) {
         onRequestClose={closeDropdown}
       >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
-          <View style={styles.dropdownModal}>
+          <View style={[styles.dropdownModal, { width: modalWidth }]}>
             <View style={styles.dropdownHeader}>
               <Title style={styles.dropdownTitle}>Select Unit</Title>
               <Button
@@ -1383,7 +1341,7 @@ export default function ProductsScreen({ navigation }: Props) {
         onRequestClose={closeDropdown}
       >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
-          <View style={styles.dropdownModal}>
+          <View style={[styles.dropdownModal, { width: modalWidth }]}>
             <View style={styles.dropdownHeader}>
               <Title style={styles.dropdownTitle}>Select Size</Title>
               <Button
@@ -1464,7 +1422,18 @@ export default function ProductsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+
+      {/* Barcode Label Print Dialog */}
+      <BarcodeLabelPrintDialog
+        visible={labelPrintDialogVisible}
+        onDismiss={() => setLabelPrintDialogVisible(false)}
+        product={selectedProductForLabel}
+        onPrintComplete={() => {
+          // Reload products if barcode was auto-generated
+          loadProducts(searchQuery.trim() || undefined);
+        }}
+      />
+    </View>
   );
 }
 
@@ -1693,10 +1662,6 @@ const styles = StyleSheet.create({
     marginRight: 4,
     marginBottom: 4,
   },
-  searchIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   dropdownContainer: {
     marginBottom: 12,
   },
@@ -1798,48 +1763,6 @@ const styles = StyleSheet.create({
     padding: 20,
     color: '#999',
     fontSize: 14,
-  },
-  scannerContainer: {
-    flex: 1,
-    backgroundColor: 'black',
-  },
-  camera: {
-    flex: 1,
-  },
-  scannerOverlay: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  scannerFrame: {
-    width: 250,
-    height: 250,
-    borderWidth: 2,
-    borderColor: 'white',
-    borderRadius: 10,
-    backgroundColor: 'transparent',
-  },
-  scannerText: {
-    color: 'white',
-    fontSize: 16,
-    textAlign: 'center',
-    marginTop: 20,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: 10,
-    borderRadius: 5,
-  },
-  permissionContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: 'white',
-  },
-  permissionText: {
-    textAlign: 'center',
-    marginBottom: 20,
-    fontSize: 16,
   },
   quickAddInput: {
     marginBottom: 12,

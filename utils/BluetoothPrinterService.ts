@@ -710,9 +710,29 @@ class BluetoothPrinterService {
 
   /**
    * Check if connected to a printer
+   * Checks actual connection objects rather than relying on state variable
    */
   isConnected(): boolean {
-    return this.currentState === 'connected' && this.connectedDevice !== null;
+    // Check actual connection objects - this is more reliable than the state variable
+    // which can get out of sync during BLE disconnects/reconnects
+    const hasDevice = this.connectedDevice !== null;
+    const hasCharacteristic = this.writeCharacteristic !== null;
+
+    // If we have both device and characteristic, we can print
+    if (hasDevice && hasCharacteristic) {
+      // Sync state if it got out of sync
+      if (this.currentState !== 'connected') {
+        this.currentState = 'connected';
+      }
+      return true;
+    }
+
+    // If we don't have both, ensure state reflects disconnected
+    if (this.currentState === 'connected' && (!hasDevice || !hasCharacteristic)) {
+      this.currentState = 'disconnected';
+    }
+
+    return false;
   }
 
   /**

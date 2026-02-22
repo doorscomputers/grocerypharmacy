@@ -21,12 +21,14 @@ import {
   Divider,
   Chip,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
 import { useAuth } from '../contexts/AuthContext';
+import { toLocalDateString } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PurchaseScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -70,6 +72,7 @@ export default function PurchaseScreen({ navigation }: Props) {
   const [purchaseQuantity, setPurchaseQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadProducts();
@@ -214,8 +217,8 @@ export default function PurchaseScreen({ navigation }: Props) {
 
         // Step 2: Generate unique purchase number
         const purchaseNumber = `PUR${Date.now()}`;
-        const purchaseDate = new Date().toISOString().split('T')[0];
-        const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const purchaseDate = toLocalDateString(new Date());
+        const dueDate = toLocalDateString(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
 
         // Step 3: Insert into purchases table
         const purchaseResult = await db.runAsync(
@@ -379,12 +382,12 @@ export default function PurchaseScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={styles.mainContainer}>
         {/* Purchase Order Header */}
         <Card style={styles.headerCard}>
           <Card.Content>
-            <Title style={styles.headerTitle}>Purchase Order</Title>
+            <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Purchase Order</Title>
             <View style={styles.headerInfo}>
               <TextInput
                 label="Reference Number"
@@ -414,7 +417,7 @@ export default function PurchaseScreen({ navigation }: Props) {
           <View style={styles.productSection}>
             <Card style={styles.productCard}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Available Products</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Available Products</Title>
                 <TextInput
                   label="Search Products"
                   value={searchQuery}
@@ -453,7 +456,7 @@ export default function PurchaseScreen({ navigation }: Props) {
           <View style={styles.purchaseSection}>
             <Card style={styles.purchaseCard}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
                   Purchase Items ({purchaseItems.length})
                 </Title>
 
@@ -577,7 +580,7 @@ export default function PurchaseScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

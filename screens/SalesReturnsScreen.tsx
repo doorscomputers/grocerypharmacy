@@ -23,14 +23,15 @@ import {
   RadioButton,
   Searchbar,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import ReturnReceiptPreview, { ReturnReceiptData } from '../components/ReturnReceiptPreview';
+import * as Print from 'expo-print';
 import { buildReturnReceipt } from '../utils/escpos';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'SalesReturns'>;
@@ -61,6 +62,7 @@ interface Customer {
 
 export default function SalesReturnsScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user } = useAuth();
 
   // State for return form
@@ -374,34 +376,69 @@ export default function SalesReturnsScreen({ navigation }: Props) {
   const handlePrintReceipt = async () => {
     if (!receiptData) return;
 
-    if (!printerService.isConnected()) {
-      showAlert('Printer Not Connected', 'Please connect to a Bluetooth printer first in Printer Settings.');
-      return;
-    }
-
     setIsPrinting(true);
     try {
-      const printerWidth = printerService.getSettings().printerWidth;
-      const builder = buildReturnReceipt({
-        businessName: receiptData.businessName,
-        businessAddress: receiptData.businessAddress,
-        businessPhone: receiptData.businessPhone,
-        tin: receiptData.tin,
-        returnNumber: receiptData.returnNumber,
-        returnDate: receiptData.returnDate,
-        processedBy: receiptData.processedBy,
-        originalTransactionNumber: receiptData.originalTransactionNumber,
-        customerName: receiptData.customerName,
-        items: receiptData.items,
-        totalAmount: receiptData.totalAmount,
-        refundMethod: receiptData.refundMethod,
-        notes: receiptData.notes,
-        footerText: receiptData.footerText,
-      }, printerWidth);
+      if (printerService.isConnected()) {
+        // Bluetooth thermal printer
+        const printerWidth = printerService.getSettings().printerWidth;
+        const builder = buildReturnReceipt({
+          businessName: receiptData.businessName,
+          businessAddress: receiptData.businessAddress,
+          businessPhone: receiptData.businessPhone,
+          tin: receiptData.tin,
+          returnNumber: receiptData.returnNumber,
+          returnDate: receiptData.returnDate,
+          processedBy: receiptData.processedBy,
+          originalTransactionNumber: receiptData.originalTransactionNumber,
+          customerName: receiptData.customerName,
+          items: receiptData.items,
+          totalAmount: receiptData.totalAmount,
+          refundMethod: receiptData.refundMethod,
+          notes: receiptData.notes,
+          footerText: receiptData.footerText,
+        }, printerWidth);
 
-      const data = builder.build();
-      await printerService.print(data);
-      showAlert('Success', 'Receipt printed successfully!');
+        await printerService.print(builder);
+        showAlert('Success', 'Receipt printed successfully!');
+      } else {
+        // Fallback: system print dialog
+        const d = receiptData;
+        const itemsHtml = d.items.map(i => `
+          <tr>
+            <td>${i.productName}</td>
+            <td style="text-align:center;">${i.quantity}</td>
+            <td style="text-align:right;">₱${(i.unitPrice || 0).toFixed(2)}</td>
+            <td style="text-align:right;">₱${(i.total || 0).toFixed(2)}</td>
+          </tr>
+        `).join('');
+        const html = `
+          <html><head><meta charset="utf-8"/><style>
+            body{font-family:monospace;font-size:12px;padding:20px;max-width:400px;margin:auto;}
+            h2,h3{text-align:center;margin:4px 0;}
+            table{width:100%;border-collapse:collapse;margin:8px 0;}
+            td,th{padding:4px;border-bottom:1px solid #ddd;font-size:11px;}
+            .right{text-align:right;} .center{text-align:center;}
+          </style></head><body>
+            <h2>${d.businessName}</h2>
+            ${d.businessAddress ? `<p class="center">${d.businessAddress}</p>` : ''}
+            ${d.tin ? `<p class="center">TIN: ${d.tin}</p>` : ''}
+            <h3>SALES RETURN</h3>
+            <p>Return #: ${d.returnNumber}</p>
+            <p>Date: ${d.returnDate.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+            ${d.originalTransactionNumber ? `<p>Orig. Invoice: ${d.originalTransactionNumber}</p>` : ''}
+            ${d.customerName ? `<p>Customer: ${d.customerName}</p>` : ''}
+            <p>Processed by: ${d.processedBy}</p>
+            <table>
+              <tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr>
+              ${itemsHtml}
+            </table>
+            <p class="right"><strong>TOTAL REFUND: ₱${d.totalAmount.toFixed(2)}</strong></p>
+            <p>Refund Method: ${d.refundMethod}</p>
+            ${d.notes ? `<p>Notes: ${d.notes}</p>` : ''}
+          </body></html>
+        `;
+        await Print.printAsync({ html });
+      }
     } catch (error) {
       console.error('Print error:', error);
       showAlert('Print Error', 'Failed to print receipt. Please try again.');
@@ -458,20 +495,15 @@ export default function SalesReturnsScreen({ navigation }: Props) {
     );
   });
 
-  const webContainerStyle = Platform.OS === 'web'
-    ? { height: 'calc(100vh - 64px)', overflow: 'hidden' as const }
-    : {};
-
-  const webScrollStyle = Platform.OS === 'web'
-    ? { flex: 1, overflow: 'auto' as const }
-    : {};
+  const webContainerStyle = {};
+  const webScrollStyle = {};
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
-      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={styles.scrollContent}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
+      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}>
         {/* Header with History Toggle */}
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Sales Returns</Title>
+          <Title style={[styles.pageTitle, { fontSize: fs.h2 }]}>Sales Returns</Title>
           <Button
             mode={showHistory ? 'contained' : 'outlined'}
             onPress={() => setShowHistory(!showHistory)}
@@ -485,7 +517,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
           // Return History View
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Return History</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Return History</Title>
               {returnHistory.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No returns recorded yet</Paragraph>
               ) : (
@@ -497,7 +529,12 @@ export default function SalesReturnsScreen({ navigation }: Props) {
                       left={props => <List.Icon {...props} icon="undo" color={theme.colors.error} />}
                       right={() => (
                         <Paragraph style={styles.dateText}>
-                          {new Date(ret.created_at).toLocaleDateString()}
+                          {new Date(ret.created_at).toLocaleDateString('en-PH', {
+                            timeZone: 'Asia/Manila',
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
                         </Paragraph>
                       )}
                     />
@@ -513,7 +550,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             {/* Lookup Original Transaction */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Lookup Transaction (Optional)</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Lookup Transaction (Optional)</Title>
                 <View style={styles.lookupRow}>
                   <TextInput
                     label="Transaction Number"
@@ -549,7 +586,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             <Card style={styles.card}>
               <Card.Content>
                 <View style={styles.sectionHeader}>
-                  <Title style={styles.sectionTitle}>Customer</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Customer</Title>
                   <Button
                     mode="outlined"
                     onPress={() => setShowCustomerModal(true)}
@@ -576,7 +613,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             <Card style={styles.card}>
               <Card.Content>
                 <View style={styles.sectionHeader}>
-                  <Title style={styles.sectionTitle}>Items to Return</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Items to Return</Title>
                   {!originalTransaction && (
                     <Button
                       mode="contained"
@@ -666,7 +703,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             {/* Refund Method */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Refund Method</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Refund Method</Title>
                 <RadioButton.Group
                   onValueChange={(value) => setRefundMethod(value as any)}
                   value={refundMethod}
@@ -823,7 +860,8 @@ export default function SalesReturnsScreen({ navigation }: Props) {
             style={styles.productList}
             renderItem={({ item }) => {
               const customerName = item.customer_full_name || item.customer_name || 'Walk-in';
-              const dateStr = new Date(item.created_at).toLocaleDateString('en-PH', {
+              const dateStr = new Date(item.created_at).toLocaleString('en-PH', {
+                timeZone: 'Asia/Manila',
                 month: 'short',
                 day: 'numeric',
                 year: 'numeric',
@@ -864,7 +902,7 @@ export default function SalesReturnsScreen({ navigation }: Props) {
           isSendingEmail={isSendingEmail}
         />
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -878,6 +916,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 32,
+    flexGrow: 1,
   },
   header: {
     flexDirection: 'row',

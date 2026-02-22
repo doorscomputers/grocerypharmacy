@@ -3,7 +3,7 @@ import {
   View,
   StyleSheet,
   Alert,
-  Dimensions,
+  useWindowDimensions,
   TouchableOpacity,
 } from 'react-native';
 import {
@@ -13,7 +13,6 @@ import {
   IconButton,
   ActivityIndicator,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { CameraView, CameraType, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
@@ -34,11 +33,10 @@ type Props = {
   route: BarcodeScannerScreenRouteProp;
 };
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-const SCAN_AREA_SIZE = screenWidth * 0.7;
-
 export default function BarcodeScannerScreen({ navigation, route }: Props) {
   const theme = useTheme();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const SCAN_AREA_SIZE = screenWidth * 0.7;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [lastScannedCode, setLastScannedCode] = useState<string | null>(null);
@@ -75,19 +73,19 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
   // Permission loading state
   if (!permission) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.centerContent}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text style={styles.permissionText}>Checking camera permission...</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   // Permission denied state
   if (!permission.granted) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.centerContent}>
           <Text style={styles.permissionTitle}>Camera Permission Required</Text>
           <Text style={styles.permissionText}>
@@ -109,7 +107,7 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
             Go Back
           </Button>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
@@ -135,11 +133,11 @@ export default function BarcodeScannerScreen({ navigation, route }: Props) {
           <View style={styles.overlayTop} />
 
           {/* Middle section with scan area */}
-          <View style={styles.overlayMiddle}>
+          <View style={[styles.overlayMiddle, { height: SCAN_AREA_SIZE }]}>
             <View style={styles.overlaySide} />
 
             {/* Scan area */}
-            <View style={styles.scanArea}>
+            <View style={[styles.scanArea, { width: SCAN_AREA_SIZE, height: SCAN_AREA_SIZE }]}>
               {/* Corner markers */}
               <View style={[styles.corner, styles.cornerTopLeft]} />
               <View style={[styles.corner, styles.cornerTopRight]} />
@@ -242,15 +240,12 @@ const styles = StyleSheet.create({
   },
   overlayMiddle: {
     flexDirection: 'row',
-    height: SCAN_AREA_SIZE,
   },
   overlaySide: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
   },
   scanArea: {
-    width: SCAN_AREA_SIZE,
-    height: SCAN_AREA_SIZE,
     position: 'relative',
   },
   corner: {

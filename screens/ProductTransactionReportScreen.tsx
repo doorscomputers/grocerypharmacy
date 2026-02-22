@@ -15,13 +15,14 @@ import {
   Divider,
   IconButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'ProductTransactionReport'>;
@@ -37,13 +38,27 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadProducts();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   useEffect(() => {
     if (selectedProduct) {
@@ -208,14 +223,6 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
   const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
     const builder = new ESCPOSBuilder(printerWidth);
 
-    const formatDate = (d: Date) => {
-      return d.toLocaleDateString('en-PH', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      });
-    };
-
     // Header
     builder
       .align('center')
@@ -226,14 +233,14 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
       .normalSize()
       .bold(false)
       .feed()
-      .println(new Date().toLocaleString('en-PH'))
+      .println(formatPrinterDateTime(new Date()))
       .doubleSeparator()
       .align('left');
 
     // Date range
     builder
-      .leftRight('From:', formatDate(dateRange.startDate))
-      .leftRight('To:', formatDate(dateRange.endDate))
+      .leftRight('From:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
       .separator();
 
     // Product info
@@ -268,21 +275,13 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
 
     for (const m of movements) {
       const movementDate = new Date(m.created_at);
-      const dateStr = movementDate.toLocaleDateString('en-PH', {
-        month: '2-digit',
-        day: '2-digit',
-        year: '2-digit',
-      });
-      const timeStr = movementDate.toLocaleTimeString('en-PH', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+      const dateTimeStr = formatPrinterDateTime(movementDate);
 
       const typeLabel = getReferenceTypeLabel(m.reference_type);
       const qtySign = m.movement_type === 'IN' ? '+' : m.movement_type === 'OUT' ? '-' : '';
 
       builder
-        .leftRight(`${dateStr} ${timeStr}`, `${qtySign}${m.quantity}`)
+        .leftRight(dateTimeStr, `${qtySign}${m.quantity}`)
         .println(`  ${typeLabel}`);
 
       if (m.reference_number) {
@@ -304,6 +303,111 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
       .cut();
 
     return builder;
+  };
+
+  const formatCurrency = (amount: number) => `₱${(amount || 0).toFixed(2)}`;
+
+  const buildPdfHtml = (): string => {
+    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #673AB7; }
+          .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+          .product-info { background: #ede7f6; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+          .product-name { font-size: 16px; font-weight: bold; color: #673AB7; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          .summary-grid { display: flex; gap: 12px; margin: 12px 0; }
+          .summary-item { flex: 1; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; }
+          .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .summary-value { font-size: 18px; font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .in { color: #4CAF50; }
+          .out { color: #F44336; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">PRODUCT TRANSACTION REPORT</div>
+        <div class="date-range">Period: ${startDateStr} to ${endDateStr}</div>
+
+        ${selectedProduct ? `
+          <div class="product-info">
+            <div class="product-name">${selectedProduct.name}</div>
+            <div>Code: ${selectedProduct.code} | Current Stock: ${selectedProduct.stock_quantity || 0}</div>
+          </div>
+        ` : ''}
+
+        <div class="section-title">Movement Summary</div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Total IN</div>
+            <div class="summary-value in">+${totalIn}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Total OUT</div>
+            <div class="summary-value out">-${totalOut}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Net Movement</div>
+            <div class="summary-value" style="color: ${netMovement >= 0 ? '#4CAF50' : '#F44336'};">${netMovement >= 0 ? '+' : ''}${netMovement}</div>
+          </div>
+        </div>
+
+        <div class="section-title">Transaction Details (${movements.length})</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Date/Time</th>
+              <th>Type</th>
+              <th>Reference</th>
+              <th>Qty</th>
+              <th>Stock Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${movements.map(m => {
+              const movementDate = new Date(m.created_at);
+              const dateStr = movementDate.toLocaleString('en-PH', { timeZone: 'Asia/Manila' });
+              const qtyClass = m.movement_type === 'IN' ? 'in' : 'out';
+              const qtySign = m.movement_type === 'IN' ? '+' : '-';
+              return `
+                <tr>
+                  <td>${dateStr}</td>
+                  <td>${getReferenceTypeLabel(m.reference_type)}</td>
+                  <td>${m.reference_number || '-'}</td>
+                  <td class="${qtyClass}">${qtySign}${m.quantity}</td>
+                  <td>${m.quantity_before} → ${m.quantity_after}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+
+        <div class="footer">
+          <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Product Transaction Report</p>
+        </div>
+      </body>
+      </html>
+    `;
   };
 
   const renderMovementItem = ({ item }: { item: any }) => (
@@ -366,9 +470,9 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
   // Product search view
   if (!selectedProduct) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.header}>
-          <Title style={styles.headerTitle}>Product Transaction History</Title>
+          <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Product Transaction History</Title>
           <Paragraph style={styles.headerSubtitle}>
             Search for a product to view all its transactions
           </Paragraph>
@@ -387,7 +491,7 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
             data={filteredProducts}
             keyExtractor={(item) => item.id.toString()}
             renderItem={renderProductItem}
-            contentContainerStyle={styles.listContainer}
+            contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
@@ -406,25 +510,22 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
             </Paragraph>
           </View>
         )}
-      </SafeAreaView>
+      </View>
     );
   }
 
   // Selected product — show movements
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {/* Header with Print Button */}
-      <View style={styles.headerTop}>
-        <View style={styles.headerTitles}>
-          <Title style={styles.headerTitle}>Product Transaction History</Title>
-        </View>
-        <IconButton
-          icon="printer"
-          size={24}
-          onPress={() => setPrintDialogVisible(true)}
-          disabled={movements.length === 0}
-        />
-      </View>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Report Actions: Print, PDF, Email */}
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Product Transaction Report"
+        reportFileName={`ProductTransaction_${selectedProduct?.code || 'report'}_${dateRange.startDate.toISOString().split('T')[0]}`}
+        emailBody={`Please find attached the Product Transaction Report for ${selectedProduct?.name || 'product'}.\n\nPeriod: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}\nTotal IN: +${totalIn}\nTotal OUT: -${totalOut}\nNet: ${netMovement >= 0 ? '+' : ''}${netMovement}\n\n---\nGenerated by IgoroTech POS`}
+        disabled={movements.length === 0}
+      />
 
       {/* Selected Product Header */}
       <Card style={styles.selectedProductCard}>
@@ -460,19 +561,19 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
       <View style={styles.summaryRow}>
         <Card style={[styles.summaryCard, { backgroundColor: '#E8F5E9' }]}>
           <Card.Content style={styles.summaryContent}>
-            <Paragraph style={styles.summaryLabel}>Total IN</Paragraph>
+            <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Total IN</Paragraph>
             <Title style={[styles.summaryValue, { color: '#4CAF50' }]}>+{totalIn}</Title>
           </Card.Content>
         </Card>
         <Card style={[styles.summaryCard, { backgroundColor: '#FFEBEE' }]}>
           <Card.Content style={styles.summaryContent}>
-            <Paragraph style={styles.summaryLabel}>Total OUT</Paragraph>
+            <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Total OUT</Paragraph>
             <Title style={[styles.summaryValue, { color: '#F44336' }]}>-{totalOut}</Title>
           </Card.Content>
         </Card>
         <Card style={[styles.summaryCard, { backgroundColor: '#E3F2FD' }]}>
           <Card.Content style={styles.summaryContent}>
-            <Paragraph style={styles.summaryLabel}>Net</Paragraph>
+            <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Net</Paragraph>
             <Title style={[styles.summaryValue, { color: netMovement >= 0 ? '#4CAF50' : '#F44336' }]}>
               {netMovement >= 0 ? '+' : ''}{netMovement}
             </Title>
@@ -487,7 +588,7 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
         data={movements}
         keyExtractor={(item, index) => (item.id || index).toString()}
         renderItem={renderMovementItem}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadMovements}
@@ -505,13 +606,7 @@ export default function ProductTransactionReportScreen({ navigation }: Props) {
         }
       />
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Product Transaction Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+          </View>
   );
 }
 

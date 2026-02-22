@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { verifyPassword } from '../utils/passwordHash';
+import { getPhilippineDateTimeString, getPhilippineDateString, getPhilippineTimeString } from '../utils/dateTime';
 import {
   initializeDatabase,
   getNextInvoiceNumber,
@@ -129,6 +130,10 @@ export class DatabaseService {
           throw new Error('Failed to initialize database schema after multiple attempts');
         }
 
+        // ALWAYS apply critical PRAGMAs after database is opened
+        // These are per-connection settings and must be set on every open
+        await this.applyDatabasePragmas();
+
         // Verify critical tables exist
         await this.verifyCriticalTables();
         console.log('Critical tables verified - initialization complete');
@@ -185,6 +190,44 @@ export class DatabaseService {
     if (!userCount || userCount.count === 0) {
       console.log('No active users found, creating default users...');
       await this.createDefaultUsers();
+    }
+  }
+
+  // Apply critical PRAGMA settings - MUST be called on every database open
+  // These settings are per-connection and don't persist across app restarts
+  private async applyDatabasePragmas(): Promise<void> {
+    const db = this.getDatabase();
+
+    try {
+      console.log('[DatabaseService] Applying critical PRAGMA settings...');
+
+      // WAL mode for crash recovery (this one does persist, but we set it anyway)
+      await db.execAsync('PRAGMA journal_mode = WAL;');
+
+      // FULL synchronous mode - CRITICAL for data safety
+      // This MUST be set on every connection as it doesn't persist
+      await db.execAsync('PRAGMA synchronous = FULL;');
+
+      // Enable foreign keys (per-connection setting)
+      await db.execAsync('PRAGMA foreign_keys = ON;');
+
+      // Set busy timeout to prevent lock errors
+      await db.execAsync('PRAGMA busy_timeout = 5000;');
+
+      // Verify settings were applied
+      const syncMode = await db.getFirstAsync<{ synchronous: number }>('PRAGMA synchronous;');
+      const journalMode = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode;');
+
+      console.log('[DatabaseService] PRAGMA settings applied:');
+      console.log('  - synchronous:', syncMode?.synchronous === 2 ? 'FULL' : syncMode?.synchronous === 1 ? 'NORMAL' : 'OFF');
+      console.log('  - journal_mode:', journalMode?.journal_mode);
+
+      if (syncMode?.synchronous !== 2) {
+        console.warn('[DatabaseService] WARNING: Could not set synchronous mode to FULL!');
+      }
+    } catch (error) {
+      console.error('[DatabaseService] Error applying PRAGMA settings:', error);
+      // Don't throw - the app can still work, just with reduced protection
     }
   }
 
@@ -282,7 +325,7 @@ export class DatabaseService {
     product_id: number;
     movement_type: 'IN' | 'OUT' | 'ADJUSTMENT';
     quantity: number;
-    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID';
+    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID' | 'BEGINNING_BALANCE';
     reference_id?: number;
     reference_number?: string;
     notes?: string;
@@ -331,13 +374,16 @@ export class DatabaseService {
 
       const totalValue = Math.abs(actualQuantityMoved) * product.cost;
 
+      // Use Philippine timezone for created_at
+      const phDateTime = getPhilippineDateTimeString();
+
       // Record the inventory movement
       const result = await db.runAsync(
         `INSERT INTO inventory_movements (
           product_id, product_code, product_name, movement_type, quantity,
           quantity_before, quantity_after, unit_cost, total_value,
-          reference_type, reference_id, reference_number, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reference_type, reference_id, reference_number, notes, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           movementData.product_id,
           product.code,
@@ -352,7 +398,8 @@ export class DatabaseService {
           movementData.reference_id || null,
           movementData.reference_number || null,
           movementData.notes || null,
-          movementData.created_by
+          movementData.created_by,
+          phDateTime
         ]
       );
 
@@ -481,7 +528,7 @@ export class DatabaseService {
 
       // Use simple query for better performance with large datasets
       const products = await db.getAllAsync<any>(
-        `SELECT id, code, name, description, price, cost, category_id, vat_type, tax_rate,
+        `SELECT id, code, name, description, price, wholesale_price, cost, category_id, vat_type, tax_rate,
                 is_vat_inclusive, stock_quantity, unit, is_active, created_at, updated_at
          FROM products
          ${whereClause}
@@ -521,7 +568,7 @@ export class DatabaseService {
       const offset = (page - 1) * pageSize;
 
       const products = await db.getAllAsync<any>(
-        `SELECT id, code, name, description, price, cost, category_id, vat_type, tax_rate,
+        `SELECT id, code, name, description, price, wholesale_price, cost, category_id, vat_type, tax_rate,
                 is_vat_inclusive, stock_quantity, unit, is_active, created_at, updated_at
          FROM products
          ${whereClause}
@@ -628,15 +675,18 @@ export class DatabaseService {
     const isChargeInvoice = transaction.payment_method === 'CHARGE_INVOICE';
     const paymentStatus = isChargeInvoice ? 'UNPAID' : 'PAID';
 
+    // Use Philippine timezone for transaction date
+    const phDateTime = getPhilippineDateTimeString();
+
     await db.withTransactionAsync(async () => {
-      // Create transaction
+      // Create transaction with explicit Philippine timezone
       const transactionResult = await db.runAsync(
         `INSERT INTO transactions (
           transaction_number, invoice_number, customer_id, customer_name, customer_tin, customer_address,
           subtotal, tax_amount, discount_amount, total_amount, payment_method,
           amount_tendered, change_amount, payment_status, cashier_id,
-          sc_pwd_id, sc_pwd_name, sc_pwd_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sc_pwd_id, sc_pwd_name, sc_pwd_type, transaction_date, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           transactionNumber,
           invoiceNumber,
@@ -655,7 +705,9 @@ export class DatabaseService {
           transaction.cashier_id,
           transaction.sc_pwd_id || null,
           transaction.sc_pwd_name || null,
-          transaction.sc_pwd_type || null
+          transaction.sc_pwd_type || null,
+          phDateTime,
+          phDateTime
         ]
       );
 
@@ -709,16 +761,20 @@ export class DatabaseService {
           }
         }
 
-        const invoiceDate = new Date().toISOString().split('T')[0];
-        const dueDate = new Date();
-        dueDate.setDate(dueDate.getDate() + creditTerms);
-        const dueDateString = dueDate.toISOString().split('T')[0];
+        const invoiceDate = getPhilippineDateString();
+        // Calculate due date from Philippine time
+        const phTime = new Date();
+        const phOffset = 8 * 60;
+        const localOffset = phTime.getTimezoneOffset();
+        const phDate = new Date(phTime.getTime() + (phOffset + localOffset) * 60000);
+        phDate.setDate(phDate.getDate() + creditTerms);
+        const dueDateString = phDate.toISOString().split('T')[0];
 
         await db.runAsync(
           `INSERT INTO accounts_receivable (
             transaction_id, customer_id, customer_name, invoice_number,
-            invoice_date, due_date, original_amount, balance_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            invoice_date, due_date, original_amount, paid_amount, balance_amount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             transactionId,
             transaction.customer_id || null,
@@ -727,21 +783,24 @@ export class DatabaseService {
             invoiceDate,
             dueDateString,
             transaction.total_amount,
+            0, // Explicitly set paid_amount to 0 for new AR records
             transaction.total_amount
           ]
         );
       }
 
-      // Add eJournal entry
+      // Add eJournal entry with Philippine time
       await db.runAsync(
-        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           'SALE',
           invoiceNumber,
           `Sale transaction - Invoice: ${invoiceNumber}`,
           transaction.total_amount,
-          transaction.cashier_id
+          transaction.cashier_id,
+          phDateTime,
+          phDateTime
         ]
       );
 
@@ -756,8 +815,8 @@ export class DatabaseService {
   public async generateZReading(cashier_id: number, targetDate?: string): Promise<any> {
     const db = this.getDatabase();
 
-    // Use target date if provided (for closing unterminated sessions), otherwise use today
-    const dateToClose = targetDate || new Date().toISOString().split('T')[0];
+    // Use target date if provided (for closing unterminated sessions), otherwise use today's Philippine date
+    const dateToClose = targetDate || getPhilippineDateString();
     console.log('[generateZReading] Generating Z-Reading for date:', dateToClose, 'cashier:', cashier_id);
 
     // Check if Z-Reading already exists for this date
@@ -785,6 +844,7 @@ export class DatabaseService {
       vat_amount: number;
       discount_amount: number;
       void_amount: number;
+      void_count: number;
       net_sales: number;
       start_invoice: string;
       end_invoice: string;
@@ -794,11 +854,27 @@ export class DatabaseService {
          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN tax_amount ELSE 0 END), 0) as vat_amount,
          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN discount_amount ELSE 0 END), 0) as discount_amount,
          COALESCE(SUM(CASE WHEN status = 'VOID' THEN total_amount ELSE 0 END), 0) as void_amount,
+         COUNT(CASE WHEN status = 'VOID' THEN 1 END) as void_count,
          COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_amount - discount_amount ELSE 0 END), 0) as net_sales,
          MIN(invoice_number) as start_invoice,
          MAX(invoice_number) as end_invoice
        FROM transactions
        WHERE DATE(transaction_date) = ? AND cashier_id = ?`,
+      [dateToClose, cashier_id]
+    );
+
+    // Get refund and exchange amounts from sales_returns table
+    const refundData = await db.getFirstAsync<{ refund_amount: number; refund_count: number }>(
+      `SELECT COALESCE(SUM(total_amount), 0) as refund_amount, COUNT(*) as refund_count
+       FROM sales_returns
+       WHERE DATE(return_date) = ? AND processed_by = ? AND status = 'COMPLETED' AND refund_method != 'EXCHANGE'`,
+      [dateToClose, cashier_id]
+    );
+
+    const exchangeData = await db.getFirstAsync<{ exchange_amount: number; exchange_count: number }>(
+      `SELECT COALESCE(SUM(total_amount), 0) as exchange_amount, COUNT(*) as exchange_count
+       FROM sales_returns
+       WHERE DATE(return_date) = ? AND processed_by = ? AND status = 'COMPLETED' AND refund_method = 'EXCHANGE'`,
       [dateToClose, cashier_id]
     );
 
@@ -816,9 +892,10 @@ export class DatabaseService {
     const result = await db.runAsync(
       `INSERT INTO z_readings (
         reading_number, date, start_invoice_number, end_invoice_number,
-        gross_sales, vat_sales, vat_amount, discount_amount, void_amount, net_sales,
-        cumulative_grand_total, reset_counter, cashier_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gross_sales, vat_sales, vat_amount, discount_amount, void_amount, void_count,
+        refund_amount, refund_count, exchange_amount, exchange_count,
+        net_sales, cumulative_grand_total, reset_counter, cashier_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         nextCounter,
         dateToClose,
@@ -829,6 +906,11 @@ export class DatabaseService {
         salesData?.vat_amount || 0,
         salesData?.discount_amount || 0,
         salesData?.void_amount || 0,
+        salesData?.void_count || 0,
+        refundData?.refund_amount || 0,
+        refundData?.refund_count || 0,
+        exchangeData?.exchange_amount || 0,
+        exchangeData?.exchange_count || 0,
         salesData?.net_sales || 0,
         newCumulativeGrandTotal,
         nextCounter,
@@ -849,11 +931,12 @@ export class DatabaseService {
       [newCumulativeGrandTotal.toFixed(2), 'cumulative_grand_total']
     );
 
-    // Add eJournal entry
+    // Add eJournal entry with Philippine time
+    const phDateTime = getPhilippineDateTimeString();
     await db.runAsync(
-      `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id)
-       VALUES (?, ?, ?, ?)`,
-      ['Z_READING', `Z${nextCounter.toString().padStart(4, '0')}`, `Z-Reading #${nextCounter}`, cashier_id]
+      `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['Z_READING', `Z${nextCounter.toString().padStart(4, '0')}`, `Z-Reading #${nextCounter}`, cashier_id, phDateTime, phDateTime]
     );
 
     return {
@@ -869,8 +952,8 @@ export class DatabaseService {
   public async generateXReading(cashier_id: number): Promise<any> {
     const db = this.getDatabase();
 
-    const today = new Date().toISOString().split('T')[0];
-    const currentTime = new Date().toTimeString().split(' ')[0];
+    const today = getPhilippineDateString();
+    const currentTime = getPhilippineTimeString();
 
     // Calculate current day sales data
     const salesData = await db.getFirstAsync<{
@@ -918,11 +1001,12 @@ export class DatabaseService {
       ]
     );
 
-    // Add eJournal entry
+    // Add eJournal entry with Philippine time
+    const phDateTimeXRead = getPhilippineDateTimeString();
     await db.runAsync(
-      `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id)
-       VALUES (?, ?, ?, ?)`,
-      ['X_READING', `X${Date.now()}`, `X-Reading ${currentTime}`, cashier_id]
+      `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['X_READING', `X${Date.now()}`, `X-Reading ${currentTime}`, cashier_id, phDateTimeXRead, phDateTimeXRead]
     );
 
     return {
@@ -1069,9 +1153,10 @@ export class DatabaseService {
     cashier_id: number;
   }): Promise<void> {
     const db = this.getDatabase();
+    const phDateTime = getPhilippineDateTimeString();
     await db.runAsync(
-      'INSERT INTO ejournal (transaction_id, entry_type, reference_number, description, amount, cashier_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [entry.transaction_id || null, entry.entry_type, entry.reference_number, entry.description, entry.amount || null, entry.cashier_id]
+      'INSERT INTO ejournal (transaction_id, entry_type, reference_number, description, amount, cashier_id, timestamp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [entry.transaction_id || null, entry.entry_type, entry.reference_number, entry.description, entry.amount || null, entry.cashier_id, phDateTime, phDateTime]
     );
   }
 
@@ -1265,7 +1350,7 @@ export class DatabaseService {
   // Get today's transactions for reporting
   public async getTodaysTransactions() {
     const db = this.getDatabase();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getPhilippineDateString();
 
     return await db.getAllAsync(
       `SELECT t.*, u.full_name as cashier_name
@@ -1341,7 +1426,7 @@ export class DatabaseService {
     notes?: string;
   }) {
     const db = this.getDatabase();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getPhilippineDateString();
 
     return await db.runAsync(
       `INSERT INTO physical_count_sessions (session_id, date, started_by, total_items, notes)
@@ -2065,7 +2150,7 @@ export class DatabaseService {
 
     try {
       const purchaseNumber = await getNextPurchaseNumber(db);
-      const today = new Date().toISOString().split('T')[0];
+      const today = getPhilippineDateString();
 
       // Calculate totals
       let subtotal = 0;
@@ -2157,16 +2242,19 @@ export class DatabaseService {
           ]
         );
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
-          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             'SYSTEM',
             purchaseNumber,
             `Purchase order created - ${purchaseNumber}`,
             total,
-            purchaseData.created_by
+            purchaseData.created_by,
+            phDateTime,
+            phDateTime
           ]
         );
 
@@ -2188,12 +2276,13 @@ export class DatabaseService {
       const query = `
         SELECT
           p.*,
+          p.status as payment_status,
           s.name as supplier_name,
           s.contact_person,
           u.full_name as created_by_name
         FROM purchases p
-        JOIN suppliers s ON p.supplier_id = s.id
-        JOIN users u ON p.created_by = u.id
+        LEFT JOIN suppliers s ON p.supplier_id = s.id
+        LEFT JOIN users u ON p.created_by = u.id
         ORDER BY p.created_at DESC
         ${limit ? `LIMIT ${limit}` : ''}
       `;
@@ -2212,6 +2301,7 @@ export class DatabaseService {
       const purchase = await db.getFirstAsync(
         `SELECT
           p.*,
+          p.status as payment_status,
           s.name as supplier_name,
           s.contact_person,
           s.phone,
@@ -2219,8 +2309,8 @@ export class DatabaseService {
           s.address,
           u.full_name as created_by_name
         FROM purchases p
-        JOIN suppliers s ON p.supplier_id = s.id
-        JOIN users u ON p.created_by = u.id
+        LEFT JOIN suppliers s ON p.supplier_id = s.id
+        LEFT JOIN users u ON p.created_by = u.id
         WHERE p.id = ?`,
         [id]
       );
@@ -2243,6 +2333,21 @@ export class DatabaseService {
     } catch (error) {
       console.error(`Error getting purchase order ${id}:`, error);
       return null;
+    }
+  }
+
+  public async getAllPurchaseDetails(): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      return await db.getAllAsync(
+        `SELECT pd.*, p.name as product_name_current
+         FROM purchase_details pd
+         LEFT JOIN products p ON pd.product_id = p.id
+         ORDER BY pd.purchase_id, pd.product_name`
+      );
+    } catch (error) {
+      console.error('Error getting all purchase details:', error);
+      return [];
     }
   }
 
@@ -2432,16 +2537,19 @@ export class DatabaseService {
           [newStatus, receivedBy, purchaseId]
         );
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
         if (purchase) {
+          const phDateTime = getPhilippineDateTimeString();
           await db.runAsync(
-            `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id)
-             VALUES (?, ?, ?, ?)`,
+            `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
             [
               'SYSTEM',
               purchase.purchase_number,
               `Purchase ${newStatus.toLowerCase()} - ${purchase.purchase_number}`,
-              receivedBy
+              receivedBy,
+              phDateTime,
+              phDateTime
             ]
           );
         }
@@ -2469,7 +2577,7 @@ export class DatabaseService {
 
     try {
       const paymentNumber = await getNextPaymentNumber(db);
-      const today = new Date().toISOString().split('T')[0];
+      const today = getPhilippineDateString();
 
       let paymentId: number;
 
@@ -2528,16 +2636,19 @@ export class DatabaseService {
           }
         }
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
-          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             'SYSTEM',
             paymentNumber,
             `Supplier payment - ${paymentNumber}`,
             paymentData.amount,
-            paymentData.created_by
+            paymentData.created_by,
+            phDateTime,
+            phDateTime
           ]
         );
 
@@ -2654,7 +2765,7 @@ export class DatabaseService {
       }
 
       const oldStatus = payment.cheque_status;
-      const now = new Date().toISOString();
+      const now = getPhilippineDateTimeString();
 
       // Update status and date fields
       let updateQuery = 'UPDATE supplier_payments SET cheque_status = ?';
@@ -2908,6 +3019,296 @@ export class DatabaseService {
   }
 
   // ========================================
+  // SUPPLIER ACCOUNT STATEMENT METHODS
+  // ========================================
+
+  /**
+   * Get supplier purchases with items for a date range
+   * Used for Supplier Account Statement - Purchases tab
+   */
+  public async getSupplierPurchasesWithItems(
+    supplierId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      // Get purchases for the supplier within date range
+      const purchases = await db.getAllAsync<any>(
+        `SELECT
+          p.*,
+          s.name as supplier_name,
+          s.code as supplier_code,
+          u.full_name as created_by_name,
+          ru.full_name as received_by_name
+         FROM purchases p
+         LEFT JOIN suppliers s ON p.supplier_id = s.id
+         LEFT JOIN users u ON p.created_by = u.id
+         LEFT JOIN users ru ON p.received_by = ru.id
+         WHERE p.supplier_id = ?
+           AND DATE(p.purchase_date) >= DATE(?)
+           AND DATE(p.purchase_date) <= DATE(?)
+           AND p.status NOT IN ('CANCELLED', 'DRAFT')
+         ORDER BY p.purchase_date DESC, p.created_at DESC`,
+        [supplierId, startDate, endDate]
+      );
+
+      // Get items for each purchase
+      for (const purchase of purchases) {
+        const items = await db.getAllAsync<any>(
+          `SELECT
+            pd.*,
+            pr.name as product_name,
+            pr.code as product_code
+           FROM purchase_details pd
+           LEFT JOIN products pr ON pd.product_id = pr.id
+           WHERE pd.purchase_id = ?`,
+          [purchase.id]
+        );
+        purchase.items = items;
+      }
+
+      return purchases;
+    } catch (error) {
+      console.error('Error getting supplier purchases with items:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get supplier payments for a date range (including cheque details)
+   * Used for Supplier Account Statement - Payments tab
+   */
+  public async getSupplierPaymentsByDateRange(
+    supplierId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      const payments = await db.getAllAsync<any>(
+        `SELECT
+          sp.*,
+          s.name as supplier_name,
+          s.code as supplier_code,
+          p.purchase_number,
+          p.total_amount as purchase_total,
+          u.full_name as created_by_name
+         FROM supplier_payments sp
+         LEFT JOIN suppliers s ON sp.supplier_id = s.id
+         LEFT JOIN purchases p ON sp.purchase_id = p.id
+         LEFT JOIN users u ON sp.created_by = u.id
+         WHERE sp.supplier_id = ?
+           AND DATE(sp.payment_date) >= DATE(?)
+           AND DATE(sp.payment_date) <= DATE(?)
+         ORDER BY sp.payment_date DESC, sp.created_at DESC`,
+        [supplierId, startDate, endDate]
+      );
+
+      return payments;
+    } catch (error) {
+      console.error('Error getting supplier payments by date range:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get supplier balance summary
+   * Used for Supplier Account Statement - Summary section
+   */
+  public async getSupplierBalanceSummary(supplierId: number): Promise<{
+    totalPurchases: number;
+    totalPayments: number;
+    currentBalance: number;
+    purchaseCount: number;
+    paidPurchases: number;
+    unpaidPurchases: number;
+    pendingCheques: number;
+    pendingChequeAmount: number;
+  }> {
+    const db = this.getDatabase();
+
+    try {
+      // Total purchases (all non-cancelled purchases)
+      const purchasesResult = await db.getFirstAsync<any>(
+        `SELECT
+          COALESCE(SUM(total_amount), 0) as total,
+          COUNT(*) as count
+         FROM purchases
+         WHERE supplier_id = ?
+           AND status NOT IN ('CANCELLED', 'DRAFT')`,
+        [supplierId]
+      );
+
+      // Total payments made
+      const paymentsResult = await db.getFirstAsync<any>(
+        `SELECT COALESCE(SUM(amount), 0) as total
+         FROM supplier_payments
+         WHERE supplier_id = ?`,
+        [supplierId]
+      );
+
+      // Get AP summary
+      const apResult = await db.getFirstAsync<any>(
+        `SELECT
+          COALESCE(SUM(balance_amount), 0) as balance,
+          COUNT(CASE WHEN status = 'PAID' THEN 1 END) as paid,
+          COUNT(CASE WHEN status != 'PAID' THEN 1 END) as unpaid
+         FROM accounts_payable
+         WHERE supplier_id = ?`,
+        [supplierId]
+      );
+
+      // Pending cheques (PDC)
+      const chequeResult = await db.getFirstAsync<any>(
+        `SELECT
+          COUNT(*) as count,
+          COALESCE(SUM(amount), 0) as total
+         FROM supplier_payments
+         WHERE supplier_id = ?
+           AND payment_method = 'CHEQUE'
+           AND cheque_status = 'PENDING'`,
+        [supplierId]
+      );
+
+      return {
+        totalPurchases: purchasesResult?.total || 0,
+        totalPayments: paymentsResult?.total || 0,
+        currentBalance: apResult?.balance || 0,
+        purchaseCount: purchasesResult?.count || 0,
+        paidPurchases: apResult?.paid || 0,
+        unpaidPurchases: apResult?.unpaid || 0,
+        pendingCheques: chequeResult?.count || 0,
+        pendingChequeAmount: chequeResult?.total || 0,
+      };
+    } catch (error) {
+      console.error('Error getting supplier balance summary:', error);
+      return {
+        totalPurchases: 0,
+        totalPayments: 0,
+        currentBalance: 0,
+        purchaseCount: 0,
+        paidPurchases: 0,
+        unpaidPurchases: 0,
+        pendingCheques: 0,
+        pendingChequeAmount: 0,
+      };
+    }
+  }
+
+  /**
+   * Get upcoming PDCs for funding report
+   * Shows pending cheques grouped by maturity timeframe
+   */
+  public async getUpcomingPDCs(options?: {
+    daysAhead?: number;
+    startDate?: string;
+    endDate?: string;
+    supplierId?: number;
+  }): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      const whereClauses: string[] = [
+        "sp.payment_method = 'CHEQUE'",
+        "sp.cheque_status = 'PENDING'",
+        "sp.cheque_date IS NOT NULL"
+      ];
+      const params: any[] = [];
+
+      if (options?.supplierId) {
+        whereClauses.push('sp.supplier_id = ?');
+        params.push(options.supplierId);
+      }
+
+      if (options?.startDate && options?.endDate) {
+        whereClauses.push("DATE(sp.cheque_date) >= DATE(?)");
+        whereClauses.push("DATE(sp.cheque_date) <= DATE(?)");
+        params.push(options.startDate, options.endDate);
+      } else if (options?.daysAhead) {
+        whereClauses.push(`DATE(sp.cheque_date) <= DATE('now', '+${options.daysAhead} days')`);
+      }
+
+      const query = `
+        SELECT
+          sp.*,
+          s.name as supplier_name,
+          s.code as supplier_code,
+          p.purchase_number,
+          CAST(julianday(sp.cheque_date) - julianday('now', 'localtime') AS INTEGER) as days_until_due,
+          CASE
+            WHEN DATE(sp.cheque_date) < DATE('now', 'localtime') THEN 'OVERDUE'
+            WHEN CAST(julianday(sp.cheque_date) - julianday('now', 'localtime') AS INTEGER) <= 3 THEN 'DUE_SOON'
+            WHEN CAST(julianday(sp.cheque_date) - julianday('now', 'localtime') AS INTEGER) <= 7 THEN 'THIS_WEEK'
+            ELSE 'UPCOMING'
+          END as urgency
+        FROM supplier_payments sp
+        JOIN suppliers s ON sp.supplier_id = s.id
+        LEFT JOIN purchases p ON sp.purchase_id = p.id
+        WHERE ${whereClauses.join(' AND ')}
+        ORDER BY sp.cheque_date ASC, sp.amount DESC
+      `;
+
+      return await db.getAllAsync(query, params);
+    } catch (error) {
+      console.error('Error getting upcoming PDCs:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get PDC summary by time period for funding planning
+   */
+  public async getPDCSummaryByPeriod(): Promise<{
+    overdue: { count: number; amount: number };
+    thisWeek: { count: number; amount: number };
+    nextWeek: { count: number; amount: number };
+    thisMonth: { count: number; amount: number };
+    total: { count: number; amount: number };
+  }> {
+    const db = this.getDatabase();
+
+    try {
+      const result = await db.getFirstAsync<any>(`
+        SELECT
+          COUNT(CASE WHEN DATE(cheque_date) < DATE('now', 'localtime') THEN 1 END) as overdue_count,
+          COALESCE(SUM(CASE WHEN DATE(cheque_date) < DATE('now', 'localtime') THEN amount ELSE 0 END), 0) as overdue_amount,
+          COUNT(CASE WHEN DATE(cheque_date) >= DATE('now', 'localtime') AND DATE(cheque_date) <= DATE('now', 'localtime', '+7 days') THEN 1 END) as week_count,
+          COALESCE(SUM(CASE WHEN DATE(cheque_date) >= DATE('now', 'localtime') AND DATE(cheque_date) <= DATE('now', 'localtime', '+7 days') THEN amount ELSE 0 END), 0) as week_amount,
+          COUNT(CASE WHEN DATE(cheque_date) > DATE('now', 'localtime', '+7 days') AND DATE(cheque_date) <= DATE('now', 'localtime', '+14 days') THEN 1 END) as next_week_count,
+          COALESCE(SUM(CASE WHEN DATE(cheque_date) > DATE('now', 'localtime', '+7 days') AND DATE(cheque_date) <= DATE('now', 'localtime', '+14 days') THEN amount ELSE 0 END), 0) as next_week_amount,
+          COUNT(CASE WHEN DATE(cheque_date) > DATE('now', 'localtime', '+14 days') AND DATE(cheque_date) <= DATE('now', 'localtime', '+30 days') THEN 1 END) as month_count,
+          COALESCE(SUM(CASE WHEN DATE(cheque_date) > DATE('now', 'localtime', '+14 days') AND DATE(cheque_date) <= DATE('now', 'localtime', '+30 days') THEN amount ELSE 0 END), 0) as month_amount,
+          COUNT(*) as total_count,
+          COALESCE(SUM(amount), 0) as total_amount
+        FROM supplier_payments
+        WHERE payment_method = 'CHEQUE'
+          AND cheque_status = 'PENDING'
+          AND cheque_date IS NOT NULL
+      `);
+
+      return {
+        overdue: { count: result?.overdue_count || 0, amount: result?.overdue_amount || 0 },
+        thisWeek: { count: result?.week_count || 0, amount: result?.week_amount || 0 },
+        nextWeek: { count: result?.next_week_count || 0, amount: result?.next_week_amount || 0 },
+        thisMonth: { count: result?.month_count || 0, amount: result?.month_amount || 0 },
+        total: { count: result?.total_count || 0, amount: result?.total_amount || 0 },
+      };
+    } catch (error) {
+      console.error('Error getting PDC summary by period:', error);
+      return {
+        overdue: { count: 0, amount: 0 },
+        thisWeek: { count: 0, amount: 0 },
+        nextWeek: { count: 0, amount: 0 },
+        thisMonth: { count: 0, amount: 0 },
+        total: { count: 0, amount: 0 },
+      };
+    }
+  }
+
+  // ========================================
   // DAMAGED ITEMS MANAGEMENT METHODS
   // ========================================
 
@@ -3082,16 +3483,19 @@ export class DatabaseService {
         // Update session totals
         await this.updateDamageSessionTotals(damageData.session_id);
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
-          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             'SYSTEM',
             damageData.session_id,
             `Damaged item recorded: ${product.name} (${damageData.damaged_quantity} units)`,
             totalValue,
-            damageData.recorded_by
+            damageData.recorded_by,
+            phDateTime,
+            phDateTime
           ]
         );
       });
@@ -3137,15 +3541,18 @@ export class DatabaseService {
         [completedBy, sessionId]
       );
 
-      // Add eJournal entry
+      // Add eJournal entry with Philippine time
+      const phDateTime = getPhilippineDateTimeString();
       await db.runAsync(
-        `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         [
           'SYSTEM',
           sessionId,
           `Damage session completed - ${sessionId}`,
-          completedBy
+          completedBy,
+          phDateTime,
+          phDateTime
         ]
       );
     } catch (error) {
@@ -3192,15 +3599,18 @@ export class DatabaseService {
           [cancelledBy, reason, sessionId]
         );
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
-          `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
           [
             'SYSTEM',
             sessionId,
             `Damage session cancelled - ${sessionId}: ${reason}`,
-            cancelledBy
+            cancelledBy,
+            phDateTime,
+            phDateTime
           ]
         );
       });
@@ -3632,35 +4042,44 @@ export class DatabaseService {
         const { getNextCustomerPaymentNumber, updateCustomerPaymentNumber } = await import('./schema');
 
         const paymentNumber = await getNextCustomerPaymentNumber(db);
+        const phDate = getPhilippineDateString();
 
-        // Insert customer payment
+        // Insert customer payment with Philippine date and explicit created_at in PH time
+        // IMPORTANT: Do NOT rely on DEFAULT CURRENT_TIMESTAMP (UTC) - use PH time for shift filtering
+        const phDateTime = getPhilippineDateTimeString();
         const paymentResult = await db.runAsync(
           `INSERT INTO customer_payments (
             payment_number, customer_id, transaction_id, payment_date,
-            payment_method, amount_paid, reference_number, notes, received_by
-          ) VALUES (?, ?, ?, DATE('now'), ?, ?, ?, ?, ?)`,
+            payment_method, amount_paid, reference_number, notes, received_by, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             paymentNumber,
             paymentData.customer_id || null,
             paymentData.transaction_id,
+            phDate,
             paymentData.payment_method,
             paymentData.amount_paid,
             paymentData.reference_number || null,
             paymentData.notes || null,
-            paymentData.received_by
+            paymentData.received_by,
+            phDateTime
           ]
         );
 
         paymentId = paymentResult.lastInsertRowId as number;
 
         // Update accounts receivable
+        // Use COALESCE to handle NULL paid_amount values from older records
         const arRecord = await db.getFirstAsync<any>(
-          'SELECT * FROM accounts_receivable WHERE transaction_id = ?',
+          `SELECT *, COALESCE(paid_amount, 0) as paid_amount_safe
+           FROM accounts_receivable WHERE transaction_id = ?`,
           [paymentData.transaction_id]
         );
 
         if (arRecord) {
-          const newPaidAmount = arRecord.paid_amount + paymentData.amount_paid;
+          // Use paid_amount_safe to ensure we have a number, not NULL
+          const currentPaidAmount = parseFloat(arRecord.paid_amount_safe) || 0;
+          const newPaidAmount = currentPaidAmount + paymentData.amount_paid;
           const newBalance = arRecord.original_amount - newPaidAmount;
 
           let newStatus: string;
@@ -3691,16 +4110,18 @@ export class DatabaseService {
         // Update payment number sequence
         await updateCustomerPaymentNumber(db, paymentNumber);
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time (reuse phDateTime from above)
         await db.runAsync(
-          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             'PAYMENT',
             paymentNumber,
             `Customer payment received - ${paymentNumber}`,
             paymentData.amount_paid,
-            paymentData.received_by
+            paymentData.received_by,
+            phDateTime,
+            phDateTime
           ]
         );
       });
@@ -3708,6 +4129,220 @@ export class DatabaseService {
       return paymentId!;
     } catch (error) {
       console.error('Error processing customer payment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process payment for multiple invoices at once (FIFO distribution)
+   * Returns array of payment IDs created
+   */
+  public async processMultiInvoicePayment(paymentData: {
+    customer_id?: number;
+    customer_name?: string;
+    invoices: Array<{
+      transaction_id: number;
+      invoice_number: string;
+      balance_amount: number;
+    }>;
+    total_payment: number;
+    payment_method: 'CASH' | 'CARD' | 'CHECK' | 'BANK_TRANSFER' | 'ONLINE';
+    reference_number?: string;
+    notes?: string;
+    received_by: number;
+  }): Promise<{ paymentIds: number[]; distributions: Array<{ invoice_number: string; amount: number; newBalance: number; status: string }> }> {
+    const db = this.getDatabase();
+
+    try {
+      const paymentIds: number[] = [];
+      const distributions: Array<{ invoice_number: string; amount: number; newBalance: number; status: string }> = [];
+
+      await db.withTransactionAsync(async () => {
+        const { getNextCustomerPaymentNumber, updateCustomerPaymentNumber } = await import('./schema');
+
+        // Sort invoices by due date (FIFO - oldest first)
+        const sortedInvoices = [...paymentData.invoices].sort((a, b) => {
+          return a.transaction_id - b.transaction_id; // Older transactions have lower IDs
+        });
+
+        let remainingPayment = paymentData.total_payment;
+        const phDate = getPhilippineDateString();
+        const phDateTime = getPhilippineDateTimeString();
+
+        for (const invoice of sortedInvoices) {
+          if (remainingPayment <= 0) break;
+
+          // Calculate how much to apply to this invoice
+          const amountToApply = Math.min(remainingPayment, invoice.balance_amount);
+          remainingPayment -= amountToApply;
+
+          // Get payment number for this payment
+          const paymentNumber = await getNextCustomerPaymentNumber(db);
+
+          // Insert customer payment with explicit created_at in PH time
+          // IMPORTANT: Do NOT rely on DEFAULT CURRENT_TIMESTAMP (UTC) - use PH time for shift filtering
+          const paymentResult = await db.runAsync(
+            `INSERT INTO customer_payments (
+              payment_number, customer_id, transaction_id, payment_date,
+              payment_method, amount_paid, reference_number, notes, received_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              paymentNumber,
+              paymentData.customer_id || null,
+              invoice.transaction_id,
+              phDate,
+              paymentData.payment_method,
+              amountToApply,
+              paymentData.reference_number || null,
+              paymentData.notes ? `${paymentData.notes} (Multi-invoice payment)` : 'Multi-invoice payment',
+              paymentData.received_by,
+              phDateTime
+            ]
+          );
+
+          paymentIds.push(paymentResult.lastInsertRowId as number);
+
+          // Update accounts receivable
+          const arRecord = await db.getFirstAsync<any>(
+            `SELECT *, COALESCE(paid_amount, 0) as paid_amount_safe
+             FROM accounts_receivable WHERE transaction_id = ?`,
+            [invoice.transaction_id]
+          );
+
+          if (arRecord) {
+            const currentPaidAmount = parseFloat(arRecord.paid_amount_safe) || 0;
+            const newPaidAmount = currentPaidAmount + amountToApply;
+            const newBalance = arRecord.original_amount - newPaidAmount;
+
+            let newStatus: string;
+            if (newBalance <= 0) {
+              newStatus = 'PAID';
+            } else if (newPaidAmount > 0) {
+              newStatus = 'PARTIALLY_PAID';
+            } else {
+              newStatus = 'OUTSTANDING';
+            }
+
+            await db.runAsync(
+              `UPDATE accounts_receivable
+               SET paid_amount = ?, balance_amount = ?, status = ?, updated_at = ?
+               WHERE transaction_id = ?`,
+              [newPaidAmount, Math.max(0, newBalance), newStatus, phDateTime, invoice.transaction_id]
+            );
+
+            // Update transaction payment status
+            await db.runAsync(
+              `UPDATE transactions
+               SET payment_status = ?, updated_at = ?
+               WHERE id = ?`,
+              [newStatus === 'PAID' ? 'PAID' : 'PARTIAL', phDateTime, invoice.transaction_id]
+            );
+
+            distributions.push({
+              invoice_number: invoice.invoice_number,
+              amount: amountToApply,
+              newBalance: Math.max(0, newBalance),
+              status: newStatus
+            });
+          }
+
+          // Update payment number sequence
+          await updateCustomerPaymentNumber(db, paymentNumber);
+
+          // Add eJournal entry
+          await db.runAsync(
+            `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              'PAYMENT',
+              paymentNumber,
+              `Customer payment - ${invoice.invoice_number}`,
+              amountToApply,
+              paymentData.received_by,
+              phDateTime,
+              phDateTime
+            ]
+          );
+        }
+      });
+
+      return { paymentIds, distributions };
+    } catch (error) {
+      console.error('Error processing multi-invoice payment:', error);
+      throw error;
+    }
+  }
+
+  // Adjust accounts receivable balance for exchange transactions
+  public async adjustAccountsReceivableForExchange(
+    transactionId: number,
+    adjustment: number, // positive = increase balance, negative = decrease balance
+    notes: string,
+    cashierId: number
+  ): Promise<void> {
+    const db = this.getDatabase();
+    try {
+      // Get current AR record
+      const arRecord = await db.getFirstAsync<any>(
+        `SELECT * FROM accounts_receivable WHERE transaction_id = ?`,
+        [transactionId]
+      );
+
+      if (!arRecord) {
+        console.log('No AR record found for transaction:', transactionId);
+        return;
+      }
+
+      // Calculate new amounts
+      // For exchange: we adjust both original_amount and balance_amount
+      // Example: Original ₱120, exchange to ₱35 → adjustment = -85
+      // New original = 120 + (-85) = 35, New balance = current_balance + (-85)
+      const newOriginalAmount = Math.max(0, arRecord.original_amount + adjustment);
+      const newBalanceAmount = Math.max(0, arRecord.balance_amount + adjustment);
+
+      // Determine new status
+      let newStatus = arRecord.status;
+      if (newBalanceAmount <= 0) {
+        newStatus = 'PAID';
+      } else if (arRecord.paid_amount > 0 && newBalanceAmount > 0) {
+        newStatus = 'PARTIAL';
+      }
+
+      // Update AR record
+      const phDateTime = getPhilippineDateTimeString();
+      await db.runAsync(
+        `UPDATE accounts_receivable
+         SET original_amount = ?, balance_amount = ?, status = ?, updated_at = ?
+         WHERE transaction_id = ?`,
+        [newOriginalAmount, newBalanceAmount, newStatus, phDateTime, transactionId]
+      );
+
+      // Update transaction total_amount as well
+      await db.runAsync(
+        `UPDATE transactions
+         SET total_amount = ?, updated_at = ?
+         WHERE id = ?`,
+        [newOriginalAmount, phDateTime, transactionId]
+      );
+
+      // Add eJournal entry (using 'SYSTEM' as entry_type for AR adjustments)
+      await db.runAsync(
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, timestamp, created_at, cashier_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'SYSTEM',
+          arRecord.invoice_number,
+          `AR Adjustment: ${notes}`,
+          adjustment,
+          phDateTime,
+          phDateTime,
+          cashierId
+        ]
+      );
+
+      console.log(`AR adjusted for transaction ${transactionId}: ${adjustment > 0 ? '+' : ''}${adjustment}`);
+    } catch (error) {
+      console.error('Error adjusting AR for exchange:', error);
       throw error;
     }
   }
@@ -3745,6 +4380,161 @@ export class DatabaseService {
     } catch (error) {
       console.error('Error getting customer payments:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get customer transactions with items for a date range
+   * Used for Customer Account Statement - Purchases tab
+   */
+  public async getCustomerTransactionsWithItems(
+    customerId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      // Get transactions for the customer within date range
+      const transactions = await db.getAllAsync<any>(
+        `SELECT
+          t.*,
+          u.full_name as cashier_name,
+          c.name as customer_name
+         FROM transactions t
+         LEFT JOIN users u ON t.cashier_id = u.id
+         LEFT JOIN customers c ON t.customer_id = c.id
+         WHERE t.customer_id = ?
+           AND DATE(t.transaction_date) >= DATE(?)
+           AND DATE(t.transaction_date) <= DATE(?)
+           AND t.status IN ('COMPLETED', 'PARTIALLY_PAID', 'REFUNDED')
+         ORDER BY t.transaction_date DESC, t.created_at DESC`,
+        [customerId, startDate, endDate]
+      );
+
+      // Get items for each transaction
+      for (const transaction of transactions) {
+        const items = await db.getAllAsync<any>(
+          `SELECT
+            ti.*,
+            p.name as product_name,
+            p.code as product_code
+           FROM transaction_items ti
+           LEFT JOIN products p ON ti.product_id = p.id
+           WHERE ti.transaction_id = ?`,
+          [transaction.id]
+        );
+        transaction.items = items;
+      }
+
+      return transactions;
+    } catch (error) {
+      console.error('Error getting customer transactions with items:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get customer payments for a date range
+   * Used for Customer Account Statement - Payments tab
+   */
+  public async getCustomerPaymentsByDateRange(
+    customerId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      const payments = await db.getAllAsync<any>(
+        `SELECT
+          cp.*,
+          c.name as customer_name,
+          c.code as customer_code,
+          t.invoice_number,
+          t.total_amount as invoice_total,
+          u.username as received_by_name
+         FROM customer_payments cp
+         LEFT JOIN customers c ON cp.customer_id = c.id
+         LEFT JOIN transactions t ON cp.transaction_id = t.id
+         LEFT JOIN users u ON cp.received_by = u.id
+         WHERE cp.customer_id = ?
+           AND DATE(cp.payment_date) >= DATE(?)
+           AND DATE(cp.payment_date) <= DATE(?)
+         ORDER BY cp.payment_date DESC, cp.created_at DESC`,
+        [customerId, startDate, endDate]
+      );
+
+      return payments;
+    } catch (error) {
+      console.error('Error getting customer payments by date range:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get customer balance summary
+   * Used for Customer Account Statement - Summary section
+   */
+  public async getCustomerBalanceSummary(customerId: number): Promise<{
+    totalPurchases: number;
+    totalPayments: number;
+    currentBalance: number;
+    invoiceCount: number;
+    paidInvoices: number;
+    unpaidInvoices: number;
+  }> {
+    const db = this.getDatabase();
+
+    try {
+      // Total purchases (all completed transactions)
+      const purchasesResult = await db.getFirstAsync<any>(
+        `SELECT
+          COALESCE(SUM(total_amount), 0) as total,
+          COUNT(*) as count
+         FROM transactions
+         WHERE customer_id = ?
+           AND status IN ('COMPLETED', 'PARTIALLY_PAID')`,
+        [customerId]
+      );
+
+      // Total payments made (customer_payments doesn't have status column - all payments are completed)
+      const paymentsResult = await db.getFirstAsync<any>(
+        `SELECT COALESCE(SUM(amount_paid), 0) as total
+         FROM customer_payments
+         WHERE customer_id = ?`,
+        [customerId]
+      );
+
+      // Get AR summary
+      const arResult = await db.getFirstAsync<any>(
+        `SELECT
+          COALESCE(SUM(balance_amount), 0) as balance,
+          COUNT(CASE WHEN status = 'PAID' THEN 1 END) as paid,
+          COUNT(CASE WHEN status != 'PAID' THEN 1 END) as unpaid
+         FROM accounts_receivable
+         WHERE customer_id = ?`,
+        [customerId]
+      );
+
+      return {
+        totalPurchases: purchasesResult?.total || 0,
+        totalPayments: paymentsResult?.total || 0,
+        currentBalance: arResult?.balance || 0,
+        invoiceCount: purchasesResult?.count || 0,
+        paidInvoices: arResult?.paid || 0,
+        unpaidInvoices: arResult?.unpaid || 0,
+      };
+    } catch (error) {
+      console.error('Error getting customer balance summary:', error);
+      return {
+        totalPurchases: 0,
+        totalPayments: 0,
+        currentBalance: 0,
+        invoiceCount: 0,
+        paidInvoices: 0,
+        unpaidInvoices: 0,
+      };
     }
   }
 
@@ -4700,12 +5490,27 @@ export class DatabaseService {
     credit_sales: number;
     gcash_sales: number;
     card_sales: number;
+    check_sales?: number;
     other_sales: number;
     void_amount: number;
     void_count: number;
+    exchange_amount?: number;
+    exchange_count?: number;
+    refund_count?: number;
     transaction_count: number;
     customer_payments_received: number;
+    customer_payments_cash?: number;
+    customer_payments_check?: number;
+    customer_payments_card?: number;
+    customer_payments_online?: number;
+    customer_payments_bank_transfer?: number;
     supplier_payments_made: number;
+    opening_fund?: number;
+    cash_in?: number;
+    cash_out?: number;
+    petty_cash?: number;
+    cash_refunds?: number;
+    cash_fund?: number;
     expected_cash: number;
     actual_cash: number;
     cash_variance: number;
@@ -4719,11 +5524,16 @@ export class DatabaseService {
       const result = await db.runAsync(
         `INSERT INTO end_of_day_records (
           date, beginning_cash, gross_sales, discounts, sales_returns, net_sales,
-          cash_sales, credit_sales, gcash_sales, card_sales, other_sales,
-          void_amount, void_count, transaction_count, customer_payments_received,
-          supplier_payments_made, expected_cash, actual_cash, cash_variance,
+          cash_sales, credit_sales, gcash_sales, card_sales, check_sales, other_sales,
+          void_amount, void_count, exchange_amount, exchange_count, refund_count,
+          transaction_count, customer_payments_received,
+          customer_payments_cash, customer_payments_check, customer_payments_card,
+          customer_payments_online, customer_payments_bank_transfer,
+          supplier_payments_made,
+          opening_fund, cash_in, cash_out, petty_cash, cash_refunds, cash_fund,
+          expected_cash, actual_cash, cash_variance,
           denomination_breakdown, next_day_beginning_cash, created_by, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           eodData.date,
           eodData.beginning_cash,
@@ -4735,12 +5545,27 @@ export class DatabaseService {
           eodData.credit_sales,
           eodData.gcash_sales,
           eodData.card_sales,
+          eodData.check_sales || 0,
           eodData.other_sales,
           eodData.void_amount,
           eodData.void_count,
+          eodData.exchange_amount || 0,
+          eodData.exchange_count || 0,
+          eodData.refund_count || 0,
           eodData.transaction_count,
           eodData.customer_payments_received,
+          eodData.customer_payments_cash || 0,
+          eodData.customer_payments_check || 0,
+          eodData.customer_payments_card || 0,
+          eodData.customer_payments_online || 0,
+          eodData.customer_payments_bank_transfer || 0,
           eodData.supplier_payments_made,
+          eodData.opening_fund || 0,
+          eodData.cash_in || 0,
+          eodData.cash_out || 0,
+          eodData.petty_cash || 0,
+          eodData.cash_refunds || 0,
+          eodData.cash_fund || 0,
           eodData.expected_cash,
           eodData.actual_cash,
           eodData.cash_variance,
@@ -4875,13 +5700,14 @@ export class DatabaseService {
         );
       }
 
-      // Create eJournal entry
+      // Create eJournal entry with Philippine time
+      const phDateTime = getPhilippineDateTimeString();
       await db.runAsync(
-        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         ['RETURN', returnData.return_number,
          `Sales return - ${returnData.refund_method} - ${returnData.items.length} items`,
-         -returnData.total_amount, returnData.processed_by]
+         -returnData.total_amount, returnData.processed_by, phDateTime, phDateTime]
       );
 
       console.log(`Sales return created: ${returnData.return_number} (ID: ${returnId})`);
@@ -4948,6 +5774,424 @@ export class DatabaseService {
     }
   }
 
+  // Get transactions for date range (for void/refund/exchange invoice browsing)
+  // excludeWithReturns: when true, filters out transactions that have associated sales_returns (refunds/exchanges)
+  // cashierId: when provided, filters to only show transactions by that specific cashier
+  // excludeClosedShifts: when true (for void modal), filters out transactions from closed shifts
+  public async getTransactionsForDateRange(
+    startDate: string,
+    endDate: string,
+    excludeWithReturns: boolean = false,
+    cashierId?: number,
+    excludeClosedShifts: boolean = false
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      let transactions: any[];
+
+      // Build cashier filter clause
+      const cashierFilter = cashierId ? `AND t.cashier_id = ${cashierId}` : '';
+
+      // Build closed shift exclusion clause
+      // Exclude transactions where:
+      // - A shift exists for that cashier and transaction time
+      // - AND that shift has been closed (end_time is NOT NULL OR status = 'CLOSED')
+      const closedShiftFilter = excludeClosedShifts ? `
+        AND NOT EXISTS (
+          SELECT 1 FROM shifts s
+          WHERE s.user_id = t.cashier_id
+            AND datetime(t.transaction_date) >= datetime(s.start_time)
+            AND (s.end_time IS NULL OR datetime(t.transaction_date) <= datetime(s.end_time))
+            AND (s.status = 'CLOSED' OR s.end_time IS NOT NULL)
+        )
+      ` : '';
+
+      if (excludeWithReturns) {
+        // Query that excludes transactions with associated returns
+        transactions = await db.getAllAsync<any>(
+          `SELECT
+            t.id,
+            t.transaction_number,
+            t.invoice_number,
+            t.customer_id,
+            t.customer_name,
+            c.name as customer_full_name,
+            t.subtotal,
+            t.tax_amount,
+            t.discount_amount,
+            t.total_amount,
+            t.payment_method,
+            t.status,
+            t.sc_pwd_id,
+            t.sc_pwd_name,
+            t.sc_pwd_type,
+            t.transaction_date,
+            t.created_at,
+            t.cashier_id,
+            u.full_name as cashier_name
+           FROM transactions t
+           LEFT JOIN customers c ON t.customer_id = c.id
+           LEFT JOIN users u ON t.cashier_id = u.id
+           WHERE t.status = 'COMPLETED'
+             AND DATE(t.transaction_date) >= DATE(?)
+             AND DATE(t.transaction_date) <= DATE(?)
+             ${cashierFilter}
+             ${closedShiftFilter}
+             AND NOT EXISTS (SELECT 1 FROM sales_returns sr WHERE sr.original_transaction_id = t.id)
+           ORDER BY t.transaction_date DESC`,
+          [startDate, endDate]
+        );
+      } else {
+        // Query without the returns filter
+        transactions = await db.getAllAsync<any>(
+          `SELECT
+            t.id,
+            t.transaction_number,
+            t.invoice_number,
+            t.customer_id,
+            t.customer_name,
+            c.name as customer_full_name,
+            t.subtotal,
+            t.tax_amount,
+            t.discount_amount,
+            t.total_amount,
+            t.payment_method,
+            t.status,
+            t.sc_pwd_id,
+            t.sc_pwd_name,
+            t.sc_pwd_type,
+            t.transaction_date,
+            t.created_at,
+            t.cashier_id,
+            u.full_name as cashier_name
+           FROM transactions t
+           LEFT JOIN customers c ON t.customer_id = c.id
+           LEFT JOIN users u ON t.cashier_id = u.id
+           WHERE t.status = 'COMPLETED'
+             AND DATE(t.transaction_date) >= DATE(?)
+             AND DATE(t.transaction_date) <= DATE(?)
+             ${cashierFilter}
+             ${closedShiftFilter}
+           ORDER BY t.transaction_date DESC`,
+          [startDate, endDate]
+        );
+      }
+
+      return transactions || [];
+    } catch (error) {
+      console.error('Error getting transactions for date range:', error);
+      return [];
+    }
+  }
+
+  // Get sales returns associated with a transaction
+  public async getSalesReturnsByTransaction(transactionId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const returns = await db.getAllAsync<any>(
+        `SELECT sr.*,
+                (SELECT COUNT(*) FROM sales_return_items WHERE sales_return_id = sr.id) as item_count
+         FROM sales_returns sr
+         WHERE sr.original_transaction_id = ?
+         ORDER BY sr.return_date DESC`,
+        [transactionId]
+      );
+      return returns || [];
+    } catch (error) {
+      console.error('Error getting sales returns by transaction:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Check if a transaction belongs to a closed shift
+   * Returns { isClosedShift: boolean, shiftId?: number, message?: string }
+   */
+  public async isTransactionInClosedShift(transactionId: number): Promise<{ isClosedShift: boolean; shiftId?: number; message?: string }> {
+    const db = this.getDatabase();
+    try {
+      // Get the transaction details
+      const transaction = await db.getFirstAsync<any>(
+        `SELECT id, transaction_date, cashier_id, status FROM transactions WHERE id = ?`,
+        [transactionId]
+      );
+
+      if (!transaction) {
+        return { isClosedShift: false, message: 'Transaction not found' };
+      }
+
+      // Find the shift that this transaction belongs to
+      // A transaction belongs to a shift if:
+      // 1. Same cashier (user_id = cashier_id)
+      // 2. transaction_date >= shift.start_time
+      // 3. If shift has end_time, transaction_date <= shift.end_time
+      const shift = await db.getFirstAsync<any>(
+        `SELECT id, user_id, start_time, end_time, status
+         FROM shifts
+         WHERE user_id = ?
+           AND datetime(?) >= datetime(start_time)
+           AND (end_time IS NULL OR datetime(?) <= datetime(end_time))
+         ORDER BY start_time DESC
+         LIMIT 1`,
+        [transaction.cashier_id, transaction.transaction_date, transaction.transaction_date]
+      );
+
+      if (!shift) {
+        // No shift found - transaction might be from before shift tracking was implemented
+        return { isClosedShift: false, message: 'No associated shift found' };
+      }
+
+      // Check if the shift is closed
+      if (shift.status === 'CLOSED' || shift.end_time !== null) {
+        return {
+          isClosedShift: true,
+          shiftId: shift.id,
+          message: 'Transaction belongs to a closed shift and cannot be voided'
+        };
+      }
+
+      return {
+        isClosedShift: false,
+        shiftId: shift.id,
+        message: 'Transaction belongs to an open shift'
+      };
+    } catch (error) {
+      console.error('Error checking if transaction is in closed shift:', error);
+      return { isClosedShift: false, message: 'Error checking shift status' };
+    }
+  }
+
+  // Get voided transactions for reporting
+  public async getVoidedTransactions(startDate: string, endDate: string): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const transactions = await db.getAllAsync<any>(
+        `SELECT
+          t.id,
+          t.transaction_number,
+          t.invoice_number,
+          t.customer_id,
+          t.customer_name,
+          c.name as customer_full_name,
+          t.subtotal,
+          t.tax_amount,
+          t.discount_amount,
+          t.total_amount,
+          t.payment_method,
+          t.status,
+          t.transaction_date,
+          t.void_date,
+          t.void_reason,
+          t.void_by,
+          u.full_name as cashier_name,
+          vu.full_name as void_by_name
+         FROM transactions t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         LEFT JOIN users u ON t.cashier_id = u.id
+         LEFT JOIN users vu ON t.void_by = vu.id
+         WHERE t.status = 'VOID'
+           AND DATE(t.void_date) >= DATE(?)
+           AND DATE(t.void_date) <= DATE(?)
+         ORDER BY t.void_date DESC`,
+        [startDate, endDate]
+      );
+      return transactions || [];
+    } catch (error) {
+      console.error('Error getting voided transactions:', error);
+      return [];
+    }
+  }
+
+  // Get voided transaction items
+  public async getVoidedTransactionItems(transactionId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      console.log('Getting voided transaction items for transaction ID:', transactionId);
+      const items = await db.getAllAsync<any>(
+        `SELECT
+          ti.id,
+          ti.transaction_id,
+          ti.product_id,
+          ti.product_code,
+          ti.product_name,
+          ti.quantity,
+          ti.unit_price,
+          ti.discount_amount,
+          ti.tax_amount,
+          ti.total_amount
+         FROM transaction_items ti
+         WHERE ti.transaction_id = ?`,
+        [transactionId]
+      );
+      console.log('Found voided transaction items:', items?.length || 0);
+      return items || [];
+    } catch (error) {
+      console.error('Error getting voided transaction items:', error);
+      return [];
+    }
+  }
+
+  // Get refund and exchange transactions for reporting
+  public async getRefundExchangeTransactions(startDate: string, endDate: string, type?: 'REFUND' | 'EXCHANGE' | 'ALL'): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      let typeFilter = '';
+      if (type === 'REFUND') {
+        typeFilter = "AND sr.refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT')";
+      } else if (type === 'EXCHANGE') {
+        typeFilter = "AND sr.refund_method = 'EXCHANGE'";
+      }
+
+      const returns = await db.getAllAsync<any>(
+        `SELECT
+          sr.id,
+          sr.return_number,
+          sr.original_transaction_id,
+          sr.original_invoice_number,
+          sr.customer_id,
+          sr.customer_name,
+          sr.return_date,
+          sr.total_amount,
+          sr.refund_method,
+          sr.reason,
+          sr.notes,
+          sr.processed_by,
+          sr.status,
+          u.full_name as processed_by_name,
+          (SELECT COUNT(*) FROM sales_return_items WHERE sales_return_id = sr.id) as item_count
+         FROM sales_returns sr
+         LEFT JOIN users u ON sr.processed_by = u.id
+         WHERE DATE(sr.return_date) >= DATE(?)
+           AND DATE(sr.return_date) <= DATE(?)
+           ${typeFilter}
+         ORDER BY sr.return_date DESC`,
+        [startDate, endDate]
+      );
+      return returns || [];
+    } catch (error) {
+      console.error('Error getting refund/exchange transactions:', error);
+      return [];
+    }
+  }
+
+  // Get refund/exchange items
+  public async getRefundExchangeItems(returnId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      console.log('Getting refund/exchange items for return ID:', returnId);
+      const items = await db.getAllAsync<any>(
+        `SELECT
+          sri.id,
+          sri.sales_return_id,
+          sri.product_id,
+          sri.product_code,
+          sri.product_name,
+          sri.quantity,
+          sri.unit_price,
+          sri.total_amount
+         FROM sales_return_items sri
+         WHERE sri.sales_return_id = ?`,
+        [returnId]
+      );
+      console.log('Found refund/exchange items:', items?.length || 0);
+      return items || [];
+    } catch (error) {
+      console.error('Error getting refund/exchange items:', error);
+      return [];
+    }
+  }
+
+  // Get exchange replacement items (new items customer received in exchange)
+  public async getExchangeReplacementItems(returnId: number): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      console.log('Getting exchange replacement items for return ID:', returnId);
+      // Replacement items are stored in inventory_movements with reference_type = 'EXCHANGE' and movement_type = 'OUT'
+      const items = await db.getAllAsync<any>(
+        `SELECT
+          im.id,
+          im.product_id,
+          im.product_code,
+          im.product_name,
+          im.quantity,
+          im.unit_cost as unit_price,
+          p.price as selling_price,
+          (im.quantity * p.price) as total_amount
+         FROM inventory_movements im
+         LEFT JOIN products p ON im.product_id = p.id
+         WHERE im.reference_id = ? AND im.reference_type = 'EXCHANGE' AND im.movement_type = 'OUT'`,
+        [returnId]
+      );
+      console.log('Found exchange replacement items:', items?.length || 0);
+      return items || [];
+    } catch (error) {
+      console.error('Error getting exchange replacement items:', error);
+      return [];
+    }
+  }
+
+  // Get void/refund/exchange summary for date range
+  public async getVoidRefundExchangeSummary(startDate: string, endDate: string): Promise<{
+    voidCount: number;
+    voidTotal: number;
+    refundCount: number;
+    refundTotal: number;
+    exchangeCount: number;
+    exchangeTotal: number;
+  }> {
+    const db = this.getDatabase();
+    try {
+      // Get void summary
+      const voidResult = await db.getFirstAsync<{ count: number; total: number }>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+         FROM transactions
+         WHERE status = 'VOID'
+           AND DATE(void_date) >= DATE(?)
+           AND DATE(void_date) <= DATE(?)`,
+        [startDate, endDate]
+      );
+
+      // Get refund summary (excluding exchange)
+      const refundResult = await db.getFirstAsync<{ count: number; total: number }>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+         FROM sales_returns
+         WHERE refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT')
+           AND DATE(return_date) >= DATE(?)
+           AND DATE(return_date) <= DATE(?)`,
+        [startDate, endDate]
+      );
+
+      // Get exchange summary
+      const exchangeResult = await db.getFirstAsync<{ count: number; total: number }>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+         FROM sales_returns
+         WHERE refund_method = 'EXCHANGE'
+           AND DATE(return_date) >= DATE(?)
+           AND DATE(return_date) <= DATE(?)`,
+        [startDate, endDate]
+      );
+
+      return {
+        voidCount: voidResult?.count || 0,
+        voidTotal: voidResult?.total || 0,
+        refundCount: refundResult?.count || 0,
+        refundTotal: refundResult?.total || 0,
+        exchangeCount: exchangeResult?.count || 0,
+        exchangeTotal: exchangeResult?.total || 0,
+      };
+    } catch (error) {
+      console.error('Error getting void/refund/exchange summary:', error);
+      return {
+        voidCount: 0,
+        voidTotal: 0,
+        refundCount: 0,
+        refundTotal: 0,
+        exchangeCount: 0,
+        exchangeTotal: 0,
+      };
+    }
+  }
+
   // Process a complete sales return with all tracking
   public async processSalesReturn(returnData: {
     original_transaction_id?: number;
@@ -4978,19 +6222,21 @@ export class DatabaseService {
       (sum, item) => sum + (item.quantity * item.unit_price), 0
     );
 
-    // Create return record
+    // Create return record with Philippine date/time
+    const phDateTime = getPhilippineDateTimeString();
     const result = await db.runAsync(
       `INSERT INTO sales_returns (
         return_number, original_transaction_id, original_invoice_number,
         customer_id, customer_name, return_date, total_amount, refund_method,
         reason, notes, processed_by, status
-      ) VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'COMPLETED')`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
       [
         returnNumber,
         returnData.original_transaction_id || null,
         returnData.original_transaction_number || null,
         returnData.customer_id || null,
         returnData.customer_name || 'Walk-in',
+        phDateTime,
         totalAmount,
         returnData.refund_method,
         returnData.items.map(i => i.reason).join('; '),
@@ -5053,11 +6299,12 @@ export class DatabaseService {
       });
     }
 
-    // Create eJournal entry
+    // Create eJournal entry with Philippine time
+    const phDateTimeEJ = getPhilippineDateTimeString();
     await db.runAsync(
-      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-       VALUES ('RETURN', ?, ?, ?, ?)`,
-      [returnNumber, `Sales return - ${returnData.refund_method}`, -totalAmount, returnData.created_by]
+      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+       VALUES ('RETURN', ?, ?, ?, ?, ?, ?)`,
+      [returnNumber, `Sales return - ${returnData.refund_method}`, -totalAmount, returnData.created_by, phDateTimeEJ, phDateTimeEJ]
     );
 
     console.log(`Sales return processed: ${returnNumber}, Total: ${totalAmount}`);
@@ -5208,11 +6455,12 @@ export class DatabaseService {
       );
     }
 
-    // Create eJournal entry
+    // Create eJournal entry with Philippine time
+    const phDateTimePR = getPhilippineDateTimeString();
     await db.runAsync(
-      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-       VALUES ('PURCHASE_RETURN', ?, ?, ?, ?)`,
-      [returnNumber, `Purchase return to ${returnData.supplier_name}`, -totalAmount, returnData.created_by]
+      `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+       VALUES ('PURCHASE_RETURN', ?, ?, ?, ?, ?, ?)`,
+      [returnNumber, `Purchase return to ${returnData.supplier_name}`, -totalAmount, returnData.created_by, phDateTimePR, phDateTimePR]
     );
 
     console.log(`Purchase return processed: ${returnNumber}, Total: ${totalAmount}`);
@@ -5246,8 +6494,11 @@ export class DatabaseService {
   }> {
     const db = this.getDatabase();
 
-    let whereClause = '1=1';
-    const params: any[] = [];
+    // eSales Journal: only sales-related entry types
+    const SALES_ENTRY_TYPES = ['SALE', 'VOID', 'REFUND', 'RETURN', 'PURCHASE_RETURN', 'PAYMENT'];
+
+    let whereClause = `1=1 AND e.entry_type IN (${SALES_ENTRY_TYPES.map(() => '?').join(',')})`;
+    const params: any[] = [...SALES_ENTRY_TYPES];
 
     if (options.startDate) {
       whereClause += ' AND DATE(e.timestamp) >= ?';
@@ -5322,6 +6573,9 @@ export class DatabaseService {
   }> {
     const db = this.getDatabase();
 
+    // eSales Journal: only sales-related entry types
+    const salesFilter = `AND entry_type IN ('SALE', 'VOID', 'REFUND', 'RETURN', 'PURCHASE_RETURN', 'PAYMENT')`;
+
     const summary = await db.getFirstAsync<{
       totalEntries: number;
       totalSales: number;
@@ -5338,7 +6592,7 @@ export class DatabaseService {
         COALESCE(SUM(CASE WHEN entry_type IN ('RETURN', 'PURCHASE_RETURN') THEN ABS(amount) ELSE 0 END), 0) as totalReturns,
         COALESCE(SUM(CASE WHEN entry_type = 'PAYMENT' THEN amount ELSE 0 END), 0) as totalPayments
       FROM ejournal
-      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ?`,
+      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ? ${salesFilter}`,
       [startDate, endDate]
     );
 
@@ -5348,7 +6602,7 @@ export class DatabaseService {
         COUNT(*) as count,
         COALESCE(SUM(ABS(amount)), 0) as total_amount
       FROM ejournal
-      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ?
+      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ? ${salesFilter}
       GROUP BY entry_type
       ORDER BY count DESC`,
       [startDate, endDate]
@@ -5379,23 +6633,27 @@ export class DatabaseService {
   }): Promise<number> {
     const db = this.getDatabase();
     try {
+      // Use Philippine timezone
+      const phDateTime = getPhilippineDateTimeString();
+
       const result = await db.runAsync(
-        `INSERT INTO cash_movements (movement_type, amount, description, reference_number, approved_by, cashier_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cash_movements (movement_type, amount, description, reference_number, approved_by, cashier_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           movementData.movement_type,
           movementData.amount,
           movementData.description,
           movementData.reference_number || null,
           movementData.approved_by || null,
-          movementData.cashier_id
+          movementData.cashier_id,
+          phDateTime
         ]
       );
 
-      // Add eJournal entry
+      // Add eJournal entry with Philippine time
       await db.runAsync(
-        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           'SYSTEM',
           movementData.reference_number || `CASH-${result.lastInsertRowId}`,
@@ -5403,7 +6661,9 @@ export class DatabaseService {
           movementData.movement_type === 'PETTY_CASH' || movementData.movement_type === 'CASH_OUT' || movementData.movement_type === 'CASH_REFUND'
             ? -movementData.amount
             : movementData.amount,
-          movementData.cashier_id
+          movementData.cashier_id,
+          phDateTime,
+          phDateTime
         ]
       );
 
@@ -5446,7 +6706,7 @@ export class DatabaseService {
     }
   }
 
-  public async getCashDrawerBalance(date?: string, shiftStartTime?: string): Promise<{
+  public async getCashDrawerBalance(date?: string, shiftStartTime?: string, cashierId?: number): Promise<{
     opening_fund: number;
     cash_in: number;
     cash_out: number;
@@ -5468,6 +6728,9 @@ export class DatabaseService {
         dateFilter = `AND DATE(created_at) = DATE('now')`;
       }
 
+      // Filter by cashier if provided
+      const cashierFilter = cashierId ? `AND cashier_id = ${cashierId}` : '';
+
       const result = await db.getFirstAsync<any>(`
         SELECT
           COALESCE(SUM(CASE WHEN movement_type = 'OPENING_FUND' THEN amount ELSE 0 END), 0) as opening_fund,
@@ -5476,7 +6739,7 @@ export class DatabaseService {
           COALESCE(SUM(CASE WHEN movement_type = 'PETTY_CASH' THEN amount ELSE 0 END), 0) as petty_cash,
           COALESCE(SUM(CASE WHEN movement_type = 'CASH_REFUND' THEN amount ELSE 0 END), 0) as cash_refunds
         FROM cash_movements
-        WHERE 1=1 ${dateFilter}
+        WHERE 1=1 ${dateFilter} ${cashierFilter}
       `);
 
       const balance = result || {
@@ -5547,34 +6810,38 @@ export class DatabaseService {
         }
 
         // If this was a credit transaction, reverse AR entry
+        // Set to 'PAID' with zero balance since transaction is voided (CHECK constraint doesn't allow 'VOID')
         if (transaction.payment_method === 'CHARGE_INVOICE') {
           await db.runAsync(
             `UPDATE accounts_receivable
-             SET status = 'VOID', balance_amount = 0, updated_at = CURRENT_TIMESTAMP
+             SET status = 'PAID', balance_amount = 0, paid_amount = original_amount, updated_at = CURRENT_TIMESTAMP
              WHERE transaction_id = ?`,
             [voidData.transaction_id]
           );
         }
 
-        // Update transaction status
+        // Update transaction status with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
           `UPDATE transactions
-           SET status = 'VOID', void_reason = ?, void_by = ?, void_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           SET status = 'VOID', void_reason = ?, void_by = ?, void_date = ?, updated_at = ?
            WHERE id = ?`,
-          [voidData.void_reason, voidData.void_by, voidData.transaction_id]
+          [voidData.void_reason, voidData.void_by, phDateTime, phDateTime, voidData.transaction_id]
         );
 
-        // Add eJournal entry
+        // Add eJournal entry with Philippine time
         await db.runAsync(
-          `INSERT INTO ejournal (transaction_id, entry_type, reference_number, description, amount, cashier_id)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO ejournal (transaction_id, entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             voidData.transaction_id,
             'VOID',
             transaction.invoice_number,
             `Transaction voided: ${voidData.void_reason}`,
             -transaction.total_amount,
-            voidData.void_by
+            voidData.void_by,
+            phDateTime,
+            phDateTime
           ]
         );
 
@@ -5864,7 +7131,7 @@ export class DatabaseService {
         throw new Error('User already has an open shift. Please close the current shift first.');
       }
 
-      const now = new Date().toISOString();
+      const now = getPhilippineDateTimeString();
       const result = await db.runAsync(
         `INSERT INTO shifts (user_id, start_time, beginning_cash, status, created_at)
          VALUES (?, ?, ?, 'OPEN', ?)`,
@@ -5884,7 +7151,7 @@ export class DatabaseService {
   public async endShift(shiftId: number, endingCash: number, zReadingId?: number): Promise<void> {
     const db = this.getDatabase();
     try {
-      const now = new Date().toISOString();
+      const now = getPhilippineDateTimeString();
       await db.runAsync(
         `UPDATE shifts
          SET end_time = ?, ending_cash = ?, status = 'CLOSED', z_reading_id = ?
@@ -5906,7 +7173,7 @@ export class DatabaseService {
   public async closeAllOpenShifts(userId: number, endingCash: number): Promise<number> {
     const db = this.getDatabase();
     try {
-      const now = new Date().toISOString();
+      const now = getPhilippineDateTimeString();
 
       // Get all open shifts for this user
       const openShifts = await db.getAllAsync<any>(
@@ -5998,22 +7265,34 @@ export class DatabaseService {
     discount_amount: number;
     void_amount: number;
     void_count: number;
+    exchange_amount: number;
+    exchange_count: number;
     refund_amount: number;
+    refund_count: number;
     net_sales: number;
     cash_sales: number;
     card_sales: number;
     check_sales: number;
     credit_sales: number;
-    gcash_sales: number;
-    maya_sales: number;
+    online_sales: number;
     beginning_cash: number;
+    opening_fund: number;
+    cash_in: number;
+    cash_out: number;
     cash_fund: number;
     petty_cash: number;
+    cash_refunds: number;
+    customer_payments_cash: number;
+    customer_payments_check: number;
+    customer_payments_card: number;
+    customer_payments_online: number;
+    customer_payments_bank_transfer: number;
+    customer_payments_total: number;
     expected_cash: number;
   }> {
     const db = this.getDatabase();
-    const targetDate = date || new Date().toISOString().split('T')[0];
-    const currentTime = new Date().toLocaleTimeString('en-PH', { hour12: false });
+    const targetDate = date || getPhilippineDateString();
+    const currentTime = getPhilippineTimeString();
 
     // If shiftStartTime provided, filter by shift; otherwise filter by date
     const useShiftFilter = !!shiftStartTime;
@@ -6080,8 +7359,7 @@ export class DatabaseService {
           COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CARD' THEN total_amount ELSE 0 END), 0) as card_sales,
           COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CHECK' THEN total_amount ELSE 0 END), 0) as check_sales,
           COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND (payment_method = 'CHARGE_INVOICE' OR payment_method = 'CREDIT') THEN total_amount ELSE 0 END), 0) as credit_sales,
-          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'GCASH' THEN total_amount ELSE 0 END), 0) as gcash_sales,
-          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'MAYA' THEN total_amount ELSE 0 END), 0) as maya_sales
+          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'ONLINE' THEN total_amount ELSE 0 END), 0) as online_sales
         FROM transactions
         WHERE ${dateFilter}
       `);
@@ -6109,35 +7387,90 @@ export class DatabaseService {
       const vatableSales = Math.round((vatableTotal / 1.12) * 100) / 100; // VAT-exclusive amount
       const vatAmount = Math.round((vatableTotal - vatableSales) * 100) / 100; // VAT amount (12%)
 
-      // Get refund amount and count (filter by shift if provided, and by cashier)
+      // Get refund and exchange amounts (filter by shift if provided, and by cashier)
       const cashierRefundFilter = cashierId ? `AND processed_by = ${cashierId}` : '';
       const refundDateFilter = useShiftFilter
         ? `datetime(return_date) >= datetime('${normalizedShiftTime}') ${cashierRefundFilter}`
         : `DATE(return_date) = '${targetDate}' ${cashierRefundFilter}`;
 
+      // Get refunds (CASH, CREDIT, STORE_CREDIT) - excludes exchanges
       const refundSummary = await db.getFirstAsync<any>(`
         SELECT
           COALESCE(SUM(total_amount), 0) as refund_amount,
           COUNT(*) as refund_count
         FROM sales_returns
-        WHERE ${refundDateFilter} AND status = 'COMPLETED'
+        WHERE ${refundDateFilter} AND status = 'COMPLETED' AND refund_method != 'EXCHANGE'
       `);
 
-      // Get cash movements (filter by shift if provided)
-      const cashMovements = await this.getCashDrawerBalance(useShiftFilter ? undefined : targetDate, shiftStartTime);
+      // Get exchanges separately
+      const exchangeSummary = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(total_amount), 0) as exchange_amount,
+          COUNT(*) as exchange_count
+        FROM sales_returns
+        WHERE ${refundDateFilter} AND status = 'COMPLETED' AND refund_method = 'EXCHANGE'
+      `);
+
+      // Get cash movements (filter by shift if provided, and by cashier)
+      const cashMovements = await this.getCashDrawerBalance(useShiftFilter ? undefined : targetDate, shiftStartTime, cashierId);
+
+      // Get customer payments (AR collections) - filter by shift if provided, and by cashier
+      // Note: customer_payments table uses 'amount_paid' and 'received_by' columns
+      // IMPORTANT: Always filter by payment_date to ensure we only get today's payments
+      const cashierPaymentFilter = cashierId ? `AND received_by = ${cashierId}` : '';
+      const paymentDateFilter = useShiftFilter
+        ? `DATE(payment_date) = '${targetDate}' AND datetime(created_at) >= datetime('${normalizedShiftTime}') ${cashierPaymentFilter}`
+        : `DATE(payment_date) = '${targetDate}' ${cashierPaymentFilter}`;
+
+      console.log('[getXReadingData] Customer payments filter:', paymentDateFilter);
+      console.log('[getXReadingData] targetDate:', targetDate, 'normalizedShiftTime:', normalizedShiftTime);
+
+      // Debug: Log all customer payments for today
+      const allPaymentsToday = await db.getAllAsync<any>(`
+        SELECT id, payment_number, payment_method, amount_paid, received_by, payment_date, created_at
+        FROM customer_payments
+        WHERE DATE(payment_date) = '${targetDate}'
+        ORDER BY created_at DESC
+      `);
+      console.log('[getXReadingData] All payments today:', JSON.stringify(allPaymentsToday));
+
+      const customerPaymentsSummary = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN amount_paid ELSE 0 END), 0) as cash_payments,
+          COALESCE(SUM(CASE WHEN payment_method = 'CHECK' THEN amount_paid ELSE 0 END), 0) as check_payments,
+          COALESCE(SUM(CASE WHEN payment_method = 'CARD' THEN amount_paid ELSE 0 END), 0) as card_payments,
+          COALESCE(SUM(CASE WHEN payment_method = 'ONLINE' OR payment_method = 'GCASH' THEN amount_paid ELSE 0 END), 0) as online_payments,
+          COALESCE(SUM(CASE WHEN payment_method = 'BANK_TRANSFER' THEN amount_paid ELSE 0 END), 0) as bank_transfer_payments,
+          COALESCE(SUM(amount_paid), 0) as total_payments,
+          COUNT(*) as payment_count
+        FROM customer_payments
+        WHERE ${paymentDateFilter}
+      `);
+
+      console.log('[getXReadingData] Customer payments result:', JSON.stringify(customerPaymentsSummary));
+
+      const customerPaymentsCash = customerPaymentsSummary?.cash_payments || 0;
+      const customerPaymentsCheck = customerPaymentsSummary?.check_payments || 0;
+      const customerPaymentsCard = customerPaymentsSummary?.card_payments || 0;
+      const customerPaymentsOnline = customerPaymentsSummary?.online_payments || 0;
+      const customerPaymentsBankTransfer = customerPaymentsSummary?.bank_transfer_payments || 0;
+      const customerPaymentsTotal = customerPaymentsSummary?.total_payments || 0;
 
       const grossSales = salesSummary?.gross_sales || 0;
       const discountAmount = salesSummary?.discount_amount || 0;
       const refundAmount = refundSummary?.refund_amount || 0;
+      const refundCount = refundSummary?.refund_count || 0;
+      const exchangeAmount = exchangeSummary?.exchange_amount || 0;
+      const exchangeCount = exchangeSummary?.exchange_count || 0;
       const netSales = grossSales - discountAmount - refundAmount;
 
       const cashSales = salesSummary?.cash_sales || 0;
 
-      // Expected Cash = Beginning Cash + Cash Fund + Cash Sales - Cash Out - Petty Cash - Cash Refunds
+      // Expected Cash = Beginning Cash + Cash Fund + Cash Sales + AR Collections (Cash) - Cash Out - Petty Cash - Cash Refunds
       // Where Cash Fund = opening_fund + cash_in
       // NOTE: Cash refunds are already included in cashMovements.net_balance (which deducts cash_refunds)
       // Do NOT subtract refundAmount here as it includes ALL refunds (CASH, CREDIT, STORE_CREDIT, etc.)
-      const expectedCash = beginningCash + cashMovements.net_balance + cashSales;
+      const expectedCash = beginningCash + cashMovements.net_balance + cashSales + customerPaymentsCash;
 
       const result = {
         date: targetDate,
@@ -6152,19 +7485,33 @@ export class DatabaseService {
         discount_amount: discountAmount,
         void_amount: salesSummary?.void_amount || 0,
         void_count: salesSummary?.void_count || 0,
+        exchange_amount: exchangeAmount,
+        exchange_count: exchangeCount,
         refund_amount: refundAmount,
+        refund_count: refundCount,
         net_sales: netSales,
         cash_sales: cashSales,
         card_sales: salesSummary?.card_sales || 0,
         check_sales: salesSummary?.check_sales || 0,
         credit_sales: salesSummary?.credit_sales || 0,
-        gcash_sales: salesSummary?.gcash_sales || 0,
-        maya_sales: salesSummary?.maya_sales || 0,
+        online_sales: salesSummary?.online_sales || 0,
         beginning_cash: beginningCash,
-        cash_fund: cashMovements.opening_fund + cashMovements.cash_in,
+        opening_fund: cashMovements.opening_fund,
+        cash_in: cashMovements.cash_in,
+        cash_out: cashMovements.cash_out,
+        cash_fund: cashMovements.opening_fund + cashMovements.cash_in,  // For backward compatibility
         petty_cash: cashMovements.petty_cash,
+        cash_refunds: cashMovements.cash_refunds,
+        customer_payments_cash: customerPaymentsCash,
+        customer_payments_check: customerPaymentsCheck,
+        customer_payments_card: customerPaymentsCard,
+        customer_payments_online: customerPaymentsOnline,
+        customer_payments_bank_transfer: customerPaymentsBankTransfer,
+        customer_payments_total: customerPaymentsTotal,
         expected_cash: expectedCash
       };
+
+      console.log('[getXReadingData] Result - AR Cash:', customerPaymentsCash, 'AR Total:', customerPaymentsTotal, 'Expected Cash:', expectedCash);
 
       return result;
     } catch (error) {
@@ -6182,44 +7529,86 @@ export class DatabaseService {
         discount_amount: 0,
         void_amount: 0,
         void_count: 0,
+        exchange_amount: 0,
+        exchange_count: 0,
         refund_amount: 0,
+        refund_count: 0,
         net_sales: 0,
         cash_sales: 0,
         card_sales: 0,
         check_sales: 0,
         credit_sales: 0,
-        gcash_sales: 0,
-        maya_sales: 0,
+        online_sales: 0,
         beginning_cash: 0,
+        opening_fund: 0,
+        cash_in: 0,
+        cash_out: 0,
         cash_fund: 0,
         petty_cash: 0,
+        cash_refunds: 0,
+        customer_payments_cash: 0,
+        customer_payments_check: 0,
+        customer_payments_card: 0,
+        customer_payments_online: 0,
+        customer_payments_bank_transfer: 0,
+        customer_payments_total: 0,
         expected_cash: 0
       };
     }
   }
 
-  public async saveXReading(cashierId: number): Promise<number> {
+  public async saveXReading(cashierId: number, targetDate?: string): Promise<number> {
     const db = this.getDatabase();
     try {
-      // Get current shift to filter by shift start time
-      let shiftStartTime: string | undefined;
-      const currentShift = await this.getCurrentShift(cashierId);
-      if (currentShift) {
-        shiftStartTime = currentShift.start_time;
+      let xReadingData;
+      if (targetDate) {
+        // EOD call: find the cashier's first shift of the day so we use the same
+        // shift-based code path as manual X-Reading (correct beginning_cash, cash movements, etc.)
+        // datetime >= firstShiftStart captures all transactions across all shifts for the day
+        const firstShift = await db.getFirstAsync<{ start_time: string }>(
+          `SELECT start_time FROM shifts WHERE DATE(start_time) = ? AND user_id = ? ORDER BY start_time ASC LIMIT 1`,
+          [targetDate, cashierId]
+        );
+        if (firstShift?.start_time) {
+          xReadingData = await this.getXReadingData(targetDate, firstShift.start_time, cashierId);
+        } else {
+          // Fallback if no shift record found: use date-based scope
+          xReadingData = await this.getXReadingData(targetDate, undefined, cashierId);
+        }
+      } else {
+        // Manual call: use current shift scope
+        let shiftStartTime: string | undefined;
+        const currentShift = await this.getCurrentShift(cashierId);
+        if (currentShift) {
+          shiftStartTime = currentShift.start_time;
+        }
+        xReadingData = await this.getXReadingData(undefined, shiftStartTime);
       }
 
-      const xReadingData = await this.getXReadingData(undefined, shiftStartTime);
+      // Get last invoice number for the date
+      const dateForInvoice = targetDate || xReadingData.date;
+      const lastInvoiceRow = await db.getFirstAsync<{ invoice_number: string }>(
+        `SELECT invoice_number FROM transactions WHERE DATE(transaction_date) = ? AND status = 'COMPLETED' ORDER BY id DESC LIMIT 1`,
+        [dateForInvoice]
+      );
+      const lastInvoiceNumber = lastInvoiceRow?.invoice_number || '';
 
       const result = await db.runAsync(
         `INSERT INTO x_readings (
           date, time, current_invoice_number, gross_sales, vat_sales, vat_amount,
           vat_exempt_sales, zero_rated_sales, discount_amount, void_amount, refund_amount,
-          net_sales, transaction_count, cashier_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          net_sales, transaction_count, cashier_id,
+          cash_sales, card_sales, check_sales, credit_sales, online_sales,
+          void_count, exchange_count, exchange_amount, refund_count,
+          beginning_cash, opening_fund, cash_in, cash_out, cash_fund, petty_cash, cash_refunds,
+          customer_payments_cash, customer_payments_check, customer_payments_card,
+          customer_payments_online, customer_payments_bank_transfer, customer_payments_total,
+          expected_cash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           xReadingData.date,
           xReadingData.time,
-          '', // Will be filled with last invoice
+          lastInvoiceNumber,
           xReadingData.gross_sales,
           xReadingData.vat_sales,
           xReadingData.vat_amount,
@@ -6230,15 +7619,39 @@ export class DatabaseService {
           xReadingData.refund_amount,
           xReadingData.net_sales,
           xReadingData.transaction_count,
-          cashierId
+          cashierId,
+          xReadingData.cash_sales,
+          xReadingData.card_sales,
+          xReadingData.check_sales,
+          xReadingData.credit_sales,
+          xReadingData.online_sales,
+          xReadingData.void_count,
+          xReadingData.exchange_count,
+          xReadingData.exchange_amount,
+          xReadingData.refund_count,
+          xReadingData.beginning_cash,
+          xReadingData.opening_fund,
+          xReadingData.cash_in,
+          xReadingData.cash_out,
+          xReadingData.cash_fund,
+          xReadingData.petty_cash,
+          xReadingData.cash_refunds,
+          xReadingData.customer_payments_cash,
+          xReadingData.customer_payments_check,
+          xReadingData.customer_payments_card,
+          xReadingData.customer_payments_online,
+          xReadingData.customer_payments_bank_transfer,
+          xReadingData.customer_payments_total,
+          xReadingData.expected_cash,
         ]
       );
 
-      // Add eJournal entry
+      // Add eJournal entry with Philippine time
+      const phDateTime = getPhilippineDateTimeString();
       await db.runAsync(
-        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id)
-         VALUES (?, ?, ?, ?, ?)`,
-        ['X_READING', `XREAD-${result.lastInsertRowId}`, 'X-Reading generated', xReadingData.net_sales, cashierId]
+        `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ['X_READING', `XREAD-${result.lastInsertRowId}`, targetDate ? 'X-Reading auto-generated with Z-Reading' : 'X-Reading generated', xReadingData.net_sales, cashierId, phDateTime, phDateTime]
       );
 
       console.log(`X-Reading saved: ID ${result.lastInsertRowId}`);
@@ -6310,7 +7723,24 @@ export class DatabaseService {
         errors.push(`sales_returns: ${e}`);
       }
 
-      // 2. Transaction Items and Transactions
+      // 2. Customer Payments and Accounts Receivable (must delete before transactions due to FK)
+      try {
+        const customerPayments = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM customer_payments');
+        await db.runAsync('DELETE FROM customer_payments');
+        deletedCounts['customer_payments'] = customerPayments?.count || 0;
+      } catch (e) {
+        errors.push(`customer_payments: ${e}`);
+      }
+
+      try {
+        const accountsReceivable = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM accounts_receivable');
+        await db.runAsync('DELETE FROM accounts_receivable');
+        deletedCounts['accounts_receivable'] = accountsReceivable?.count || 0;
+      } catch (e) {
+        errors.push(`accounts_receivable: ${e}`);
+      }
+
+      // 3. Transaction Items and Transactions
       try {
         const transactionItems = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM transaction_items');
         await db.runAsync('DELETE FROM transaction_items');
@@ -6327,7 +7757,7 @@ export class DatabaseService {
         errors.push(`transactions: ${e}`);
       }
 
-      // 3. Purchase Returns, Details, and Purchases
+      // 4. Purchase Details and Purchases
       try {
         const purchaseDetails = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM purchase_details');
         await db.runAsync('DELETE FROM purchase_details');
@@ -6344,7 +7774,7 @@ export class DatabaseService {
         errors.push(`purchases: ${e}`);
       }
 
-      // 4. Supplier Payments and Accounts Payable
+      // 5. Supplier Payments and Accounts Payable
       try {
         const supplierPayments = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM supplier_payments');
         await db.runAsync('DELETE FROM supplier_payments');
@@ -6359,23 +7789,6 @@ export class DatabaseService {
         deletedCounts['accounts_payable'] = accountsPayable?.count || 0;
       } catch (e) {
         errors.push(`accounts_payable: ${e}`);
-      }
-
-      // 5. Customer Payments and Accounts Receivable
-      try {
-        const customerPayments = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM customer_payments');
-        await db.runAsync('DELETE FROM customer_payments');
-        deletedCounts['customer_payments'] = customerPayments?.count || 0;
-      } catch (e) {
-        errors.push(`customer_payments: ${e}`);
-      }
-
-      try {
-        const accountsReceivable = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM accounts_receivable');
-        await db.runAsync('DELETE FROM accounts_receivable');
-        deletedCounts['accounts_receivable'] = accountsReceivable?.count || 0;
-      } catch (e) {
-        errors.push(`accounts_receivable: ${e}`);
       }
 
       // 6. Inventory Movements (Item Ledger)
@@ -6517,6 +7930,88 @@ export class DatabaseService {
       console.error('Error during transactional data reset:', error);
       throw error;
     }
+  }
+
+  /**
+   * Reset all transactional data AND set beginning inventory (100 units) for all active products
+   * Creates inventory movement records with reference_type 'BEGINNING_BALANCE'
+   */
+  public async resetTransactionalDataWithBeginningInventory(userId: number): Promise<{
+    success: boolean;
+    deletedCounts: Record<string, number>;
+    productsInitialized: number;
+    errors: string[];
+  }> {
+    // Step 1: Call existing resetTransactionalData first
+    const resetResult = await this.resetTransactionalData();
+
+    const db = this.getDatabase();
+    const errors = [...resetResult.errors];
+    let productsInitialized = 0;
+
+    try {
+      // Step 2: Get all active products
+      const products = await db.getAllAsync<{id: number, code: string, name: string, cost: number}>(
+        'SELECT id, code, name, cost FROM products WHERE is_active = 1'
+      );
+
+      const phDateTime = getPhilippineDateTimeString();
+      const BEGINNING_QUANTITY = 100;
+
+      console.log(`Setting beginning inventory for ${products.length} active products...`);
+
+      // Step 3: For each product, set stock to 100 and create inventory movement
+      for (const product of products) {
+        try {
+          // Update stock quantity to 100
+          await db.runAsync(
+            'UPDATE products SET stock_quantity = ? WHERE id = ?',
+            [BEGINNING_QUANTITY, product.id]
+          );
+
+          // Create beginning balance inventory movement
+          await db.runAsync(
+            `INSERT INTO inventory_movements (
+              product_id, product_code, product_name, movement_type, quantity,
+              quantity_before, quantity_after, unit_cost, total_value,
+              reference_type, reference_number, notes, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              product.id,
+              product.code,
+              product.name,
+              'ADJUSTMENT',
+              BEGINNING_QUANTITY,
+              0, // quantity_before
+              BEGINNING_QUANTITY, // quantity_after
+              product.cost || 0,
+              BEGINNING_QUANTITY * (product.cost || 0),
+              'BEGINNING_BALANCE',
+              null, // reference_number
+              'Beginning balance after data reset',
+              userId,
+              phDateTime
+            ]
+          );
+
+          productsInitialized++;
+        } catch (e) {
+          errors.push(`Product ${product.code}: ${e}`);
+        }
+      }
+
+      console.log(`Beginning inventory set for ${productsInitialized} products`);
+
+    } catch (error) {
+      errors.push(`Beginning inventory setup: ${error}`);
+    }
+
+    return {
+      success: errors.length === 0,
+      deletedCounts: resetResult.deletedCounts,
+      productsInitialized,
+      errors
+    };
   }
 
   /**
@@ -6960,7 +8455,7 @@ export class DatabaseService {
     // Step 7: Re-enable protection settings
     try {
       console.log('[DatabaseService] Step 7: Re-enabling protection settings...');
-      await db.execAsync('PRAGMA synchronous = NORMAL');
+      await db.execAsync('PRAGMA synchronous = FULL');
       await db.execAsync('PRAGMA foreign_keys = ON');
       await db.execAsync('PRAGMA busy_timeout = 5000');
       repairSteps.push({ step: 'Enable Protection', success: true, message: 'Protection settings enabled' });
@@ -7018,7 +8513,7 @@ export class DatabaseService {
       await db.execAsync('PRAGMA journal_mode = WAL');
       await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
       await db.execAsync('REINDEX');
-      await db.execAsync('PRAGMA synchronous = NORMAL');
+      await db.execAsync('PRAGMA synchronous = FULL');
 
       // Quick integrity check
       const result = await db.getFirstAsync<{ integrity_check: string }>('PRAGMA quick_check');
@@ -7032,6 +8527,93 @@ export class DatabaseService {
       return {
         success: false,
         message: `Quick repair failed: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * Fix common database issues (synchronous mode, WAL mode, etc.)
+   * Returns list of fixes applied
+   */
+  public async fixDatabaseIssues(): Promise<{
+    success: boolean;
+    fixesApplied: string[];
+    message: string;
+  }> {
+    const db = this.getDatabase();
+    const fixesApplied: string[] = [];
+
+    try {
+      console.log('[DatabaseService] ========== STARTING DATABASE FIX ==========');
+
+      // Check current state BEFORE fixes
+      const beforeSync = await db.getFirstAsync<{ synchronous: number }>('PRAGMA synchronous');
+      const beforeWal = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode');
+      console.log('[DatabaseService] BEFORE - synchronous:', beforeSync?.synchronous, 'journal_mode:', beforeWal?.journal_mode);
+
+      // Fix 1: Ensure WAL mode is enabled
+      console.log('[DatabaseService] Setting WAL mode...');
+      await db.execAsync('PRAGMA journal_mode = WAL;');
+      const afterWal = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode');
+      console.log('[DatabaseService] After WAL fix - journal_mode:', afterWal?.journal_mode);
+      if (beforeWal?.journal_mode?.toLowerCase() !== 'wal') {
+        fixesApplied.push('Enabled WAL mode for crash recovery');
+      }
+
+      // Fix 2: Set synchronous mode to FULL for maximum durability
+      console.log('[DatabaseService] Setting synchronous = FULL...');
+      await db.execAsync('PRAGMA synchronous = FULL;');
+      const afterSync = await db.getFirstAsync<{ synchronous: number }>('PRAGMA synchronous');
+      console.log('[DatabaseService] After FULL fix - synchronous:', afterSync?.synchronous);
+      if (beforeSync?.synchronous !== 2) {
+        fixesApplied.push('Set synchronous mode to FULL for data safety');
+      }
+
+      // Fix 3: Enable foreign keys
+      console.log('[DatabaseService] Enabling foreign keys...');
+      await db.execAsync('PRAGMA foreign_keys = ON;');
+      fixesApplied.push('Enabled foreign key constraints');
+
+      // Fix 4: Set busy timeout
+      console.log('[DatabaseService] Setting busy timeout...');
+      await db.execAsync('PRAGMA busy_timeout = 5000;');
+
+      // Fix 5: Checkpoint WAL to ensure data is flushed to disk
+      console.log('[DatabaseService] Checkpointing WAL...');
+      await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+      fixesApplied.push('Flushed pending changes to disk');
+
+      // Final verification
+      const verifySync = await db.getFirstAsync<{ synchronous: number }>('PRAGMA synchronous');
+      const verifyWal = await db.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode');
+
+      console.log('[DatabaseService] FINAL STATE - synchronous:', verifySync?.synchronous, 'journal_mode:', verifyWal?.journal_mode);
+
+      const syncFixed = verifySync?.synchronous === 2;
+      const walFixed = verifyWal?.journal_mode?.toLowerCase() === 'wal';
+
+      console.log('[DatabaseService] syncFixed:', syncFixed, 'walFixed:', walFixed);
+      console.log('[DatabaseService] ========== DATABASE FIX COMPLETE ==========');
+
+      if (!syncFixed) {
+        return {
+          success: false,
+          fixesApplied,
+          message: `Synchronous mode is still ${verifySync?.synchronous === 1 ? 'NORMAL' : 'OFF'}. This may be a device limitation. Please restart the app.`,
+        };
+      }
+
+      return {
+        success: syncFixed && walFixed,
+        fixesApplied,
+        message: `Successfully applied ${fixesApplied.length} fixes. Database is now properly configured.`,
+      };
+    } catch (error) {
+      console.error('[DatabaseService] Error fixing database issues:', error);
+      return {
+        success: false,
+        fixesApplied,
+        message: `Error during fix: ${error}`,
       };
     }
   }
@@ -7211,6 +8793,179 @@ export class DatabaseService {
       };
     } catch (error) {
       console.error('[DatabaseService] Error getting eSales report data:', error);
+      throw error;
+    }
+  }
+
+  // ========================================
+  // DASHBOARD ANALYTICS METHODS
+  // ========================================
+
+  public async getDashboardAnalytics(): Promise<{
+    todaySales: number;
+    todayTransactions: number;
+    yesterdaySales: number;
+    weekSales: number;
+    monthSales: number;
+    avgTransactionValue: number;
+    topProducts: Array<{ id: number; name: string; quantity_sold: number; total_sales: number }>;
+    lowStockProducts: Array<{ id: number; name: string; stock_quantity: number; reorder_level: number }>;
+    paymentBreakdown: Array<{ method: string; amount: number; count: number; percentage: number }>;
+    recentTransactions: Array<{ id: number; invoice_number: string; total_amount: number; payment_method: string; customer_name: string; transaction_date: string }>;
+    hourlyData: Array<{ hour: number; sales: number }>;
+  }> {
+    const db = this.getDatabase();
+    const today = getPhilippineDateString();
+
+    try {
+      // Get yesterday's date
+      const yesterdayDate = new Date();
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const yesterday = yesterdayDate.toISOString().split('T')[0];
+
+      // Get week start (Sunday)
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      const weekStartStr = weekStart.toISOString().split('T')[0];
+
+      // Get month start
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      const monthStartStr = monthStart.toISOString().split('T')[0];
+
+      // Get today's sales summary
+      const todaySummary = await db.getFirstAsync<any>(`
+        SELECT
+          COALESCE(SUM(total_amount), 0) as total_sales,
+          COUNT(*) as transaction_count
+        FROM transactions
+        WHERE DATE(transaction_date) = ? AND status = 'COMPLETED'
+      `, [today]);
+
+      // Get yesterday's sales
+      const yesterdaySummary = await db.getFirstAsync<any>(`
+        SELECT COALESCE(SUM(total_amount), 0) as total_sales
+        FROM transactions
+        WHERE DATE(transaction_date) = ? AND status = 'COMPLETED'
+      `, [yesterday]);
+
+      // Get this week's sales
+      const weekSummary = await db.getFirstAsync<any>(`
+        SELECT COALESCE(SUM(total_amount), 0) as total_sales
+        FROM transactions
+        WHERE DATE(transaction_date) >= ? AND status = 'COMPLETED'
+      `, [weekStartStr]);
+
+      // Get this month's sales
+      const monthSummary = await db.getFirstAsync<any>(`
+        SELECT COALESCE(SUM(total_amount), 0) as total_sales
+        FROM transactions
+        WHERE DATE(transaction_date) >= ? AND status = 'COMPLETED'
+      `, [monthStartStr]);
+
+      const avgTransaction = todaySummary?.transaction_count > 0
+        ? todaySummary.total_sales / todaySummary.transaction_count
+        : 0;
+
+      // Get top selling products (today)
+      const topProducts = await db.getAllAsync<any>(`
+        SELECT
+          p.id,
+          p.name,
+          SUM(ti.quantity) as quantity_sold,
+          SUM(ti.total_amount) as total_sales
+        FROM transaction_items ti
+        INNER JOIN transactions t ON ti.transaction_id = t.id
+        INNER JOIN products p ON ti.product_id = p.id
+        WHERE DATE(t.transaction_date) = ? AND t.status = 'COMPLETED'
+        GROUP BY p.id, p.name
+        ORDER BY quantity_sold DESC
+        LIMIT 5
+      `, [today]) || [];
+
+      // Get low stock products
+      const lowStockProducts = await db.getAllAsync<any>(`
+        SELECT id, name, stock_quantity, reorder_level
+        FROM products
+        WHERE is_active = 1
+          AND stock_quantity <= reorder_level
+          AND reorder_level > 0
+        ORDER BY (stock_quantity * 1.0 / NULLIF(reorder_level, 0)) ASC
+        LIMIT 10
+      `) || [];
+
+      // Get payment method breakdown (today)
+      const paymentData = await db.getAllAsync<any>(`
+        SELECT
+          payment_method as method,
+          COALESCE(SUM(total_amount), 0) as amount,
+          COUNT(*) as count
+        FROM transactions
+        WHERE DATE(transaction_date) = ? AND status = 'COMPLETED'
+        GROUP BY payment_method
+        ORDER BY amount DESC
+      `, [today]) || [];
+
+      const totalPayments = paymentData.reduce((sum: number, p: any) => sum + p.amount, 0) || 0;
+      const paymentBreakdown = paymentData.map((p: any) => ({
+        method: p.method,
+        amount: p.amount,
+        count: p.count,
+        percentage: totalPayments > 0 ? (p.amount / totalPayments) * 100 : 0,
+      }));
+
+      // Get recent transactions
+      const recentTransactions = await db.getAllAsync<any>(`
+        SELECT
+          t.id,
+          t.invoice_number,
+          t.total_amount,
+          t.payment_method,
+          COALESCE(c.name, 'Walk-in Customer') as customer_name,
+          t.transaction_date
+        FROM transactions t
+        LEFT JOIN customers c ON t.customer_id = c.id
+        WHERE t.status = 'COMPLETED'
+        ORDER BY t.transaction_date DESC
+        LIMIT 10
+      `) || [];
+
+      // Get hourly sales data for today
+      const hourlyDataRaw = await db.getAllAsync<any>(`
+        SELECT
+          CAST(strftime('%H', transaction_date) AS INTEGER) as hour,
+          COALESCE(SUM(total_amount), 0) as sales
+        FROM transactions
+        WHERE DATE(transaction_date) = ? AND status = 'COMPLETED'
+        GROUP BY hour
+        ORDER BY hour
+      `, [today]) || [];
+
+      // Fill in missing hours with 0 (6 AM to 10 PM)
+      const hourlyMap = new Map(hourlyDataRaw.map((h: any) => [h.hour, h.sales]));
+      const hourlyData = [];
+      for (let i = 6; i <= 22; i++) {
+        hourlyData.push({
+          hour: i,
+          sales: hourlyMap.get(i) || 0,
+        });
+      }
+
+      return {
+        todaySales: todaySummary?.total_sales || 0,
+        todayTransactions: todaySummary?.transaction_count || 0,
+        yesterdaySales: yesterdaySummary?.total_sales || 0,
+        weekSales: weekSummary?.total_sales || 0,
+        monthSales: monthSummary?.total_sales || 0,
+        avgTransactionValue: avgTransaction,
+        topProducts,
+        lowStockProducts,
+        paymentBreakdown,
+        recentTransactions,
+        hourlyData,
+      };
+    } catch (error) {
+      console.error('[DatabaseService] Error getting dashboard analytics:', error);
       throw error;
     }
   }

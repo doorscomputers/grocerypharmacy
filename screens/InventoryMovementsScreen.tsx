@@ -25,7 +25,6 @@ import {
   Menu,
   ActivityIndicator,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
@@ -36,6 +35,8 @@ import * as MailComposer from 'expo-mail-composer';
 import * as FileSystem from 'expo-file-system/legacy';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 import { ESCPOSBuilder, PRINTER_WIDTH } from '../utils/escpos';
+import { toLocalDateString, formatPrinterDate, formatPrinterShortDateTime, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type InventoryMovementsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -74,6 +75,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
   const [printing, setPrinting] = useState(false);
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const printerService = BluetoothPrinterService.getInstance();
 
   useEffect(() => {
@@ -92,8 +94,8 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
       const dbService = getDatabase();
 
       // Format dates for database query
-      const dateFrom = dateRange.startDate.toISOString().split('T')[0];
-      const dateTo = dateRange.endDate.toISOString().split('T')[0];
+      const dateFrom = toLocalDateString(dateRange.startDate);
+      const dateTo = toLocalDateString(dateRange.endDate);
 
       const options: any = {
         date_from: dateFrom,
@@ -147,8 +149,8 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
     }
 
     return {
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: today.toISOString().split('T')[0]
+      startDate: toLocalDateString(startDate),
+      endDate: toLocalDateString(today)
     };
   };
 
@@ -240,7 +242,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
     filteredMovements.forEach(item => {
       const date = new Date(item.created_at).toLocaleString('en-PH', {
-        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        timeZone: 'Asia/Manila', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
       });
       const qtyClass = item.movement_type === 'IN' ? 'in' : 'out';
       const qtySign = item.movement_type === 'IN' ? '+' : '-';
@@ -309,8 +311,8 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
       const settings = printerService.getSettings();
       const builder = new ESCPOSBuilder(settings.printerWidth);
-      const dateFrom = dateRange.startDate.toLocaleDateString('en-PH');
-      const dateTo = dateRange.endDate.toLocaleDateString('en-PH');
+      const dateFrom = formatPrinterDate(dateRange.startDate);
+      const dateTo = formatPrinterDate(dateRange.endDate);
 
       // Header
       builder
@@ -338,15 +340,13 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
       for (let i = 0; i < maxItems; i++) {
         const item = filteredMovements[i];
-        const date = new Date(item.created_at).toLocaleString('en-PH', {
-          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-        });
+        const date = formatPrinterShortDateTime(item.created_at);
         const qtySign = item.movement_type === 'IN' ? '+' : '-';
 
         builder
           .println(`${item.product_name}`)
           .leftRight(`${item.product_code}`, `${qtySign}${item.quantity}`)
-          .leftRight(`${date}`, `${item.quantity_before}→${item.quantity_after}`)
+          .leftRight(`${date}`, `${item.quantity_before}->${item.quantity_after}`)
           .println(`${item.reference_type}: ${item.reference_number || '-'}`)
           .separator('-');
       }
@@ -362,7 +362,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
       builder
         .align('center')
         .separator()
-        .println(new Date().toLocaleString('en-PH'))
+        .println(formatPrinterDateTime(new Date()))
         .feed(2)
         .cut();
 
@@ -481,7 +481,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
             <Paragraph style={styles.productName}>{item.product_name}</Paragraph>
             <Paragraph style={styles.productCode}>{item.product_code}</Paragraph>
             <Paragraph style={styles.movementDate}>
-              {new Date(item.created_at).toLocaleString()}
+              {new Date(item.created_at).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
             </Paragraph>
             <Paragraph style={styles.createdBy}>
               By: {item.created_by_name}
@@ -490,14 +490,14 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
           <View style={styles.movementStats}>
             <Chip
               style={[styles.typeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
-              textStyle={{ color: 'white', fontSize: 10 }}
+              textStyle={styles.chipText}
               compact
             >
               {item.movement_type}
             </Chip>
             <Chip
               style={[styles.referenceChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
-              textStyle={{ color: 'white', fontSize: 9 }}
+              textStyle={styles.chipTextSmall}
               compact
             >
               {item.reference_type}
@@ -611,7 +611,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
                 <DataTable.Cell>
                   <Chip
                     style={[styles.typeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
-                    textStyle={{ color: 'white', fontSize: 9 }}
+                    textStyle={styles.chipTextSmall}
                     compact
                   >
                     {item.movement_type}
@@ -620,7 +620,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
                 <DataTable.Cell>
                   <Chip
                     style={[styles.referenceChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
-                    textStyle={{ color: 'white', fontSize: 8 }}
+                    textStyle={styles.chipTextSmall}
                     compact
                   >
                     {item.reference_type}
@@ -731,10 +731,10 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
         <View style={styles.headerRow}>
-          <Title style={styles.headerTitle}>Inventory Movements</Title>
+          <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Inventory Movements</Title>
           <View style={styles.headerActions}>
             <Menu
               visible={printMenuVisible}
@@ -877,7 +877,8 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
                     <View style={styles.historyItemHeader}>
                       <View style={styles.historyItemDate}>
                         <Paragraph style={styles.historyDate}>
-                          {new Date(item.created_at).toLocaleDateString('en-PH', {
+                          {new Date(item.created_at).toLocaleString('en-PH', {
+                            timeZone: 'Asia/Manila',
                             year: 'numeric',
                             month: 'short',
                             day: 'numeric',
@@ -889,7 +890,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
                       <View style={styles.historyChips}>
                         <Chip
                           style={[styles.historyTypeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
-                          textStyle={{ color: 'white', fontSize: 9 }}
+                          textStyle={styles.chipText}
                           compact
                         >
                           {item.movement_type}
@@ -920,7 +921,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
                     <Chip
                       style={[styles.historyRefChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
-                      textStyle={{ color: 'white', fontSize: 8 }}
+                      textStyle={styles.chipTextSmall}
                       compact
                     >
                       {item.reference_type}
@@ -952,7 +953,7 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1064,9 +1065,23 @@ const styles = StyleSheet.create({
   },
   typeChip: {
     alignSelf: 'flex-end',
+    height: 28,
+    justifyContent: 'center',
   },
   referenceChip: {
     alignSelf: 'flex-end',
+    height: 26,
+    justifyContent: 'center',
+  },
+  chipText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  chipTextSmall: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: '600',
   },
   quantityRow: {
     flexDirection: 'row',
@@ -1251,7 +1266,8 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   historyTypeChip: {
-    height: 22,
+    height: 28,
+    justifyContent: 'center',
   },
   historyQuantityRow: {
     flexDirection: 'row',
@@ -1287,7 +1303,8 @@ const styles = StyleSheet.create({
   historyRefChip: {
     alignSelf: 'flex-start',
     marginBottom: 4,
-    height: 20,
+    height: 26,
+    justifyContent: 'center',
   },
   historyRef: {
     fontSize: 11,

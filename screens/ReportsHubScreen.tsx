@@ -1,8 +1,9 @@
 import React from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView } from 'react-native';
 import { Card, Title, Paragraph, useTheme, List, Divider } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'ReportsHub'>;
@@ -21,11 +22,13 @@ interface ReportItem {
   description: string;
   icon: string;
   screen?: keyof RootStackParamList;
+  params?: any;
   action?: string;
 }
 
 export default function ReportsHubScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const reportCategories: ReportCategory[] = [
     {
@@ -35,8 +38,9 @@ export default function ReportsHubScreen({ navigation }: Props) {
       color: '#4CAF50',
       reports: [
         { title: 'Sales Report', description: 'Complete sales with filters & analysis', icon: 'file-chart', screen: 'SalesReport' },
-        { title: 'Z-Reading (End of Day)', description: 'Daily closing report - resets counters', icon: 'calculator', screen: 'EndOfDay' },
-        { title: 'X-Reading (Inquiry)', description: 'Current sales inquiry - no reset', icon: 'poll', screen: 'Reports' },
+        { title: 'Z-Reading (End of Day)', description: 'End-of-day closing report history', icon: 'calculator', screen: 'ZReadingHistory' },
+        { title: 'X-Reading (Inquiry)', description: 'Mid-day inquiry report history', icon: 'poll', screen: 'XReadingHistory' },
+        { title: 'Void/Refund/Exchange', description: 'View all voided, refunded & exchanged invoices', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
         { title: 'Sales by Product', description: 'Top selling products report', icon: 'chart-bar', screen: 'SalesReport' },
         { title: 'Sales by Category', description: 'Sales breakdown by category', icon: 'chart-pie', screen: 'SalesReport' },
       ]
@@ -47,12 +51,13 @@ export default function ReportsHubScreen({ navigation }: Props) {
       icon: 'package-variant',
       color: '#2196F3',
       reports: [
-        { title: 'Current Stock Levels', description: 'View all product quantities', icon: 'clipboard-list', screen: 'Products' },
-        { title: 'Low Stock Alert', description: 'Products below reorder level', icon: 'alert', screen: 'Products' },
+        { title: 'Current Stock Levels', description: 'View all product quantities', icon: 'clipboard-list', screen: 'CurrentStockLevels' },
+        { title: 'Top Selling Products', description: 'Best sellers by quantity & revenue (all time)', icon: 'trophy', screen: 'TopSellingReport' },
+        { title: 'Low Stock Alert', description: 'Products below reorder level', icon: 'alert', screen: 'CurrentStockLevels', params: { lowStock: true } },
         { title: 'Zero Inventory', description: 'Products with no stock available', icon: 'alert-circle-outline', screen: 'ZeroInventoryReport' },
         { title: 'Item Ledger', description: 'All inventory movements by product', icon: 'history', screen: 'InventoryMovements' },
         { title: 'Stock Valuation', description: 'Total inventory value report', icon: 'currency-php', screen: 'StockValuationReport' },
-        { title: 'Physical Count History', description: 'Past physical count sessions', icon: 'counter', screen: 'Reports' },
+        { title: 'Physical Count History', description: 'Past physical count sessions', icon: 'counter', screen: 'PhysicalCountReport' },
         { title: 'Damaged Items Report', description: 'History of damaged inventory', icon: 'package-variant-closed-remove', screen: 'DamagedItemsHistory' },
         { title: 'Product Transaction History', description: 'All transactions for a product (sold, purchased, damaged, returned)', icon: 'file-document-outline', screen: 'ProductTransactionReport' },
       ]
@@ -66,7 +71,7 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'Purchase Report', description: 'All purchases with filtering & summary', icon: 'receipt', screen: 'PurchaseReport' },
         { title: 'Delivered Items Report', description: 'Items received from suppliers', icon: 'package-variant-closed-check', screen: 'DeliveredItemsReport' },
         { title: 'Purchase Returns Report', description: 'Returns to suppliers', icon: 'truck-delivery-outline', screen: 'PurchaseReturnsReport' },
-        { title: 'Purchases by Supplier', description: 'Purchase summary per supplier', icon: 'account-group', screen: 'PurchaseReport' },
+        { title: 'Purchases by Supplier', description: 'Purchase summary per supplier', icon: 'account-group', screen: 'PurchaseReport', params: { view: 'by_supplier' } },
       ]
     },
     {
@@ -75,11 +80,11 @@ export default function ReportsHubScreen({ navigation }: Props) {
       icon: 'account-cash',
       color: '#9C27B0',
       reports: [
+        { title: 'Top Customers', description: 'Best customers by purchases & revenue (all time)', icon: 'podium-gold', screen: 'TopCustomersReport' },
         { title: 'AR Report & Aging', description: 'Customer balances with aging analysis', icon: 'account-alert', screen: 'AccountsReceivableReport' },
         { title: 'Sales Returns Report', description: 'Customer returns and refunds', icon: 'cash-refund', screen: 'SalesReturnsReport' },
         { title: 'Customer Payments', description: 'Collect payments from customers', icon: 'cash-plus', screen: 'CustomerPayments' },
-        { title: 'Customer Ledger', description: 'Transaction history per customer', icon: 'book-account', screen: 'CustomerManagement' },
-        { title: 'Customer Reports', description: 'Invoices, returns & payments per customer', icon: 'account-details', screen: 'CustomerReport' },
+        { title: 'Customer Ledger', description: 'Transaction history per customer with print/email', icon: 'book-account', screen: 'CustomerAccountStatement' },
       ]
     },
     {
@@ -91,7 +96,9 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'AP Report & Aging', description: 'Supplier balances with aging analysis', icon: 'account-alert-outline', screen: 'AccountsPayableReport' },
         { title: 'Purchase Returns Report', description: 'Returns to suppliers', icon: 'truck-delivery-outline', screen: 'PurchaseReturnsReport' },
         { title: 'Supplier Payments', description: 'Make payments to suppliers', icon: 'cash-minus', screen: 'SupplierPayments' },
-        { title: 'Supplier Ledger', description: 'Transaction history per supplier', icon: 'book-account-outline', screen: 'SupplierManagement' },
+        { title: 'Supplier Ledger', description: 'Purchases, payments & cheques per supplier', icon: 'book-account-outline', screen: 'SupplierAccountStatement' },
+        { title: 'PDC Tracking', description: 'Track post-dated cheque lifecycle', icon: 'checkbook', screen: 'PDCTracking' },
+        { title: 'Upcoming PDC Report', description: 'Cheques due for funding soon', icon: 'calendar-alert', screen: 'UpcomingPDCReport' },
       ]
     },
     {
@@ -100,17 +107,18 @@ export default function ReportsHubScreen({ navigation }: Props) {
       icon: 'file-document-check-outline',
       color: '#607D8B',
       reports: [
-        { title: 'eJournal Report', description: 'Complete audit trail for BIR compliance', icon: 'book-open-page-variant', screen: 'EJournalReport' },
+        { title: 'eSales Journal', description: 'Electronic sales journal of all receipts', icon: 'book-open-page-variant', screen: 'EJournalReport' },
         { title: 'eSales Report', description: 'Monthly sales report for BIR submission', icon: 'file-export', screen: 'ESalesReport' },
-        { title: 'Z-Reading History', description: 'End of day report history', icon: 'calculator', screen: 'EndOfDay' },
-        { title: 'X-Reading', description: 'Mid-day inquiry report', icon: 'poll', screen: 'Reports' },
+        { title: 'Void/Refund/Exchange Report', description: 'Track all voided, refunded & exchanged transactions', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
+        { title: 'Z-Reading History', description: 'End of day report history', icon: 'calculator', screen: 'ZReadingHistory' },
+        { title: 'X-Reading History', description: 'Mid-day inquiry report history', icon: 'poll', screen: 'XReadingHistory' },
       ]
     },
   ];
 
   const handleReportPress = (report: ReportItem) => {
     if (report.screen) {
-      navigation.navigate(report.screen as any);
+      navigation.navigate(report.screen as any, report.params);
     }
   };
 
@@ -118,26 +126,26 @@ export default function ReportsHubScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
       >
-        <View style={styles.header}>
-          <Title style={styles.pageTitle}>Reports Hub</Title>
-          <Paragraph style={styles.pageSubtitle}>
+        <View style={[styles.header, { marginBottom: sp.md }]}>
+          <Title style={[styles.pageTitle, { fontSize: fs.h2 }]}>Reports Hub</Title>
+          <Paragraph style={[styles.pageSubtitle, { fontSize: fs.bodySmall }]}>
             Access all business reports in one place
           </Paragraph>
         </View>
 
         {reportCategories.map((category, categoryIndex) => (
-          <Card key={categoryIndex} style={styles.categoryCard}>
-            <Card.Content>
+          <Card key={categoryIndex} style={[styles.categoryCard, { marginBottom: sp.md }]}>
+            <Card.Content style={{ padding: sp.md }}>
               <View style={styles.categoryHeader}>
                 <List.Icon icon={category.icon} color={category.color} />
                 <View style={styles.categoryTitleContainer}>
-                  <Title style={[styles.categoryTitle, { color: category.color }]}>
+                  <Title style={[styles.categoryTitle, { color: category.color, fontSize: fs.cardTitle }]}>
                     {category.title}
                   </Title>
-                  <Paragraph style={styles.categorySubtitle}>
+                  <Paragraph style={[styles.categorySubtitle, { fontSize: fs.bodySmall }]}>
                     {category.subtitle}
                   </Paragraph>
                 </View>
@@ -177,27 +185,13 @@ export default function ReportsHubScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
   },
   header: {
     marginBottom: 16,

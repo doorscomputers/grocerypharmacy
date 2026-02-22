@@ -1,16 +1,16 @@
 /**
  * PrimaryActionButton - Large touch-friendly action button
  *
- * 120x120dp size based on research for optimal POS touch targets
- * Used for primary actions like "New Sale" and "Returns"
+ * Responsive size based on device width for optimal POS touch targets
  */
 
 import React from 'react';
-import { TouchableOpacity, View, StyleSheet } from 'react-native';
+import { TouchableOpacity, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
-import { spacing, typography, borderRadius, shadows, layout, touchTargets } from '../../utils/theme';
+import { spacing, borderRadius, shadows } from '../../utils/theme';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface PrimaryActionButtonProps {
   label: string;
@@ -28,6 +28,7 @@ export const PrimaryActionButton: React.FC<PrimaryActionButtonProps> = ({
   disabled = false,
 }) => {
   const { colors } = useAppTheme();
+  const { fs, lo } = useResponsiveTheme();
 
   const getBackgroundColor = () => {
     if (disabled) return colors.disabled;
@@ -53,17 +54,21 @@ export const PrimaryActionButton: React.FC<PrimaryActionButtonProps> = ({
       style={[
         styles.button,
         shadows.button,
-        { backgroundColor: getBackgroundColor() },
+        {
+          backgroundColor: getBackgroundColor(),
+          width: lo.primaryActionSize,
+          height: lo.primaryActionSize,
+        },
         disabled && styles.disabled,
       ]}
     >
       <MaterialCommunityIcons
         name={icon}
-        size={40}
+        size={lo.primaryActionIcon}
         color={colors.textOnPrimary}
         style={styles.icon}
       />
-      <Text style={[styles.label, { color: colors.textOnPrimary }]}>
+      <Text style={[styles.label, { color: colors.textOnPrimary, fontSize: fs.button }]}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -72,8 +77,6 @@ export const PrimaryActionButton: React.FC<PrimaryActionButtonProps> = ({
 
 const styles = StyleSheet.create({
   button: {
-    width: layout.primaryActionSize,
-    height: layout.primaryActionSize,
     borderRadius: borderRadius.lg,
     justifyContent: 'center',
     alignItems: 'center',
@@ -86,7 +89,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   label: {
-    fontSize: typography.button.fontSize,
     fontWeight: '600',
     textAlign: 'center',
   },

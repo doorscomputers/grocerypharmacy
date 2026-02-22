@@ -22,7 +22,6 @@ import {
   Chip,
   List,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
@@ -32,9 +31,12 @@ import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 import { buildZReading, PRINTER_WIDTH } from '../utils/escpos';
 import {
   ZReadingPdfData,
+  printZReadingPdf,
   shareZReadingPdf,
   emailZReadingPdf,
 } from '../utils/ReceiptPdfService';
+import { getPhilippineDateString } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'EndOfDay'>;
@@ -51,6 +53,7 @@ interface DaySummary {
   grossSales: number;
   discounts: number;
   salesReturns: number;
+  refundCount: number;
   netSales: number;
   // Sales by payment method
   cashSales: number;
@@ -61,6 +64,8 @@ interface DaySummary {
   otherSales: number;
   voidAmount: number;
   voidCount: number;
+  exchangeAmount: number;
+  exchangeCount: number;
   transactionCount: number;
   // Customer payments by method (AR collections)
   customerPaymentsCash: number;
@@ -77,22 +82,23 @@ interface DaySummary {
   // Cash refunds
   salesReturnsCash: number;
   // Cash movements (from cash_movements table)
-  cashFundAdded: number;      // OPENING_FUND + CASH_IN
-  pettyCashWithdrawn: number; // PETTY_CASH
+  openingFund: number;        // OPENING_FUND
+  cashIn: number;             // CASH_IN
+  cashOut: number;            // CASH_OUT
+  pettyCash: number;          // PETTY_CASH
+  cashFundAdded: number;      // OPENING_FUND + CASH_IN (for backward compatibility)
+  pettyCashWithdrawn: number; // PETTY_CASH + CASH_OUT (for backward compatibility)
   cashRefunds: number;        // CASH_REFUND (from exchanges, etc.)
 }
 
-// Helper to get Philippine timezone date
+// Use device's local date (device should be set to Philippine timezone)
 const getPhilippineDate = (): string => {
-  const now = new Date();
-  const phOffset = 8 * 60; // Philippines is UTC+8
-  const localOffset = now.getTimezoneOffset();
-  const phTime = new Date(now.getTime() + (phOffset + localOffset) * 60000);
-  return phTime.toISOString().split('T')[0];
+  return getPhilippineDateString();
 };
 
 export default function EndOfDayScreen({ navigation, route }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user } = useAuth();
 
   // Get target date from navigation params (for closing unterminated sessions)
@@ -121,6 +127,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
     grossSales: 0,
     discounts: 0,
     salesReturns: 0,
+    refundCount: 0,
     netSales: 0,
     cashSales: 0,
     creditSales: 0,
@@ -130,6 +137,8 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
     otherSales: 0,
     voidAmount: 0,
     voidCount: 0,
+    exchangeAmount: 0,
+    exchangeCount: 0,
     transactionCount: 0,
     customerPaymentsCash: 0,
     customerPaymentsCheck: 0,
@@ -142,6 +151,10 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
     supplierPaymentsBankTransfer: 0,
     supplierPaymentsTotal: 0,
     salesReturnsCash: 0,
+    openingFund: 0,
+    cashIn: 0,
+    cashOut: 0,
+    pettyCash: 0,
     cashFundAdded: 0,
     pettyCashWithdrawn: 0,
     cashRefunds: 0,
@@ -173,6 +186,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
     netSales: number;
     variance: number;
     cashCounted: number;
+    xReadingFailed?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -250,12 +264,16 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         ? allReturns.filter((r: any) => r.created_at >= normalizedShiftTime && r.processed_by === user?.id)
         : allReturns.filter((r: any) => r.created_at?.startsWith(targetDate) && r.processed_by === user?.id);
 
-      // Get customer payments - filter by shift if exists, otherwise by target date
-      // Also filter by this cashier (collected_by)
-      const allCustomerPayments = await dbService.getCustomerPayments();
+      // Get customer payments - filter by payment_date (for date) and created_at (for shift)
+      // Also filter by this cashier (received_by)
+      // Note: customer_payments table uses 'received_by' and 'amount_paid' columns
+      // IMPORTANT: Always filter by payment_date to ensure we only get today's payments
+      const allCustomerPayments = await dbService.getCustomerPayments(undefined, 500);
+      console.log('[EOD] All customer payments:', JSON.stringify(allCustomerPayments.map((p: any) => ({ id: p.id, payment_date: p.payment_date, amount_paid: p.amount_paid, payment_method: p.payment_method, received_by: p.received_by }))));
       const todayCustomerPayments = normalizedShiftTime
-        ? allCustomerPayments.filter((p: any) => p.created_at >= normalizedShiftTime && p.collected_by === user?.id)
-        : allCustomerPayments.filter((p: any) => p.created_at?.startsWith(targetDate) && p.collected_by === user?.id);
+        ? allCustomerPayments.filter((p: any) => p.payment_date?.startsWith(targetDate) && p.created_at >= normalizedShiftTime && p.received_by === user?.id)
+        : allCustomerPayments.filter((p: any) => p.payment_date?.startsWith(targetDate) && p.received_by === user?.id);
+      console.log('[EOD] Today customer payments:', JSON.stringify(todayCustomerPayments.map((p: any) => ({ id: p.id, payment_date: p.payment_date, amount_paid: p.amount_paid, payment_method: p.payment_method }))));
 
       // Get supplier payments - filter by shift if exists, otherwise by target date
       // Also filter by this cashier (created_by)
@@ -265,11 +283,11 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         : allSupplierPayments.filter((p: any) => p.created_at?.startsWith(targetDate) && p.created_by === user?.id);
 
       // Get cash movements - filter by shift if exists, otherwise by target date
-      // Also filter by this cashier (created_by)
+      // Also filter by this cashier (cashier_id)
       const allCashMovements = await dbService.getCashMovements(targetDate);
       const todayCashMovements = normalizedShiftTime
-        ? (allCashMovements || []).filter((m: any) => m.created_at >= normalizedShiftTime && m.created_by === user?.id)
-        : (allCashMovements || []).filter((m: any) => m.created_by === user?.id);
+        ? (allCashMovements || []).filter((m: any) => m.created_at >= normalizedShiftTime && m.cashier_id === user?.id)
+        : (allCashMovements || []).filter((m: any) => m.cashier_id === user?.id);
 
       // Get EOD history
       const eodRecords = await dbService.getEndOfDayRecords();
@@ -303,11 +321,22 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
       const discounts = completedTransactions.reduce((sum: number, t: any) => sum + (t.discount_amount || 0), 0);
 
       // Sales returns - only cash refunds affect cash drawer
+      // Exclude exchanges from refund total (exchanges are tracked separately)
       const salesReturnsCash = todayReturns
         .filter((r: any) => r.refund_method === 'CASH')
         .reduce((sum: number, r: any) => sum + (r.total_amount || 0), 0);
       const salesReturnsTotal = todayReturns
+        .filter((r: any) => r.refund_method !== 'EXCHANGE')
         .reduce((sum: number, r: any) => sum + (r.total_amount || 0), 0);
+      const refundCount = todayReturns
+        .filter((r: any) => r.refund_method !== 'EXCHANGE').length;
+
+      // Exchange transactions (separate from refunds)
+      const exchangeAmount = todayReturns
+        .filter((r: any) => r.refund_method === 'EXCHANGE')
+        .reduce((sum: number, r: any) => sum + (r.total_amount || 0), 0);
+      const exchangeCount = todayReturns
+        .filter((r: any) => r.refund_method === 'EXCHANGE').length;
 
       // Sales by payment method
       const cashSales = completedTransactions
@@ -333,23 +362,24 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
       const otherSales = grossSales - cashSales - creditSales - gcashSales - cardSales - checkSales;
 
       // Customer payments (AR collections) by method
+      // Note: customer_payments table uses 'amount_paid' column
       const customerPaymentsCash = todayCustomerPayments
         .filter((p: any) => p.payment_method === 'CASH')
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
       const customerPaymentsCheck = todayCustomerPayments
         .filter((p: any) => p.payment_method === 'CHECK')
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
       const customerPaymentsCard = todayCustomerPayments
         .filter((p: any) => p.payment_method === 'CARD' || p.payment_method === 'CREDIT_CARD')
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
       const customerPaymentsOnline = todayCustomerPayments
         .filter((p: any) => p.payment_method === 'ONLINE' || p.payment_method === 'GCASH')
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
       const customerPaymentsBankTransfer = todayCustomerPayments
         .filter((p: any) => p.payment_method === 'BANK_TRANSFER')
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
       const customerPaymentsTotal = todayCustomerPayments
-        .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+        .reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0);
 
       // Supplier payments by method
       const supplierPaymentsCash = todaySupplierPayments
@@ -365,12 +395,20 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         .reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
 
       // Cash movements - affects physical cash in drawer
-      const cashFundAdded = (todayCashMovements || [])
-        .filter((m: any) => m.movement_type === 'OPENING_FUND' || m.movement_type === 'CASH_IN')
+      const openingFund = (todayCashMovements || [])
+        .filter((m: any) => m.movement_type === 'OPENING_FUND')
         .reduce((sum: number, m: any) => sum + (m.amount || 0), 0);
-      const pettyCashWithdrawn = (todayCashMovements || [])
-        .filter((m: any) => m.movement_type === 'PETTY_CASH' || m.movement_type === 'CASH_OUT')
+      const cashIn = (todayCashMovements || [])
+        .filter((m: any) => m.movement_type === 'CASH_IN')
         .reduce((sum: number, m: any) => sum + (m.amount || 0), 0);
+      const cashOut = (todayCashMovements || [])
+        .filter((m: any) => m.movement_type === 'CASH_OUT')
+        .reduce((sum: number, m: any) => sum + (m.amount || 0), 0);
+      const pettyCash = (todayCashMovements || [])
+        .filter((m: any) => m.movement_type === 'PETTY_CASH')
+        .reduce((sum: number, m: any) => sum + (m.amount || 0), 0);
+      const cashFundAdded = openingFund + cashIn;  // For backward compatibility
+      const pettyCashWithdrawn = pettyCash + cashOut;  // For backward compatibility
       const cashRefunds = (todayCashMovements || [])
         .filter((m: any) => m.movement_type === 'CASH_REFUND')
         .reduce((sum: number, m: any) => sum + (m.amount || 0), 0);
@@ -379,6 +417,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         grossSales,
         discounts,
         salesReturns: salesReturnsTotal,
+        refundCount,
         netSales: grossSales - discounts,
         cashSales,
         creditSales,
@@ -388,6 +427,8 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         otherSales,
         voidAmount: voidedTransactions.reduce((sum: number, t: any) => sum + (t.total_amount || 0), 0),
         voidCount: voidedTransactions.length,
+        exchangeAmount,
+        exchangeCount,
         transactionCount: completedTransactions.length,
         customerPaymentsCash,
         customerPaymentsCheck,
@@ -400,6 +441,10 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
         supplierPaymentsBankTransfer,
         supplierPaymentsTotal,
         salesReturnsCash,
+        openingFund,
+        cashIn,
+        cashOut,
+        pettyCash,
         cashFundAdded,
         pettyCashWithdrawn,
         cashRefunds,
@@ -495,14 +540,31 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
       card_sales: daySummary.cardSales,
       check_sales: daySummary.checkSales,
       credit_sales: daySummary.creditSales,
-      gcash_sales: daySummary.gcashSales,
+      online_sales: daySummary.gcashSales,
       // Voids
       void_count: daySummary.voidCount,
       void_amount: daySummary.voidAmount,
+      // Exchanges
+      exchange_count: daySummary.exchangeCount,
+      exchange_amount: daySummary.exchangeAmount,
+      // Refunds
+      refund_count: daySummary.refundCount,
+      // AR Collections
+      customer_payments_cash: daySummary.customerPaymentsCash,
+      customer_payments_check: daySummary.customerPaymentsCheck,
+      customer_payments_card: daySummary.customerPaymentsCard,
+      customer_payments_online: daySummary.customerPaymentsOnline,
+      customer_payments_bank_transfer: daySummary.customerPaymentsBankTransfer,
+      customer_payments_total: daySummary.customerPaymentsTotal,
+      // Supplier Payments
+      supplier_payments_made: daySummary.supplierPaymentsTotal,
       // Cash Drawer
       beginning_cash: beginningCashNum,
+      opening_fund: daySummary.openingFund,
+      cash_in: daySummary.cashIn,
+      cash_out: daySummary.cashOut,
       cash_fund: daySummary.cashFundAdded,
-      petty_cash: daySummary.pettyCashWithdrawn,
+      petty_cash: daySummary.pettyCash,
       cash_refunds: totalCashRefundsOut,
       expected_cash: expectedCash,
       actual_cash: totalCashCount,
@@ -519,49 +581,71 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
 
   // Print Z-Reading
   const handlePrint = async () => {
-    if (Platform.OS === 'web') {
-      showAlert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
-      return;
-    }
-
-    const printerService = BluetoothPrinterService.getInstance();
-    if (!printerService.isConnected()) {
-      showAlert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
-      return;
-    }
-
     setIsPrinting(true);
     try {
-      const settings = printerService.getSettings();
-      const printerWidth = settings.printerWidth;
+      const printerService = BluetoothPrinterService.getInstance();
 
-      const zReadingBuilder = buildZReading(
-        {
-          businessName: businessInfo.name,
-          tin: businessInfo.tin,
-          zReadingNumber: eodHistory.length + 1,
-          date: new Date(),
-          resetCounter: eodHistory.length + 1,
-          beginningOR: '',
-          endingOR: '',
-          grossSales: daySummary.grossSales,
-          regularDiscount: daySummary.discounts,
-          seniorDiscount: 0,
-          voidAmount: daySummary.voidAmount,
-          returnAmount: daySummary.salesReturns,
-          netSales: daySummary.netSales,
-          vatableSales: daySummary.grossSales / 1.12,
-          vatAmount: daySummary.grossSales - (daySummary.grossSales / 1.12),
-          vatExemptSales: 0,
-          zeroRatedSales: 0,
-          transactionCount: daySummary.transactionCount,
-          cashierName: user?.full_name || user?.username || 'Cashier',
-        },
-        printerWidth
-      );
+      if (printerService.isConnected()) {
+        // Bluetooth thermal printer
+        const settings = printerService.getSettings();
+        const printerWidth = settings.printerWidth;
 
-      await printerService.print(zReadingBuilder);
-      showAlert('Success', 'Z-Reading printed successfully!');
+        const zReadingBuilder = buildZReading(
+          {
+            businessName: businessInfo.name,
+            tin: businessInfo.tin,
+            zReadingNumber: eodHistory.length + 1,
+            date: new Date(),
+            resetCounter: eodHistory.length + 1,
+            beginningOR: '',
+            endingOR: '',
+            grossSales: daySummary.grossSales,
+            regularDiscount: daySummary.discounts,
+            seniorDiscount: 0,
+            voidAmount: daySummary.voidAmount,
+            returnAmount: daySummary.salesReturns,
+            netSales: daySummary.netSales,
+            vatableSales: daySummary.grossSales / 1.12,
+            vatAmount: daySummary.grossSales - (daySummary.grossSales / 1.12),
+            vatExemptSales: 0,
+            zeroRatedSales: 0,
+            transactionCount: daySummary.transactionCount,
+            cashierName: user?.full_name || user?.username || 'Cashier',
+            voidCount: daySummary.voidCount,
+            exchangeCount: daySummary.exchangeCount,
+            exchangeAmount: daySummary.exchangeAmount,
+            refundCount: daySummary.refundCount,
+            refundAmount: daySummary.salesReturns,
+            beginningCash: parseFloat(beginningCash || '0'),
+            openingFund: daySummary.openingFund,
+            cashIn: daySummary.cashIn,
+            cashOut: daySummary.cashOut,
+            cashSales: daySummary.cashSales,
+            customerPaymentsCash: daySummary.customerPaymentsCash,
+            customerPaymentsCheck: daySummary.customerPaymentsCheck,
+            customerPaymentsCard: daySummary.customerPaymentsCard,
+            customerPaymentsOnline: daySummary.customerPaymentsOnline,
+            customerPaymentsBankTransfer: daySummary.customerPaymentsBankTransfer,
+            customerPaymentsTotal: daySummary.customerPaymentsTotal,
+            supplierPaymentsMade: daySummary.supplierPaymentsTotal,
+            cashFund: daySummary.cashFundAdded,
+            pettyCash: daySummary.pettyCash,
+            cashRefunds: totalCashRefundsOut,
+            expectedCash: expectedCash,
+            actualCash: totalCashCount,
+            cashVariance: cashVariance,
+          },
+          printerWidth
+        );
+
+        await printerService.print(zReadingBuilder);
+        showAlert('Success', 'Z-Reading printed successfully!');
+      } else {
+        // PDF fallback via system print dialog
+        const pdfData = buildZReadingData();
+        const paperWidth = getPaperWidth();
+        await printZReadingPdf(pdfData, paperWidth);
+      }
     } catch (error) {
       console.error('Print error:', error);
       showAlert('Print Error', error instanceof Error ? error.message : 'Failed to print');
@@ -624,15 +708,30 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
       zero_rated_sales: 0,
       cash_sales: eod.cash_sales || 0,
       card_sales: eod.card_sales || 0,
-      check_sales: 0,
+      check_sales: eod.check_sales || 0,
       credit_sales: eod.credit_sales || 0,
-      gcash_sales: eod.gcash_sales || 0,
+      online_sales: eod.gcash_sales || 0,
       void_count: eod.void_count || 0,
       void_amount: eod.void_amount || 0,
+      exchange_count: eod.exchange_count || 0,
+      exchange_amount: eod.exchange_amount || 0,
+      refund_count: eod.refund_count || 0,
+      // AR Collections
+      customer_payments_cash: eod.customer_payments_cash || 0,
+      customer_payments_check: eod.customer_payments_check || 0,
+      customer_payments_card: eod.customer_payments_card || 0,
+      customer_payments_online: eod.customer_payments_online || 0,
+      customer_payments_bank_transfer: eod.customer_payments_bank_transfer || 0,
+      customer_payments_total: eod.customer_payments_received || 0,
+      // Supplier Payments
+      supplier_payments_made: eod.supplier_payments_made || 0,
       beginning_cash: eod.beginning_cash || 0,
-      cash_fund: 0,
-      petty_cash: 0,
-      cash_refunds: 0,
+      opening_fund: eod.opening_fund || 0,
+      cash_in: eod.cash_in || 0,
+      cash_out: eod.cash_out || 0,
+      cash_fund: eod.cash_fund || 0,
+      petty_cash: eod.petty_cash || 0,
+      cash_refunds: eod.cash_refunds || 0,
       expected_cash: eod.expected_cash || 0,
       actual_cash: eod.actual_cash || 0,
       cash_variance: eod.cash_variance || 0,
@@ -678,6 +777,30 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
           zeroRatedSales: 0,
           transactionCount: eod.transaction_count || 0,
           cashierName: eod.cashier_name || 'Cashier',
+          voidCount: eod.void_count || 0,
+          exchangeCount: eod.exchange_count || 0,
+          exchangeAmount: eod.exchange_amount || 0,
+          refundCount: eod.refund_count || 0,
+          refundAmount: eod.sales_returns || 0,
+          // Cash Drawer
+          beginningCash: eod.beginning_cash || 0,
+          openingFund: eod.opening_fund || 0,
+          cashIn: eod.cash_in || 0,
+          cashOut: eod.cash_out || 0,
+          cashSales: eod.cash_sales || 0,
+          customerPaymentsCash: eod.customer_payments_cash || 0,
+          customerPaymentsCheck: eod.customer_payments_check || 0,
+          customerPaymentsCard: eod.customer_payments_card || 0,
+          customerPaymentsOnline: eod.customer_payments_online || 0,
+          customerPaymentsBankTransfer: eod.customer_payments_bank_transfer || 0,
+          customerPaymentsTotal: eod.customer_payments_received || 0,
+          supplierPaymentsMade: eod.supplier_payments_made || 0,
+          cashFund: eod.cash_fund || 0,
+          pettyCash: eod.petty_cash || 0,
+          cashRefunds: eod.cash_refunds || 0,
+          expectedCash: eod.expected_cash || 0,
+          actualCash: eod.actual_cash || 0,
+          cashVariance: (eod.actual_cash || 0) - (eod.expected_cash || 0),
         },
         printerWidth
       );
@@ -756,12 +879,27 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             credit_sales: daySummary.creditSales,
             gcash_sales: daySummary.gcashSales,
             card_sales: daySummary.cardSales,
+            check_sales: daySummary.checkSales,
             other_sales: daySummary.otherSales,
             void_amount: daySummary.voidAmount,
             void_count: daySummary.voidCount,
+            exchange_amount: daySummary.exchangeAmount,
+            exchange_count: daySummary.exchangeCount,
+            refund_count: daySummary.refundCount,
             transaction_count: daySummary.transactionCount,
             customer_payments_received: daySummary.customerPaymentsTotal,
+            customer_payments_cash: daySummary.customerPaymentsCash,
+            customer_payments_check: daySummary.customerPaymentsCheck,
+            customer_payments_card: daySummary.customerPaymentsCard,
+            customer_payments_online: daySummary.customerPaymentsOnline,
+            customer_payments_bank_transfer: daySummary.customerPaymentsBankTransfer,
             supplier_payments_made: daySummary.supplierPaymentsTotal,
+            opening_fund: daySummary.openingFund,
+            cash_in: daySummary.cashIn,
+            cash_out: daySummary.cashOut,
+            petty_cash: daySummary.pettyCash,
+            cash_refunds: totalCashRefundsOut,
+            cash_fund: daySummary.cashFundAdded,
             expected_cash: expectedCash,
             actual_cash: totalCashCount,
             cash_variance: cashVariance,
@@ -789,6 +927,17 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             }
           }
 
+          // Auto-save X-Reading to pair with Z-Reading (BIR compliance)
+          let xReadingFailed = false;
+          try {
+            console.log('[EOD] Auto-saving X-Reading to pair with Z-Reading');
+            const xReadingId = await dbService.saveXReading(user?.id || 1, targetDate);
+            console.log('[EOD] X-Reading auto-saved with ID:', xReadingId);
+          } catch (xError: any) {
+            console.error('[EOD] X-Reading auto-save error (non-fatal):', xError);
+            xReadingFailed = true;
+          }
+
           // Close ALL open shifts for this user (handles multiple stuck open shifts)
           if (user?.id) {
             console.log('[EOD] Closing all open shifts for user:', user.id);
@@ -804,6 +953,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             netSales: daySummary.netSales,
             variance: cashVariance,
             cashCounted: totalCashCount,
+            xReadingFailed,
           });
           setShowCompletionDialog(true);
         } catch (error) {
@@ -816,30 +966,25 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
     );
   };
 
-  const webContainerStyle = Platform.OS === 'web'
-    ? { height: 'calc(100vh - 64px)', overflow: 'hidden' as const }
-    : {};
-
-  const webScrollStyle = Platform.OS === 'web'
-    ? { flex: 1, overflow: 'auto' as const }
-    : {};
+  const webContainerStyle = {};
+  const webScrollStyle = {};
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.loadingContainer}>
           <Paragraph>Loading day summary...</Paragraph>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
-      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={styles.scrollContent}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
+      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}>
         {/* Header */}
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>End of Day (Z-Reading)</Title>
+          <Title style={[styles.pageTitle, { fontSize: fs.h2 }]}>End of Day (Z-Reading)</Title>
           <Button
             mode={showHistory ? 'contained' : 'outlined'}
             onPress={() => setShowHistory(!showHistory)}
@@ -853,7 +998,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
           // EOD History
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>EOD History</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>EOD History</Title>
               <Paragraph style={styles.noteText}>Tap a record to view details and print/export.</Paragraph>
               {eodHistory.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No EOD records yet</Paragraph>
@@ -931,6 +1076,14 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
                         <View style={styles.historyDetailRow}>
                           <Text style={styles.historyDetailLabel}>Voids:</Text>
                           <Text style={styles.historyDetailValueRed}>{eod.void_count || 0} (₱{(eod.void_amount || 0).toFixed(2)})</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Exchanges:</Text>
+                          <Text style={styles.historyDetailValueRed}>{eod.exchange_count || 0} (₱{(eod.exchange_amount || 0).toFixed(2)})</Text>
+                        </View>
+                        <View style={styles.historyDetailRow}>
+                          <Text style={styles.historyDetailLabel}>Refunds:</Text>
+                          <Text style={styles.historyDetailValueRed}>{eod.refund_count || 0} (₱{(eod.sales_returns || 0).toFixed(2)})</Text>
                         </View>
                         <Divider style={styles.historyDivider} />
                         <View style={styles.historyDetailRow}>
@@ -1034,7 +1187,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Beginning Cash */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Beginning Cash on Hand</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Beginning Cash on Hand</Title>
                 <TextInput
                   label="Beginning Cash (₱)"
                   value={beginningCash}
@@ -1049,7 +1202,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Sales Summary */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Sales Summary</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Sales Summary</Title>
                 <DataTable>
                   <DataTable.Row>
                     <DataTable.Cell>Gross Sales</DataTable.Cell>
@@ -1097,11 +1250,19 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
                 </DataTable>
 
                 <Divider style={styles.divider} />
-                <Paragraph style={styles.subHeader}>Void Transactions:</Paragraph>
+                <Paragraph style={styles.subHeader}>Voids / Exchanges / Refunds:</Paragraph>
                 <DataTable>
                   <DataTable.Row>
                     <DataTable.Cell>Void ({daySummary.voidCount})</DataTable.Cell>
                     <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.voidAmount.toFixed(2)})</DataTable.Cell>
+                  </DataTable.Row>
+                  <DataTable.Row>
+                    <DataTable.Cell>Exchange ({daySummary.exchangeCount})</DataTable.Cell>
+                    <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.exchangeAmount.toFixed(2)})</DataTable.Cell>
+                  </DataTable.Row>
+                  <DataTable.Row>
+                    <DataTable.Cell>Refund ({daySummary.refundCount})</DataTable.Cell>
+                    <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.salesReturns.toFixed(2)})</DataTable.Cell>
                   </DataTable.Row>
                 </DataTable>
 
@@ -1115,7 +1276,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* AR Collections (Customer Payments) */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>AR Collections (Customer Payments)</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>AR Collections (Customer Payments)</Title>
                 <DataTable>
                   <DataTable.Row>
                     <DataTable.Cell>💵 Cash</DataTable.Cell>
@@ -1148,7 +1309,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Supplier Payments */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Supplier Payments (Cash Out)</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Supplier Payments (Cash Out)</Title>
                 <DataTable>
                   <DataTable.Row>
                     <DataTable.Cell>💵 Cash</DataTable.Cell>
@@ -1174,7 +1335,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {daySummary.salesReturns > 0 && (
               <Card style={styles.card}>
                 <Card.Content>
-                  <Title style={styles.sectionTitle}>Sales Returns / Refunds</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Sales Returns / Refunds</Title>
                   <DataTable>
                     <DataTable.Row>
                       <DataTable.Cell>Cash Refunds</DataTable.Cell>
@@ -1195,7 +1356,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Cash Breakdown */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Cash Breakdown Count</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Cash Breakdown Count</Title>
                 <Paragraph style={styles.instructionText}>
                   Count the bills and coins in your cash drawer:
                 </Paragraph>
@@ -1240,7 +1401,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Cash Accountability */}
             <Card style={[styles.card, styles.accountabilityCard]}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>💵 Cash Drawer Accountability</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>💵 Cash Drawer Accountability</Title>
                 <Paragraph style={styles.noteText}>
                   Only CASH transactions are included. Record supplier cash payments as Petty Cash.
                 </Paragraph>
@@ -1258,10 +1419,16 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
                     <DataTable.Cell>Add: AR Collections (Cash)</DataTable.Cell>
                     <DataTable.Cell numeric>₱{daySummary.customerPaymentsCash.toFixed(2)}</DataTable.Cell>
                   </DataTable.Row>
-                  {daySummary.cashFundAdded > 0 && (
+                  {daySummary.openingFund > 0 && (
                     <DataTable.Row>
-                      <DataTable.Cell>Add: Cash Fund Added</DataTable.Cell>
-                      <DataTable.Cell numeric>₱{daySummary.cashFundAdded.toFixed(2)}</DataTable.Cell>
+                      <DataTable.Cell>Add: Opening Fund</DataTable.Cell>
+                      <DataTable.Cell numeric>₱{daySummary.openingFund.toFixed(2)}</DataTable.Cell>
+                    </DataTable.Row>
+                  )}
+                  {daySummary.cashIn > 0 && (
+                    <DataTable.Row>
+                      <DataTable.Cell>Add: Cash In</DataTable.Cell>
+                      <DataTable.Cell numeric>₱{daySummary.cashIn.toFixed(2)}</DataTable.Cell>
                     </DataTable.Row>
                   )}
                   {totalCashRefundsOut > 0 && (
@@ -1270,10 +1437,16 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
                       <DataTable.Cell numeric style={styles.deduction}>(₱{totalCashRefundsOut.toFixed(2)})</DataTable.Cell>
                     </DataTable.Row>
                   )}
-                  {daySummary.pettyCashWithdrawn > 0 && (
+                  {daySummary.cashOut > 0 && (
                     <DataTable.Row>
-                      <DataTable.Cell>Less: Petty Cash Withdrawn</DataTable.Cell>
-                      <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.pettyCashWithdrawn.toFixed(2)})</DataTable.Cell>
+                      <DataTable.Cell>Less: Cash Out</DataTable.Cell>
+                      <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.cashOut.toFixed(2)})</DataTable.Cell>
+                    </DataTable.Row>
+                  )}
+                  {daySummary.pettyCash > 0 && (
+                    <DataTable.Row>
+                      <DataTable.Cell>Less: Petty Cash</DataTable.Cell>
+                      <DataTable.Cell numeric style={styles.deduction}>(₱{daySummary.pettyCash.toFixed(2)})</DataTable.Cell>
                     </DataTable.Row>
                   )}
                   <DataTable.Row style={styles.expectedRow}>
@@ -1311,7 +1484,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
             {/* Action Buttons - Print, Export, Email */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>📤 Print / Export Z-Reading</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>📤 Print / Export Z-Reading</Title>
                 <Paragraph style={styles.noteText}>
                   You can print, export, or email the Z-Reading report. Select one or more options:
                 </Paragraph>
@@ -1424,6 +1597,12 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
                 </View>
               )}
 
+              {completionSummary?.xReadingFailed && (
+                <Text style={{ color: '#E65100', fontSize: 13, textAlign: 'center', marginTop: 8 }}>
+                  Warning: X-Reading auto-save failed. You may need to generate it manually.
+                </Text>
+              )}
+
               <Text style={styles.completionPrompt}>
                 Would you like to print or export the Z-Reading?
               </Text>
@@ -1493,7 +1672,7 @@ export default function EndOfDayScreen({ navigation, route }: Props) {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1507,6 +1686,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 32,
+    flexGrow: 1,
   },
   loadingContainer: {
     flex: 1,

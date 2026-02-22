@@ -22,15 +22,17 @@ import {
   Menu,
   Text,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product, Supplier } from '../database/schema';
+import * as Print from 'expo-print';
 import { generatePurchaseOrderPdf, PurchaseOrderPdfData } from '../utils/ReceiptPdfService';
 import { buildPurchaseOrder, PurchaseOrderPrintData } from '../utils/escpos';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PurchaseOrderScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -111,6 +113,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   });
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -578,9 +581,9 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
     return {
       purchaseNumber: purchase.purchase_number,
       supplierName: purchase.supplier_name,
-      purchaseDate: new Date(purchase.purchase_date).toLocaleDateString('en-PH'),
+      purchaseDate: new Date(purchase.purchase_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }),
       referenceNumber: purchase.reference_number,
-      expectedDeliveryDate: purchase.expected_delivery_date ? new Date(purchase.expected_delivery_date).toLocaleDateString('en-PH') : undefined,
+      expectedDeliveryDate: purchase.expected_delivery_date ? new Date(purchase.expected_delivery_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }) : undefined,
       paymentTerms: purchase.payment_terms,
       notes: purchase.notes,
       status: purchase.status,
@@ -602,12 +605,18 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const handlePrintPO = async (purchase: any) => {
     try {
       const printer = BluetoothPrinterService.getInstance();
+      const data = await buildPoPrintData(purchase);
+
       if (!printer.isConnected()) {
-        Alert.alert('Printer Not Connected', 'Please connect a Bluetooth printer in Settings first.');
+        // Fallback: system print dialog via PDF
+        let tin = '';
+        try { tin = await getDatabase().getSetting('tin') || ''; } catch (e) {}
+        const pdfData: PurchaseOrderPdfData = { ...data, tin };
+        await generatePurchaseOrderPdf(pdfData);
         return;
       }
+
       const printerWidth = printer.getSettings().printerWidth;
-      const data = await buildPoPrintData(purchase);
       const builder = buildPurchaseOrder(data, printerWidth);
       await printer.print(builder);
       Alert.alert('Success', 'Purchase order printed successfully');
@@ -651,7 +660,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
         <View style={{ flex: 1 }}>
           <Text style={styles.poNumber}>{item.purchase_number}</Text>
           <Text style={styles.poSupplier}>{item.supplier_name}</Text>
-          <Text style={styles.poDate}>{new Date(item.purchase_date).toLocaleDateString()}</Text>
+          <Text style={styles.poDate}>{new Date(item.purchase_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
           <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
@@ -721,9 +730,9 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       {/* ===== FILTERS ===== */}
-      <View style={styles.filterSection}>
+      <View style={[styles.filterSection, { paddingHorizontal: lo.screenPadding }]}>
         <DateRangeFilter onDateChange={handleDateChange} selectedPreset="this_month" />
         <View style={styles.statusFilterRow}>
           <Text style={styles.statusFilterLabel}>Status:</Text>
@@ -780,7 +789,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
       {/* ===== MODAL: CREATE/EDIT PURCHASE ORDER (Full Screen) ===== */}
       <Modal visible={createDialogVisible} animationType="slide" onRequestClose={closeCreateDialog}>
-        <SafeAreaView style={styles.modalContainer}>
+        <View style={styles.modalContainer}>
           {/* Header */}
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={closeCreateDialog} style={styles.modalHeaderBtn}>
@@ -1046,7 +1055,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
               </Text>
             </TouchableOpacity>
           </View>
-        </SafeAreaView>
+        </View>
       </Modal>
 
       {/* ===== MODAL: RECEIVE PURCHASE ORDER ===== */}
@@ -1182,7 +1191,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1357,7 +1366,8 @@ const styles = StyleSheet.create({
   bottomBar: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 48,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     elevation: 8,
@@ -1731,7 +1741,8 @@ const styles = StyleSheet.create({
   createBottomBar: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 48,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     elevation: 8,

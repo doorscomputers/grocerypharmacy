@@ -25,12 +25,12 @@ import {
   RadioButton,
   Searchbar,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'PurchaseReturns'>;
@@ -60,6 +60,7 @@ interface Supplier {
 
 export default function PurchaseReturnsScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user } = useAuth();
 
   // State for return form
@@ -330,20 +331,15 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
     return true;
   });
 
-  const webContainerStyle = Platform.OS === 'web'
-    ? { height: 'calc(100vh - 64px)', overflow: 'hidden' as const }
-    : {};
-
-  const webScrollStyle = Platform.OS === 'web'
-    ? { flex: 1, overflow: 'auto' as const }
-    : {};
+  const webContainerStyle = {};
+  const webScrollStyle = {};
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
-      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={styles.scrollContent}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }, webContainerStyle]}>
+      <ScrollView style={[styles.scrollView, webScrollStyle]} contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}>
         {/* Header with History Toggle */}
         <View style={styles.header}>
-          <Title style={styles.pageTitle}>Purchase Returns</Title>
+          <Title style={[styles.pageTitle, { fontSize: fs.h2 }]}>Purchase Returns</Title>
           <Button
             mode={showHistory ? 'contained' : 'outlined'}
             onPress={() => setShowHistory(!showHistory)}
@@ -387,7 +383,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
             {/* Return History List */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Return History</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Return History</Title>
                 {filteredReturnHistory.length === 0 ? (
                   <Paragraph style={styles.emptyText}>No purchase returns found</Paragraph>
                 ) : (
@@ -399,7 +395,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
                         left={props => <List.Icon {...props} icon="truck-delivery" color={theme.colors.primary} />}
                         right={() => (
                           <Paragraph style={styles.dateText}>
-                            {new Date(ret.created_at).toLocaleDateString()}
+                            {new Date(ret.created_at).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
                           </Paragraph>
                         )}
                       />
@@ -417,7 +413,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
             <Card style={styles.card}>
               <Card.Content>
                 <View style={styles.sectionHeader}>
-                  <Title style={styles.sectionTitle}>Supplier *</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Supplier *</Title>
                   <Button
                     mode="outlined"
                     onPress={() => setShowSupplierModal(true)}
@@ -439,7 +435,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
             <Card style={styles.card}>
               <Card.Content>
                 <View style={styles.sectionHeader}>
-                  <Title style={styles.sectionTitle}>Items to Return</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Items to Return</Title>
                   {!originalPurchase && (
                     <Button
                       mode="contained"
@@ -520,7 +516,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
             {/* Refund Method */}
             <Card style={styles.card}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Settlement Method</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Settlement Method</Title>
                 <RadioButton.Group
                   onValueChange={(value) => setRefundMethod(value as any)}
                   value={refundMethod}
@@ -703,7 +699,7 @@ export default function PurchaseReturnsScreen({ navigation }: Props) {
           </Button>
         </Modal>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -717,6 +713,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 32,
+    flexGrow: 1,
   },
   header: {
     flexDirection: 'row',

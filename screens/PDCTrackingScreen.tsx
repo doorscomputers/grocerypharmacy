@@ -20,10 +20,10 @@ import {
   RadioButton,
   Badge,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PDCTrackingScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -62,6 +62,7 @@ export default function PDCTrackingScreen({ navigation }: Props) {
   const [bouncedReasonMenuVisible, setBouncedReasonMenuVisible] = useState(false);
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -198,7 +199,7 @@ export default function PDCTrackingScreen({ navigation }: Props) {
           </View>
         </View>
         <Paragraph style={styles.alertDate}>
-          Cheque Date: {new Date(item.cheque_date).toLocaleDateString()}
+          Cheque Date: {new Date(item.cheque_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
         </Paragraph>
       </Card.Content>
     </Card>
@@ -237,7 +238,7 @@ export default function PDCTrackingScreen({ navigation }: Props) {
             <View style={styles.detailItem}>
               <Paragraph style={styles.detailLabel}>Cheque Date</Paragraph>
               <Paragraph style={styles.detailValue}>
-                {item.cheque_date ? new Date(item.cheque_date).toLocaleDateString() : 'N/A'}
+                {item.cheque_date ? new Date(item.cheque_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }) : 'N/A'}
               </Paragraph>
             </View>
           </View>
@@ -246,17 +247,17 @@ export default function PDCTrackingScreen({ navigation }: Props) {
           <View style={styles.statusHistory}>
             {item.deposited_date && (
               <Paragraph style={styles.statusDate}>
-                Deposited: {new Date(item.deposited_date).toLocaleDateString()}
+                Deposited: {new Date(item.deposited_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
               </Paragraph>
             )}
             {item.cleared_date && (
               <Paragraph style={styles.statusDate}>
-                Cleared: {new Date(item.cleared_date).toLocaleDateString()}
+                Cleared: {new Date(item.cleared_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
               </Paragraph>
             )}
             {item.bounced_date && (
               <Paragraph style={[styles.statusDate, { color: '#F44336' }]}>
-                Bounced: {new Date(item.bounced_date).toLocaleDateString()}
+                Bounced: {new Date(item.bounced_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
                 {item.bounced_reason && ` (${item.bounced_reason.replace('_', ' ')})`}
               </Paragraph>
             )}
@@ -278,9 +279,9 @@ export default function PDCTrackingScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>PDC Tracking</Title>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
+        <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>PDC Tracking</Title>
         <Paragraph style={styles.headerSubtitle}>Post-Dated Cheque Management</Paragraph>
       </View>
 
@@ -476,7 +477,7 @@ export default function PDCTrackingScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

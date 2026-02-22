@@ -263,6 +263,31 @@ export const layout = {
 } as const;
 
 // ============================================
+// RESPONSIVE COMPONENT SIZES
+// For adaptive layouts across phones to tablets
+// ============================================
+export const responsiveComponentSizes = {
+  numericKeypad: {
+    keyWidth: { phone: '30%', tablet: 72 } as { phone: string; tablet: number },
+    keyHeight: { phone: 48, tablet: 52 },
+    keyMargin: { phone: 3, tablet: 4 },
+  },
+  quickAction: {
+    size: { phone: 60, tablet: 72 },
+    iconSize: { phone: 44, tablet: 48 },
+  },
+  productCard: {
+    columns: { smallPhone: 2, largePhone: 2, smallTablet: 3, largeTablet: 4 },
+  },
+  modalWidth: {
+    smallPhone: '95%',
+    largePhone: '90%',
+    smallTablet: '80%',
+    largeTablet: 600,
+  },
+} as const;
+
+// ============================================
 // HELPER FUNCTION: Get React Native Paper Theme
 // ============================================
 export const getPaperTheme = (themeName: ThemeName) => {

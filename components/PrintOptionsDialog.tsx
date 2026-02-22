@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   useTheme,
 } from 'react-native-paper';
+import * as Print from 'expo-print';
 import { PRINTER_WIDTH, ESCPOSBuilder } from '../utils/escpos';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
 
@@ -18,6 +19,8 @@ interface PrintOptionsDialogProps {
   onDismiss: () => void;
   title?: string;
   onPrint: (printerWidth: number) => ESCPOSBuilder;
+  /** Optional: HTML builder for system print fallback when no Bluetooth printer */
+  onBuildPdfHtml?: () => string;
 }
 
 export default function PrintOptionsDialog({
@@ -25,6 +28,7 @@ export default function PrintOptionsDialog({
   onDismiss,
   title = 'Print Report',
   onPrint,
+  onBuildPdfHtml,
 }: PrintOptionsDialogProps) {
   const theme = useTheme();
   const [paperSize, setPaperSize] = useState<'58mm' | '80mm'>('58mm');
@@ -36,6 +40,19 @@ export default function PrintOptionsDialog({
       const printerService = BluetoothPrinterService.getInstance();
 
       if (!printerService.isConnected()) {
+        // Fallback: use system print dialog if PDF HTML builder is available
+        if (onBuildPdfHtml) {
+          try {
+            const html = onBuildPdfHtml();
+            await Print.printAsync({ html });
+            onDismiss();
+          } catch (pdfError) {
+            console.error('System print error:', pdfError);
+            Alert.alert('Print Error', 'Failed to print via system printer.');
+          }
+          return;
+        }
+
         Alert.alert(
           'Printer Not Connected',
           'Please connect to a Bluetooth printer in Settings first.',

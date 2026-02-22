@@ -21,12 +21,12 @@ import {
   Chip,
   Divider,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Supplier } from '../database/schema';
 import { StableTextInput } from '../components/StableTextInput';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type SupplierManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -57,6 +57,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
   const [notes, setNotes] = useState('');
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadSuppliers();
@@ -236,7 +237,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
       <Card.Content>
         <View style={styles.supplierHeader}>
           <View style={styles.supplierInfo}>
-            <Title style={styles.supplierName}>{item.name}</Title>
+            <Title style={[styles.supplierName, { fontSize: fs.h3 }]}>{item.name}</Title>
             <Paragraph style={styles.supplierCode}>Code: {item.code}</Paragraph>
             {item.contact_person && (
               <Paragraph style={styles.contactInfo}>
@@ -320,9 +321,9 @@ export default function SupplierManagementScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <Title style={styles.headerTitle}>Supplier Management</Title>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.header, { padding: lo.screenPadding }]}>
+        <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Supplier Management</Title>
         <TextInput
           label="Search Suppliers"
           value={searchQuery}
@@ -344,7 +345,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
         data={filteredSuppliers}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderSupplier}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadSuppliers}
@@ -471,7 +472,7 @@ export default function SupplierManagementScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

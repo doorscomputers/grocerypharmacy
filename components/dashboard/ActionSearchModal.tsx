@@ -2,7 +2,7 @@
  * ActionSearchModal - Searchable grid of all actions
  *
  * Provides quick access to all dashboard actions with search functionality
- * Much better UX than horizontal scrolling for many items
+ * Uses reactive dimensions instead of static Dimensions.get('window')
  */
 
 import React, { useState, useMemo } from 'react';
@@ -13,12 +13,12 @@ import {
   StyleSheet,
   FlatList,
   TextInput,
-  Dimensions,
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
 import { spacing, typography, borderRadius, shadows } from '../../utils/theme';
+import { useResponsiveTheme } from '../../utils/responsive';
 import { QuickAction } from './QuickActionRow';
 
 interface ActionSearchModalProps {
@@ -29,10 +29,6 @@ interface ActionSearchModalProps {
   showAdminActions?: boolean;
 }
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const NUM_COLUMNS = 4;
-const ITEM_WIDTH = (SCREEN_WIDTH - spacing.lg * 2 - spacing.sm * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
-
 export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
   visible,
   onClose,
@@ -41,7 +37,11 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
   showAdminActions = false,
 }) => {
   const { colors } = useAppTheme();
+  const { sp, fs, lo, isPhone } = useResponsiveTheme();
   const [searchQuery, setSearchQuery] = useState('');
+
+  const numColumns = isPhone ? 3 : 4;
+  const itemWidth = (lo.modalMaxWidth - sp.lg * 2 - sp.sm * (numColumns - 1)) / numColumns;
 
   // Combine and filter actions based on search
   const filteredActions = useMemo(() => {
@@ -60,7 +60,6 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
 
   const handleActionPress = (action: QuickAction) => {
     onClose();
-    // Small delay to allow modal to close smoothly
     setTimeout(() => {
       action.onPress();
     }, 100);
@@ -70,7 +69,7 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
     <TouchableOpacity
       onPress={() => handleActionPress(item)}
       activeOpacity={0.7}
-      style={[styles.actionItem, { backgroundColor: colors.surface }, shadows.card]}
+      style={[styles.actionItem, { backgroundColor: colors.surface, width: itemWidth }, shadows.card]}
     >
       <View style={[styles.iconContainer, { backgroundColor: (item.color || colors.primary) + '15' }]}>
         <MaterialCommunityIcons
@@ -80,7 +79,7 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
         />
       </View>
       <Text
-        style={[styles.actionLabel, { color: colors.text }]}
+        style={[styles.actionLabel, { color: colors.text, fontSize: fs.caption }]}
         numberOfLines={2}
       >
         {item.label}
@@ -97,19 +96,19 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
     >
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Header */}
-        <View style={[styles.header, { backgroundColor: colors.surface }]}>
+        <View style={[styles.header, { backgroundColor: colors.surface, paddingVertical: sp.md, paddingHorizontal: sp.md }]}>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <MaterialCommunityIcons name="close" size={24} color={colors.text} />
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>All Actions</Text>
+          <Text style={[styles.headerTitle, { color: colors.text, fontSize: fs.cardTitle }]}>All Actions</Text>
           <View style={styles.closeButton} />
         </View>
 
         {/* Search Bar */}
-        <View style={[styles.searchContainer, { backgroundColor: colors.surface }]}>
+        <View style={[styles.searchContainer, { backgroundColor: colors.surface, marginHorizontal: sp.md, marginVertical: sp.sm, paddingHorizontal: sp.md }]}>
           <MaterialCommunityIcons name="magnify" size={24} color={colors.textSecondary} />
           <TextInput
-            style={[styles.searchInput, { color: colors.text }]}
+            style={[styles.searchInput, { color: colors.text, fontSize: fs.body }]}
             placeholder="Search actions..."
             placeholderTextColor={colors.textSecondary}
             value={searchQuery}
@@ -125,17 +124,18 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
 
         {/* Actions Grid */}
         <FlatList
+          key={numColumns}
           data={filteredActions}
           renderItem={renderAction}
           keyExtractor={(item) => item.id}
-          numColumns={NUM_COLUMNS}
-          contentContainerStyle={styles.gridContainer}
-          columnWrapperStyle={styles.row}
+          numColumns={numColumns}
+          contentContainerStyle={[styles.gridContainer, { padding: sp.md }]}
+          columnWrapperStyle={[styles.row, { gap: sp.sm, marginBottom: sp.sm }]}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <MaterialCommunityIcons name="magnify-close" size={48} color={colors.textSecondary} />
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+              <Text style={[styles.emptyText, { color: colors.textSecondary, fontSize: fs.body }]}>
                 No actions found for "{searchQuery}"
               </Text>
             </View>
@@ -154,8 +154,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
     ...shadows.card,
   },
   closeButton: {
@@ -165,34 +163,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: typography.cardTitle.fontSize,
     fontWeight: '600',
   },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: spacing.md,
-    marginVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.md,
     gap: spacing.sm,
   },
   searchInput: {
     flex: 1,
-    fontSize: typography.body.fontSize,
     paddingVertical: spacing.xs,
   },
-  gridContainer: {
-    padding: spacing.md,
-  },
+  gridContainer: {},
   row: {
     justifyContent: 'flex-start',
-    gap: spacing.sm,
-    marginBottom: spacing.sm,
   },
   actionItem: {
-    width: ITEM_WIDTH,
     alignItems: 'center',
     padding: spacing.sm,
     borderRadius: borderRadius.md,
@@ -206,7 +194,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   actionLabel: {
-    fontSize: typography.caption.fontSize,
     textAlign: 'center',
     lineHeight: 14,
   },
@@ -218,7 +205,6 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     marginTop: spacing.md,
-    fontSize: typography.body.fontSize,
     textAlign: 'center',
   },
 });

@@ -1393,6 +1393,10 @@ export class WebMockDatabaseService {
     return null;
   }
 
+  public async getAllPurchaseDetails(): Promise<any[]> {
+    return [...purchaseItems];
+  }
+
   public async createPurchaseOrder(purchaseData: any): Promise<{ purchaseId: number; purchaseNumber: string }> {
     const purchaseNumber = `PO-${String(++purchaseIdCounter).padStart(6, '0')}`;
     const supplier = suppliers.find(s => s.id === purchaseData.supplier_id);
@@ -2910,6 +2914,54 @@ export class WebMockDatabaseService {
     return [];
   }
 
+  public async getDamageReports(dateFrom?: string, dateTo?: string): Promise<any> {
+    let filteredSessions = [...damageSessions];
+
+    if (dateFrom) {
+      filteredSessions = filteredSessions.filter(s => s.started_at >= dateFrom);
+    }
+    if (dateTo) {
+      filteredSessions = filteredSessions.filter(s => s.started_at <= dateTo + 'T23:59:59');
+    }
+
+    const sessionIds = new Set(filteredSessions.map(s => s.session_id));
+    const filteredDetails = damageDetails.filter(d => sessionIds.has(d.session_id));
+
+    // Summary by reason
+    const reasonMap = new Map<string, { damage_reason: string; item_count: number; total_quantity: number; total_value: number }>();
+    filteredDetails.forEach(d => {
+      const key = d.damage_reason || 'Unknown';
+      const existing = reasonMap.get(key) || { damage_reason: key, item_count: 0, total_quantity: 0, total_value: 0 };
+      existing.item_count += 1;
+      existing.total_quantity += (d.damaged_quantity || 0);
+      existing.total_value += (d.total_value || 0);
+      reasonMap.set(key, existing);
+    });
+    const reasonSummary = Array.from(reasonMap.values()).sort((a, b) => b.total_value - a.total_value);
+
+    // Summary by product
+    const productMap = new Map<number, { product_code: string; product_name: string; damage_count: number; total_quantity: number; total_value: number }>();
+    filteredDetails.forEach(d => {
+      const key = d.product_id;
+      const existing = productMap.get(key) || { product_code: d.product_code || '', product_name: d.product_name || '', damage_count: 0, total_quantity: 0, total_value: 0 };
+      existing.damage_count += 1;
+      existing.total_quantity += (d.damaged_quantity || 0);
+      existing.total_value += (d.total_value || 0);
+      productMap.set(key, existing);
+    });
+    const productSummary = Array.from(productMap.values()).sort((a, b) => b.total_value - a.total_value).slice(0, 20);
+
+    // Overall totals
+    const overallTotals = {
+      total_sessions: filteredSessions.length,
+      total_items: filteredDetails.length,
+      total_quantity: filteredDetails.reduce((sum, d) => sum + (d.damaged_quantity || 0), 0),
+      total_value: filteredDetails.reduce((sum, d) => sum + (d.total_value || 0), 0)
+    };
+
+    return { reasonSummary, productSummary, overallTotals };
+  }
+
   public async getAllUsers(): Promise<any[]> {
     return [...users];
   }
@@ -3274,6 +3326,30 @@ export class WebMockDatabaseService {
       credit_refunds: creditRefunds,
       returns: filteredReturns,
     };
+  }
+
+  // ============ PDC ============
+  public async getUpcomingPDCs(options?: any): Promise<any[]> {
+    return [];
+  }
+
+  public async getPDCSummaryByPeriod(): Promise<any> {
+    return {
+      overdue: { count: 0, amount: 0 },
+      thisWeek: { count: 0, amount: 0 },
+      nextWeek: { count: 0, amount: 0 },
+      thisMonth: { count: 0, amount: 0 },
+      total: { count: 0, amount: 0 },
+    };
+  }
+
+  // ============ X-READING ============
+  public async getXReadingHistory(limit: number = 30): Promise<any[]> {
+    return [];
+  }
+
+  public async saveXReading(cashierId: number, targetDate?: string): Promise<number> {
+    return 1; // stub
   }
 
   // ============ END OF DAY / Z-READING ============
@@ -3713,5 +3789,68 @@ export class WebMockDatabaseService {
       console.error('[WebMock] Error getting eSales report data:', error);
       throw error;
     }
+  }
+
+  // Dashboard Analytics
+  public async getDashboardAnalytics(): Promise<{
+    todaySales: number;
+    todayTransactions: number;
+    yesterdaySales: number;
+    weekSales: number;
+    monthSales: number;
+    avgTransactionValue: number;
+    topProducts: Array<{ id: number; name: string; quantity_sold: number; total_sales: number }>;
+    lowStockProducts: Array<{ id: number; name: string; stock_quantity: number; reorder_level: number }>;
+    paymentBreakdown: Array<{ method: string; amount: number; count: number; percentage: number }>;
+    recentTransactions: Array<{ id: number; invoice_number: string; total_amount: number; payment_method: string; customer_name: string; transaction_date: string }>;
+    hourlyData: Array<{ hour: number; sales: number }>;
+  }> {
+    // Return mock data for web testing
+    const todayTransactions = this.transactions.filter(t => t.status === 'COMPLETED');
+    const totalSales = todayTransactions.reduce((sum, t) => sum + (t.total_amount || 0), 0);
+
+    // Generate mock hourly data
+    const hourlyData = [];
+    for (let i = 6; i <= 22; i++) {
+      hourlyData.push({ hour: i, sales: Math.random() * 1000 });
+    }
+
+    return {
+      todaySales: totalSales,
+      todayTransactions: todayTransactions.length,
+      yesterdaySales: totalSales * 0.9,
+      weekSales: totalSales * 5,
+      monthSales: totalSales * 20,
+      avgTransactionValue: todayTransactions.length > 0 ? totalSales / todayTransactions.length : 0,
+      topProducts: this.products.slice(0, 5).map((p, i) => ({
+        id: p.id,
+        name: p.name,
+        quantity_sold: Math.floor(Math.random() * 50) + 1,
+        total_sales: Math.random() * 5000,
+      })),
+      lowStockProducts: this.products
+        .filter(p => p.stock_quantity <= (p.reorder_level || 10))
+        .slice(0, 10)
+        .map(p => ({
+          id: p.id,
+          name: p.name,
+          stock_quantity: p.stock_quantity,
+          reorder_level: p.reorder_level || 10,
+        })),
+      paymentBreakdown: [
+        { method: 'CASH', amount: totalSales * 0.6, count: Math.floor(todayTransactions.length * 0.6), percentage: 60 },
+        { method: 'GCASH', amount: totalSales * 0.25, count: Math.floor(todayTransactions.length * 0.25), percentage: 25 },
+        { method: 'CARD', amount: totalSales * 0.15, count: Math.floor(todayTransactions.length * 0.15), percentage: 15 },
+      ],
+      recentTransactions: todayTransactions.slice(0, 10).map(t => ({
+        id: t.id,
+        invoice_number: t.invoice_number || `INV-${t.id}`,
+        total_amount: t.total_amount || 0,
+        payment_method: t.payment_method || 'CASH',
+        customer_name: 'Walk-in Customer',
+        transaction_date: t.transaction_date || new Date().toISOString(),
+      })),
+      hourlyData,
+    };
   }
 }

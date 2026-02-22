@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface POSDiscountModalProps {
   visible: boolean;
@@ -31,6 +32,7 @@ export default function POSDiscountModal({
   onClear,
   onClose,
 }: POSDiscountModalProps) {
+  const { sp, fs, lo } = useResponsiveTheme();
   const [discountType, setDiscountType] = useState<'percent' | 'amount'>('percent');
   const [value, setValue] = useState('');
 
@@ -101,15 +103,15 @@ export default function POSDiscountModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Apply Discount</Text>
+            <Text style={[styles.headerTitle, { fontSize: fs.h3 }]}>Apply Discount</Text>
             <IconButton icon="close" size={24} onPress={onClose} />
           </View>
 
           {/* Discount Type Selection */}
-          <View style={styles.typeSection}>
+          <View style={[styles.typeSection, { padding: sp.md }]}>
             <TouchableOpacity
               style={[
                 styles.typeButton,
@@ -181,8 +183,8 @@ export default function POSDiscountModal({
                   setValue(cleaned);
                 }}
                 keyboardType="decimal-pad"
-                placeholder={discountType === 'percent' ? '10' : '100'}
-                placeholderTextColor="#9E9E9E"
+                placeholder="0"
+                placeholderTextColor="#BDBDBD"
                 autoFocus
               />
               {discountType === 'percent' && (

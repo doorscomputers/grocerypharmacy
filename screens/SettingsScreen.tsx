@@ -5,6 +5,7 @@ import {
   ScrollView,
   Alert,
   Platform,
+  Linking,
 } from 'react-native';
 import * as ExpoFileSystem from 'expo-file-system/legacy';
 import {
@@ -19,12 +20,14 @@ import {
   Dialog,
   Portal,
   Divider,
+  Text,
+  IconButton,
 } from 'react-native-paper';
 import { ScreenGuard } from '../components/RoleGuard';
 import { StableTextInput } from '../components/StableTextInput';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { RootStackParamList } from '../App';
+import { RootStackParamList, refreshTrialStatus } from '../App';
+import * as Clipboard from 'expo-clipboard';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppTheme } from '../contexts/ThemeContext';
@@ -33,6 +36,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
 import { DatabaseBackupService, BackupInfo } from '../utils/DatabaseBackupService';
+import BarcodeLabelTemplateSettings from '../components/BarcodeLabelTemplateSettings';
+import { DeviceBindingService, TrialStatus } from '../utils/DeviceBindingService';
+import { useResponsiveTheme } from '../utils/responsive';
 
 const WEB_STORAGE_KEY = 'posmobile_webmock_db';
 
@@ -73,6 +79,9 @@ export default function SettingsScreen({ navigation }: Props) {
   const [tempValue, setTempValue] = useState('');
   const [licensePasswordDialogVisible, setLicensePasswordDialogVisible] = useState(false);
   const [licensePassword, setLicensePassword] = useState('');
+  const [labelTemplateVisible, setLabelTemplateVisible] = useState(false);
+  const [clearInventoryPasswordVisible, setClearInventoryPasswordVisible] = useState(false);
+  const [clearInventoryPassword, setClearInventoryPassword] = useState('');
   const [dbHealth, setDbHealth] = useState<{
     isHealthy: boolean;
     walMode: boolean;
@@ -82,11 +91,18 @@ export default function SettingsScreen({ navigation }: Props) {
     issues: string[];
   } | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
+  const [fixingIssues, setFixingIssues] = useState(false);
   const [diskSpace, setDiskSpace] = useState<{ free: number; total: number } | null>(null);
   const [backupList, setBackupList] = useState<BackupInfo[]>([]);
   const [showBackupList, setShowBackupList] = useState(false);
   const [loadingBackups, setLoadingBackups] = useState(false);
+  const [licenseStatus, setLicenseStatus] = useState<TrialStatus | null>(null);
+  const [deviceId, setDeviceId] = useState('');
+  const [licenseKeyInput, setLicenseKeyInput] = useState('');
+  const [activating, setActivating] = useState(false);
+  const [deviceIdCopied, setDeviceIdCopied] = useState(false);
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user } = useAuth();
   const { themeName, setTheme, availableThemes, colors } = useAppTheme();
 
@@ -94,7 +110,108 @@ export default function SettingsScreen({ navigation }: Props) {
     loadSettings();
     checkDatabaseHealth();
     checkDiskSpace();
+    loadLicenseStatus();
+    loadDeviceId();
   }, []);
+
+  const loadLicenseStatus = async () => {
+    try {
+      const status = await DeviceBindingService.getTrialStatus();
+      setLicenseStatus(status);
+    } catch (error) {
+      console.error('Error loading license status:', error);
+    }
+  };
+
+  const loadDeviceId = async () => {
+    try {
+      const id = await DeviceBindingService.getCurrentDeviceId();
+      setDeviceId(id);
+    } catch (error) {
+      console.error('Error loading device ID:', error);
+    }
+  };
+
+  const copyDeviceId = async () => {
+    try {
+      await Clipboard.setStringAsync(deviceId);
+      setDeviceIdCopied(true);
+      setTimeout(() => setDeviceIdCopied(false), 2000);
+    } catch (err) {
+      Alert.alert('Error', 'Failed to copy Device ID');
+    }
+  };
+
+  const formatLicenseKeyInput = (text: string) => {
+    const cleaned = text.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const parts = cleaned.match(/.{1,4}/g) || [];
+    return parts.slice(0, 4).join('-');
+  };
+
+  const handleActivateLicense = async () => {
+    if (!licenseKeyInput.trim()) {
+      Alert.alert('Error', 'Please enter a license key');
+      return;
+    }
+    setActivating(true);
+    try {
+      const result = await DeviceBindingService.activateDevice(licenseKeyInput);
+      if (result.success) {
+        Alert.alert('Success', result.message);
+        setLicenseKeyInput('');
+        await loadLicenseStatus();
+        if (refreshTrialStatus) refreshTrialStatus();
+      } else {
+        Alert.alert('Activation Failed', result.message);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred during activation');
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  const SELLER_PHONE = '+639623108957';
+  const SELLER_EMAIL = 'igorotekit@gmail.com';
+  const APP_NAME = 'IgoroTech POS';
+
+  const getActivationMessage = () => {
+    return `Hello, I would like to request a license key for ${APP_NAME}.\n\nMy Device ID is:\n${deviceId}\n\nThank you!`;
+  };
+
+  const sendDeviceIdViaWhatsApp = async () => {
+    if (!deviceId) return;
+    try {
+      const message = encodeURIComponent(getActivationMessage());
+      const url = `whatsapp://send?phone=${SELLER_PHONE}&text=${message}`;
+      await Linking.openURL(url);
+    } catch (err) {
+      Alert.alert('Error', 'Could not open WhatsApp');
+    }
+  };
+
+  const sendDeviceIdViaSMS = async () => {
+    if (!deviceId) return;
+    try {
+      const message = encodeURIComponent(getActivationMessage());
+      const url = `sms:${SELLER_PHONE}?body=${message}`;
+      await Linking.openURL(url);
+    } catch (err) {
+      Alert.alert('Error', 'Could not open SMS');
+    }
+  };
+
+  const sendDeviceIdViaEmail = async () => {
+    if (!deviceId) return;
+    try {
+      const subject = encodeURIComponent(`License Key Request - ${APP_NAME}`);
+      const body = encodeURIComponent(getActivationMessage());
+      const url = `mailto:${SELLER_EMAIL}?subject=${subject}&body=${body}`;
+      await Linking.openURL(url);
+    } catch (err) {
+      Alert.alert('Error', 'Could not open email app');
+    }
+  };
 
   const checkDatabaseHealth = useCallback(async () => {
     setCheckingHealth(true);
@@ -159,6 +276,36 @@ export default function SettingsScreen({ navigation }: Props) {
       Alert.alert('Error', `Checkpoint failed: ${error}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFixIssues = async () => {
+    try {
+      setFixingIssues(true);
+      const dbService = getDatabase();
+      const result = await dbService.fixDatabaseIssues();
+
+      if (result.success) {
+        Alert.alert(
+          'Issues Fixed',
+          result.fixesApplied.length > 0
+            ? `The following fixes were applied:\n\n${result.fixesApplied.map(f => '• ' + f).join('\n')}\n\nYour database is now properly configured.`
+            : 'No issues found that needed fixing.',
+          [{ text: 'OK' }]
+        );
+        // Refresh health check to show updated status
+        await checkDatabaseHealth();
+      } else {
+        Alert.alert(
+          'Fix Incomplete',
+          result.message,
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      Alert.alert('Error', `Failed to fix issues: ${error}`);
+    } finally {
+      setFixingIssues(false);
     }
   };
 
@@ -527,7 +674,10 @@ export default function SettingsScreen({ navigation }: Props) {
                 {
                   text: 'Yes, Clear All',
                   style: 'destructive',
-                  onPress: performClearPhysicalInventory,
+                  onPress: () => {
+                    setClearInventoryPassword('');
+                    setClearInventoryPasswordVisible(true);
+                  },
                 },
               ]
             );
@@ -537,10 +687,27 @@ export default function SettingsScreen({ navigation }: Props) {
     );
   };
 
-  const performClearPhysicalInventory = async () => {
+  const handleClearInventoryPasswordSubmit = async () => {
+    if (!clearInventoryPassword.trim()) {
+      Alert.alert('Error', 'Please enter your admin password');
+      return;
+    }
+
     try {
       setLoading(true);
       const dbService = getDatabase();
+      const isValid = await dbService.verifyAdminPassword(clearInventoryPassword);
+
+      if (!isValid) {
+        Alert.alert('Access Denied', 'Incorrect admin password');
+        setClearInventoryPassword('');
+        setLoading(false);
+        return;
+      }
+
+      setClearInventoryPasswordVisible(false);
+      setClearInventoryPassword('');
+
       await dbService.clearPhysicalInventoryData();
       Alert.alert('Success', 'Physical inventory data cleared and stock quantities reset to zero successfully.');
     } catch (error) {
@@ -710,14 +877,14 @@ export default function SettingsScreen({ navigation }: Props) {
 
   return (
     <ScreenGuard screenName="Settings">
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <ScrollView style={styles.scrollView}>
-        <View style={styles.content}>
+        <View style={[styles.content, { padding: lo.screenPadding }]}>
           {/* Profile Section */}
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.cardTitle}>My Profile</Title>
-              <Paragraph style={styles.cardSubtitle}>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>My Profile</Title>
+              <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
                 Manage your account settings
               </Paragraph>
 
@@ -923,6 +1090,113 @@ export default function SettingsScreen({ navigation }: Props) {
             </Card.Content>
           </Card>
 
+          {/* License Status - Show for all users */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Title style={styles.cardTitle}>License Status</Title>
+              {licenseStatus && (
+                <View style={styles.licenseStatusContainer}>
+                  <View style={[
+                    styles.licenseStatusBadge,
+                    { backgroundColor: licenseStatus.isFullLicense ? '#4CAF50' : licenseStatus.isTrialActive ? '#FF9800' : '#F44336' }
+                  ]}>
+                    <Paragraph style={styles.licenseStatusText}>
+                      {licenseStatus.isFullLicense
+                        ? 'Full License (Activated)'
+                        : licenseStatus.isTrialActive
+                          ? `Trial: ${licenseStatus.daysRemaining} days remaining`
+                          : 'Trial Expired'}
+                    </Paragraph>
+                  </View>
+
+                  {/* Show activation UI when not fully licensed */}
+                  {!licenseStatus.isFullLicense && (
+                    <View style={styles.activationSection}>
+                      <Divider style={{ marginVertical: 16 }} />
+
+                      {/* Device ID */}
+                      <Text style={styles.activationLabel}>Your Device ID:</Text>
+                      <View style={styles.deviceIdRow}>
+                        <Text
+                          style={styles.deviceIdText}
+                          numberOfLines={1}
+                          ellipsizeMode="middle"
+                        >
+                          {deviceId || 'Loading...'}
+                        </Text>
+                        <IconButton
+                          icon={deviceIdCopied ? 'check' : 'content-copy'}
+                          size={20}
+                          onPress={copyDeviceId}
+                        />
+                      </View>
+
+                      {/* Send Device ID Buttons */}
+                      <Text style={styles.activationLabel}>Send Device ID to get your license:</Text>
+                      <View style={styles.sendButtonsRow}>
+                        <Button
+                          mode="contained"
+                          onPress={sendDeviceIdViaWhatsApp}
+                          icon="whatsapp"
+                          style={[styles.sendButton, { backgroundColor: '#25D366' }]}
+                          labelStyle={styles.sendButtonLabel}
+                          disabled={!deviceId}
+                          compact
+                        >
+                          WhatsApp
+                        </Button>
+                        <Button
+                          mode="contained"
+                          onPress={sendDeviceIdViaSMS}
+                          icon="message-text"
+                          style={[styles.sendButton, { backgroundColor: '#2196F3' }]}
+                          labelStyle={styles.sendButtonLabel}
+                          disabled={!deviceId}
+                          compact
+                        >
+                          SMS
+                        </Button>
+                        <Button
+                          mode="contained"
+                          onPress={sendDeviceIdViaEmail}
+                          icon="email"
+                          style={[styles.sendButton, { backgroundColor: '#EA4335' }]}
+                          labelStyle={styles.sendButtonLabel}
+                          disabled={!deviceId}
+                          compact
+                        >
+                          Email
+                        </Button>
+                      </View>
+
+                      {/* License Key Input */}
+                      <Divider style={{ marginVertical: 16 }} />
+                      <Text style={styles.activationLabel}>Enter License Key:</Text>
+                      <TextInput
+                        mode="outlined"
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        value={licenseKeyInput}
+                        onChangeText={(text) => setLicenseKeyInput(formatLicenseKeyInput(text))}
+                        autoCapitalize="characters"
+                        maxLength={19}
+                        style={{ marginBottom: 12 }}
+                      />
+                      <Button
+                        mode="contained"
+                        onPress={handleActivateLicense}
+                        loading={activating}
+                        disabled={activating || !licenseKeyInput.trim()}
+                        icon="key-variant"
+                      >
+                        Activate License
+                      </Button>
+                    </View>
+                  )}
+                </View>
+              )}
+            </Card.Content>
+          </Card>
+
           {/* License Management - Admin Only */}
           {user?.role === 'ADMIN' && (
             <Card style={styles.card}>
@@ -969,6 +1243,17 @@ export default function SettingsScreen({ navigation }: Props) {
                 left={props => <List.Icon {...props} icon="barcode-scan" />}
                 right={props => <List.Icon {...props} icon="chevron-right" />}
                 onPress={() => navigation.navigate('BarcodeScanner')}
+                style={styles.listItem}
+              />
+
+              <Divider />
+
+              <List.Item
+                title="Label Printing Template"
+                description="Configure barcode label content and layout"
+                left={props => <List.Icon {...props} icon="label" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => setLabelTemplateVisible(true)}
                 style={styles.listItem}
               />
             </Card.Content>
@@ -1069,12 +1354,25 @@ export default function SettingsScreen({ navigation }: Props) {
 
               {/* Protection Actions */}
               <View style={styles.healthActions}>
+                {dbHealth?.issues && dbHealth.issues.length > 0 && (
+                  <Button
+                    mode="contained"
+                    onPress={handleFixIssues}
+                    loading={fixingIssues}
+                    icon="wrench"
+                    style={[styles.healthButton, { backgroundColor: '#FF9800' }]}
+                    disabled={fixingIssues || loading}
+                  >
+                    Fix Issues
+                  </Button>
+                )}
                 <Button
                   mode="outlined"
                   onPress={handleCheckpointWAL}
                   loading={loading}
                   icon="content-save"
                   style={styles.healthButton}
+                  disabled={fixingIssues || loading}
                 >
                   Save to Disk
                 </Button>
@@ -1082,6 +1380,7 @@ export default function SettingsScreen({ navigation }: Props) {
 
               <Paragraph style={styles.healthNote}>
                 Tip: Database protection is always enabled. Use "Save to Disk" before closing the app to ensure all changes are saved.
+                {dbHealth?.issues && dbHealth.issues.length > 0 && ' Tap "Fix Issues" to resolve the problems above.'}
               </Paragraph>
             </Card.Content>
           </Card>
@@ -1325,6 +1624,43 @@ export default function SettingsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
 
+        {/* Clear Physical Inventory Password Dialog */}
+        <Dialog
+          visible={clearInventoryPasswordVisible}
+          onDismiss={() => {
+            setClearInventoryPasswordVisible(false);
+            setClearInventoryPassword('');
+          }}
+        >
+          <Dialog.Title>Enter Password</Dialog.Title>
+          <Dialog.Content>
+            <Paragraph style={{ marginBottom: 16 }}>
+              Enter your admin password to clear physical inventory data
+            </Paragraph>
+            <TextInput
+              label="Password"
+              value={clearInventoryPassword}
+              onChangeText={setClearInventoryPassword}
+              mode="outlined"
+              secureTextEntry={true}
+              autoFocus={true}
+              style={styles.dialogInput}
+              disabled={loading}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => {
+              setClearInventoryPasswordVisible(false);
+              setClearInventoryPassword('');
+            }} disabled={loading}>Cancel</Button>
+            <Button
+              onPress={handleClearInventoryPasswordSubmit}
+              loading={loading}
+              disabled={loading || !clearInventoryPassword.trim()}
+            >OK</Button>
+          </Dialog.Actions>
+        </Dialog>
+
         {/* Backup List Dialog */}
         <Dialog
           visible={showBackupList}
@@ -1397,7 +1733,26 @@ export default function SettingsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+
+      {/* Label Template Settings Dialog */}
+      <Portal>
+        <Dialog
+          visible={labelTemplateVisible}
+          onDismiss={() => setLabelTemplateVisible(false)}
+          style={{ maxWidth: 600, alignSelf: 'center' }}
+        >
+          <Dialog.Title>Label Template Settings</Dialog.Title>
+          <Dialog.ScrollArea>
+            <ScrollView>
+              <BarcodeLabelTemplateSettings />
+            </ScrollView>
+          </Dialog.ScrollArea>
+          <Dialog.Actions>
+            <Button onPress={() => setLabelTemplateVisible(false)}>Close</Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+    </View>
     </ScreenGuard>
   );
 }
@@ -1426,6 +1781,65 @@ const styles = StyleSheet.create({
     opacity: 0.7,
     marginBottom: 16,
     fontSize: 12,
+  },
+  licenseStatusContainer: {
+    marginTop: 8,
+  },
+  licenseStatusBadge: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  licenseStatusText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+    margin: 0,
+  },
+  licenseHelpText: {
+    marginTop: 12,
+    fontSize: 13,
+    opacity: 0.7,
+    textAlign: 'center',
+  },
+  activationSection: {
+    marginTop: 4,
+  },
+  activationLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 8,
+    opacity: 0.8,
+  },
+  deviceIdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    paddingLeft: 12,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    marginBottom: 16,
+  },
+  deviceIdText: {
+    flex: 1,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 12,
+    color: '#333',
+  },
+  sendButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  sendButton: {
+    flex: 1,
+    borderRadius: 8,
+  },
+  sendButtonLabel: {
+    fontSize: 11,
+    color: '#FFFFFF',
   },
   listItem: {
     paddingVertical: 4,

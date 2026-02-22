@@ -1,7 +1,8 @@
 import React, { memo, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from 'react-native-paper';
 import { Product } from '../../database/schema';
+import { useResponsive, responsiveValue, useResponsiveTheme } from '../../utils/responsive';
 
 interface POSProductCardProps {
   product: Product;
@@ -10,10 +11,10 @@ interface POSProductCardProps {
   numColumns?: number;
 }
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-function POSProductCard({ product, cartQuantity, onPress, numColumns = 2 }: POSProductCardProps) {
+function POSProductCard({ product, cartQuantity, onPress, numColumns }: POSProductCardProps) {
   const theme = useTheme();
+  const { width: screenWidth } = useResponsive();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const handlePress = useCallback(() => {
     onPress(product);
@@ -22,14 +23,23 @@ function POSProductCard({ product, cartQuantity, onPress, numColumns = 2 }: POSP
   const isOutOfStock = (product.stock_quantity || 0) <= 0;
   const isLowStock = (product.stock_quantity || 0) <= 5 && !isOutOfStock;
 
+  // Calculate responsive column count if not provided
+  const columns = numColumns || responsiveValue(screenWidth, {
+    smallPhone: 2,
+    largePhone: 2,
+    smallTablet: 3,
+    largeTablet: 4,
+    default: 2,
+  });
+
   // Calculate card width based on screen width and columns
-  const cardWidth = (SCREEN_WIDTH - 32 - (numColumns - 1) * 8) / numColumns;
+  const cardWidth = (screenWidth - 32 - (columns - 1) * 8) / columns;
 
   return (
     <TouchableOpacity
       style={[
         styles.card,
-        { width: cardWidth },
+        { width: cardWidth, padding: sp.sm },
         isOutOfStock && styles.cardOutOfStock,
         cartQuantity > 0 && styles.cardInCart,
       ]}
@@ -58,7 +68,7 @@ function POSProductCard({ product, cartQuantity, onPress, numColumns = 2 }: POSP
 
       {/* Product info */}
       <View style={styles.productInfo}>
-        <Text style={styles.productName} numberOfLines={2}>
+        <Text style={[styles.productName, { fontSize: fs.bodySmall }]} numberOfLines={2}>
           {product.name}
         </Text>
         <Text style={styles.productCode} numberOfLines={1}>
@@ -68,7 +78,7 @@ function POSProductCard({ product, cartQuantity, onPress, numColumns = 2 }: POSP
 
       {/* Price */}
       <View style={styles.priceContainer}>
-        <Text style={[styles.price, isOutOfStock && styles.priceOutOfStock]}>
+        <Text style={[styles.price, { fontSize: fs.body }, isOutOfStock && styles.priceOutOfStock]}>
           ₱{product.price.toFixed(2)}
         </Text>
       </View>

@@ -16,11 +16,11 @@ import {
   Text,
   IconButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { DeviceBindingService } from '../utils/DeviceBindingService';
 import * as Clipboard from 'expo-clipboard';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type LicenseGeneratorScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -37,6 +37,7 @@ export default function LicenseGeneratorScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const handleGenerateLicenseKey = async () => {
     if (!deviceId.trim()) {
@@ -73,12 +74,12 @@ export default function LicenseGeneratorScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['bottom']}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.content}>
+        <View style={[styles.content, { padding: lo.screenPadding }]}>
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={[styles.title, { color: theme.colors.primary }]}>
+              <Title style={[styles.title, { color: theme.colors.primary, fontSize: fs.h2 }]}>
                 License Key Generator
               </Title>
               <Paragraph style={styles.subtitle}>
@@ -176,7 +177,7 @@ export default function LicenseGeneratorScreen({ navigation }: Props) {
           </Card>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 

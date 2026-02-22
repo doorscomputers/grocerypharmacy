@@ -5,12 +5,13 @@
  * Scrollable to accommodate many options without cluttering the screen
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
 import { spacing, typography, borderRadius, shadows, layout } from '../../utils/theme';
+import { useResponsive, responsiveValue, useResponsiveTheme } from '../../utils/responsive';
 
 export interface QuickAction {
   id: string;
@@ -35,6 +36,26 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
   onShowMore,
 }) => {
   const { colors } = useAppTheme();
+  const { width } = useResponsive();
+  const { fs } = useResponsiveTheme();
+
+  // Calculate responsive action button size
+  const actionSize = useMemo(() => responsiveValue(width, {
+    smallPhone: 60,
+    largePhone: 64,
+    smallTablet: 68,
+    largeTablet: 72,
+    default: 72,
+  }), [width]);
+
+  // Calculate responsive icon container size
+  const iconSize = useMemo(() => responsiveValue(width, {
+    smallPhone: 44,
+    largePhone: 46,
+    smallTablet: 48,
+    largeTablet: 48,
+    default: 48,
+  }), [width]);
 
   // Limit visible actions if maxVisible is set
   const visibleActions = maxVisible ? actions.slice(0, maxVisible) : actions;
@@ -44,7 +65,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
     <View style={styles.container}>
       {title && (
         <View style={styles.titleRow}>
-          <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
+          <Text style={[styles.title, { color: colors.text, fontSize: fs.cardTitle }]}>{title}</Text>
           {onShowMore && (
             <TouchableOpacity onPress={onShowMore} style={styles.searchButton}>
               <MaterialCommunityIcons name="magnify" size={20} color={colors.primary} />
@@ -63,12 +84,23 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             key={action.id}
             onPress={action.onPress}
             activeOpacity={0.7}
-            style={[styles.actionButton, shadows.card, { backgroundColor: colors.surface }]}
+            style={[
+              styles.actionButton,
+              shadows.card,
+              { backgroundColor: colors.surface, width: actionSize }
+            ]}
           >
-            <View style={[styles.iconContainer, { backgroundColor: (action.color || colors.primary) + '15' }]}>
+            <View style={[
+              styles.iconContainer,
+              {
+                backgroundColor: (action.color || colors.primary) + '15',
+                width: iconSize,
+                height: iconSize,
+              }
+            ]}>
               <MaterialCommunityIcons
                 name={action.icon}
-                size={28}
+                size={iconSize * 0.58}
                 color={action.color || colors.primary}
               />
               {action.badge !== undefined && action.badge > 0 && (
@@ -80,7 +112,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
               )}
             </View>
             <Text
-              style={[styles.actionLabel, { color: colors.text }]}
+              style={[styles.actionLabel, { color: colors.text, fontSize: fs.caption }]}
               numberOfLines={2}
             >
               {action.label}
@@ -92,12 +124,23 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
           <TouchableOpacity
             onPress={onShowMore}
             activeOpacity={0.7}
-            style={[styles.actionButton, styles.moreButton, { backgroundColor: colors.primary + '10' }]}
+            style={[
+              styles.actionButton,
+              styles.moreButton,
+              { backgroundColor: colors.primary + '10', width: actionSize }
+            ]}
           >
-            <View style={[styles.iconContainer, { backgroundColor: colors.primary + '20' }]}>
+            <View style={[
+              styles.iconContainer,
+              {
+                backgroundColor: colors.primary + '20',
+                width: iconSize,
+                height: iconSize,
+              }
+            ]}>
               <MaterialCommunityIcons
                 name="dots-horizontal"
-                size={28}
+                size={iconSize * 0.58}
                 color={colors.primary}
               />
             </View>
@@ -150,14 +193,13 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   actionButton: {
-    width: layout.quickActionSize,
+    // Width now set dynamically via inline styles
     alignItems: 'center',
     padding: spacing.sm,
     borderRadius: borderRadius.md,
   },
   iconContainer: {
-    width: 48,
-    height: 48,
+    // Width and height now set dynamically via inline styles
     borderRadius: borderRadius.md,
     justifyContent: 'center',
     alignItems: 'center',

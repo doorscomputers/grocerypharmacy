@@ -18,12 +18,13 @@ import {
   Avatar,
   Divider,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { useAuth } from '../contexts/AuthContext';
 import { getDatabase } from '../database/getDatabase';
 import { hashPassword, verifyPassword } from '../utils/passwordHash';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type ProfileScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -36,6 +37,7 @@ type Props = {
 
 export default function ProfileScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { user, updateUser, logout } = useAuth();
 
   // Dialog states
@@ -215,18 +217,18 @@ export default function ProfileScreen({ navigation }: Props) {
 
   if (!user) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.centered}>
           <Paragraph>Please login to view your profile</Paragraph>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView style={styles.scrollView}>
-        <View style={styles.content}>
+        <View style={[styles.content, { padding: lo.screenPadding }]}>
           {/* Profile Header */}
           <Card style={styles.profileCard}>
             <Card.Content style={styles.profileHeader}>
@@ -247,8 +249,8 @@ export default function ProfileScreen({ navigation }: Props) {
           {/* Account Settings */}
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Account Settings</Title>
-              <Paragraph style={styles.cardSubtitle}>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Account Settings</Title>
+              <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
                 Manage your account credentials
               </Paragraph>
 
@@ -413,7 +415,7 @@ export default function ProfileScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

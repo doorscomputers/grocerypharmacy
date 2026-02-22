@@ -269,7 +269,7 @@ export class ESCPOSBuilder {
    * Cut the paper
    */
   cut(partial: boolean = false): this {
-    this.feed(3); // Feed before cut
+    this.feed(1); // Feed before cut (minimal spacing to save paper)
     this.buffer.push(...(partial ? COMMANDS.CUT_PAPER_PARTIAL : COMMANDS.CUT_PAPER));
     return this;
   }
@@ -511,9 +511,6 @@ export function buildReceipt(data: ReceiptData, printerWidth: number = PRINTER_W
     builder.feed().println(data.footerText);
   }
 
-  builder
-    .feed(2);
-
   // Cut paper
   builder.cut();
 
@@ -551,7 +548,6 @@ export function buildTestPrint(printerWidth: number = PRINTER_WIDTH.MM_58): ESCP
     .println('Printer is working!')
     .feed()
     .println(new Date().toLocaleString())
-    .feed(2)
     .cut();
 
   return builder;
@@ -563,23 +559,56 @@ export function buildTestPrint(printerWidth: number = PRINTER_WIDTH.MM_58): ESCP
 export function buildXReading(
   data: {
     businessName: string;
+    businessAddress?: string;
     tin?: string;
-    readingNumber: number;
     cashierName: string;
-    startTime: Date;
-    endTime: Date;
+    date: string;
+    time: string;
+    // Sales Summary
     transactionCount: number;
     grossSales: number;
-    netSales: number;
-    vatAmount: number;
     discounts: number;
+    refundAmount: number;
+    netSales: number;
+    // VAT Breakdown
+    vatSales: number;
+    vatAmount: number;
+    vatExemptSales: number;
+    zeroRatedSales: number;
+    // Payment Methods
+    cashSales: number;
+    cardSales: number;
+    checkSales: number;
+    onlineSales: number;
+    creditSales: number;
+    // Voids / Exchanges / Refunds
     voidCount: number;
     voidAmount: number;
+    exchangeCount: number;
+    exchangeAmount: number;
+    refundCount: number;
+    // AR Collections
+    customerPaymentsCash?: number;
+    customerPaymentsCheck?: number;
+    customerPaymentsCard?: number;
+    customerPaymentsOnline?: number;
+    customerPaymentsBankTransfer?: number;
+    customerPaymentsTotal?: number;
+    // Cash Drawer
+    beginningCash: number;
+    openingFund: number;
+    cashIn: number;
+    cashOut: number;
+    pettyCash: number;
+    cashRefunds: number;
+    expectedCash: number;
   },
   printerWidth: number = PRINTER_WIDTH.MM_58
 ): ESCPOSBuilder {
   const builder = new ESCPOSBuilder(printerWidth);
+  const fmt = (v: number) => `P${v.toFixed(2)}`;
 
+  // Header
   builder
     .align('center')
     .bold(true)
@@ -587,40 +616,123 @@ export function buildXReading(
     .println('X-READING')
     .normalSize()
     .bold(false)
-    .println(data.businessName)
+    .println(data.businessName);
+
+  if (data.businessAddress) {
+    builder.println(data.businessAddress);
+  }
+
+  builder
     .println(`TIN: ${data.tin || 'N/A'}`)
     .feed()
     .doubleSeparator()
     .align('left');
 
+  // Info
   builder
-    .leftRight('Reading No:', `#${data.readingNumber}`)
+    .leftRight('Date:', data.date)
+    .leftRight('Time:', data.time)
     .leftRight('Cashier:', data.cashierName)
-    .leftRight('Start:', data.startTime.toLocaleString())
-    .leftRight('End:', data.endTime.toLocaleString())
     .separator();
 
+  // Sales Summary
   builder
+    .bold(true)
+    .println('SALES SUMMARY')
+    .bold(false)
     .leftRight('Transactions:', data.transactionCount.toString())
-    .leftRight('Gross Sales:', `P${data.grossSales.toFixed(2)}`)
-    .leftRight('Discounts:', `-P${data.discounts.toFixed(2)}`)
-    .leftRight('VAT:', `P${data.vatAmount.toFixed(2)}`)
+    .leftRight('Gross Sales:', fmt(data.grossSales))
+    .leftRight('Less: Discounts:', `-${fmt(data.discounts)}`)
+    .leftRight('Less: Refunds:', `-${fmt(data.refundAmount)}`)
     .separator()
     .bold(true)
-    .leftRight('NET SALES:', `P${data.netSales.toFixed(2)}`)
+    .leftRight('NET SALES:', fmt(data.netSales))
     .bold(false)
     .separator();
 
+  // VAT Breakdown
   builder
-    .leftRight('Void Count:', data.voidCount.toString())
-    .leftRight('Void Amount:', `P${data.voidAmount.toFixed(2)}`);
+    .bold(true)
+    .println('VAT BREAKDOWN')
+    .bold(false)
+    .leftRight('VATable Sales:', fmt(data.vatSales))
+    .leftRight('VAT Amount (12%):', fmt(data.vatAmount))
+    .leftRight('VAT Exempt Sales:', fmt(data.vatExemptSales))
+    .leftRight('Zero-Rated Sales:', fmt(data.zeroRatedSales))
+    .separator();
 
+  // Payment Methods
+  builder
+    .bold(true)
+    .println('BY PAYMENT METHOD')
+    .bold(false)
+    .leftRight('Cash Sales:', fmt(data.cashSales))
+    .leftRight('Card Sales:', fmt(data.cardSales))
+    .leftRight('Check Sales:', fmt(data.checkSales))
+    .leftRight('GCash/Maya:', fmt(data.onlineSales))
+    .leftRight('Credit/Charge:', fmt(data.creditSales))
+    .separator();
+
+  // Voids / Exchanges / Refunds
+  builder
+    .bold(true)
+    .println('VOIDS / EXCHANGES / REFUNDS')
+    .bold(false)
+    .leftRight('Void Count:', data.voidCount.toString())
+    .leftRight('Void Amount:', fmt(data.voidAmount))
+    .leftRight('Exchange Count:', data.exchangeCount.toString())
+    .leftRight('Exchange Amount:', fmt(data.exchangeAmount))
+    .leftRight('Refund Count:', data.refundCount.toString())
+    .leftRight('Refund Amount:', fmt(data.refundAmount))
+    .separator();
+
+  // AR Collections (only if there are any)
+  const arTotal = data.customerPaymentsTotal || 0;
+  if (arTotal > 0) {
+    builder
+      .bold(true)
+      .println('AR COLLECTIONS')
+      .bold(false)
+      .leftRight('Cash:', fmt(data.customerPaymentsCash || 0))
+      .leftRight('Check:', fmt(data.customerPaymentsCheck || 0))
+      .leftRight('Card:', fmt(data.customerPaymentsCard || 0))
+      .leftRight('GCash/Online:', fmt(data.customerPaymentsOnline || 0))
+      .leftRight('Bank Transfer:', fmt(data.customerPaymentsBankTransfer || 0))
+      .bold(true)
+      .leftRight('Total Collections:', fmt(arTotal))
+      .bold(false)
+      .separator();
+  }
+
+  // Cash Drawer
+  builder
+    .bold(true)
+    .println('CASH DRAWER')
+    .bold(false)
+    .leftRight('Beginning Cash:', fmt(data.beginningCash))
+    .leftRight('Add: Opening Fund:', fmt(data.openingFund))
+    .leftRight('Add: Cash In:', fmt(data.cashIn))
+    .leftRight('Add: Cash Sales:', fmt(data.cashSales));
+
+  if (arTotal > 0 && (data.customerPaymentsCash || 0) > 0) {
+    builder.leftRight('Add: AR Cash:', fmt(data.customerPaymentsCash || 0));
+  }
+
+  builder
+    .leftRight('Less: Cash Out:', `-${fmt(data.cashOut)}`)
+    .leftRight('Less: Petty Cash:', `-${fmt(data.pettyCash)}`)
+    .leftRight('Less: Cash Refunds:', `-${fmt(data.cashRefunds)}`)
+    .separator()
+    .bold(true)
+    .leftRight('EXPECTED CASH:', fmt(data.expectedCash))
+    .bold(false);
+
+  // Footer
   builder
     .feed()
     .align('center')
     .println('*** NON-FISCAL ***')
     .println('*** INQUIRY ONLY ***')
-    .feed(2)
     .cut();
 
   return builder;
@@ -653,6 +765,33 @@ export function buildZReading(
     zeroRatedSales: number;
     transactionCount: number;
     cashierName: string;
+    // Voids / Exchanges / Refunds
+    voidCount?: number;
+    exchangeCount?: number;
+    exchangeAmount?: number;
+    refundCount?: number;
+    refundAmount?: number;
+    // AR Collections
+    customerPaymentsCash?: number;
+    customerPaymentsCheck?: number;
+    customerPaymentsCard?: number;
+    customerPaymentsOnline?: number;
+    customerPaymentsBankTransfer?: number;
+    customerPaymentsTotal?: number;
+    // Supplier Payments
+    supplierPaymentsMade?: number;
+    // Cash Drawer (optional)
+    beginningCash?: number;
+    openingFund?: number;
+    cashIn?: number;
+    cashOut?: number;
+    cashSales?: number;
+    cashFund?: number;       // For backward compatibility (opening_fund + cash_in)
+    pettyCash?: number;
+    cashRefunds?: number;
+    expectedCash?: number;
+    actualCash?: number;
+    cashVariance?: number;
   },
   printerWidth: number = PRINTER_WIDTH.MM_58
 ): ESCPOSBuilder {
@@ -727,10 +866,125 @@ export function buildZReading(
     .leftRight('Zero Rated:', `P${data.zeroRatedSales.toFixed(2)}`)
     .separator();
 
+  // Voids / Exchanges / Refunds
+  builder
+    .bold(true)
+    .println('VOIDS / EXCHANGES / REFUNDS')
+    .bold(false)
+    .leftRight('Void Count:', (data.voidCount || 0).toString())
+    .leftRight('Void Amount:', `P${data.voidAmount.toFixed(2)}`)
+    .leftRight('Exchange Count:', (data.exchangeCount || 0).toString())
+    .leftRight('Exchange Amount:', `P${(data.exchangeAmount || 0).toFixed(2)}`)
+    .leftRight('Refund Count:', (data.refundCount || 0).toString())
+    .leftRight('Refund Amount:', `P${(data.refundAmount || data.returnAmount).toFixed(2)}`)
+    .separator();
+
+  // AR Collections (only if there are any)
+  const zArTotal = data.customerPaymentsTotal || 0;
+  if (zArTotal > 0) {
+    builder
+      .bold(true)
+      .println('AR COLLECTIONS')
+      .bold(false)
+      .leftRight('Cash:', `P${(data.customerPaymentsCash || 0).toFixed(2)}`)
+      .leftRight('Check:', `P${(data.customerPaymentsCheck || 0).toFixed(2)}`)
+      .leftRight('Card:', `P${(data.customerPaymentsCard || 0).toFixed(2)}`)
+      .leftRight('GCash/Online:', `P${(data.customerPaymentsOnline || 0).toFixed(2)}`)
+      .leftRight('Bank Transfer:', `P${(data.customerPaymentsBankTransfer || 0).toFixed(2)}`)
+      .bold(true)
+      .leftRight('Total Collections:', `P${zArTotal.toFixed(2)}`)
+      .bold(false)
+      .separator();
+  }
+
+  // Supplier Payments (only if there are any)
+  if ((data.supplierPaymentsMade || 0) > 0) {
+    builder
+      .bold(true)
+      .println('SUPPLIER PAYMENTS')
+      .bold(false)
+      .leftRight('Total Paid:', `P${(data.supplierPaymentsMade || 0).toFixed(2)}`)
+      .separator();
+  }
+
   // Summary
   builder
     .leftRight('Trans Count:', data.transactionCount.toString())
-    .leftRight('Cashier:', data.cashierName)
+    .leftRight('Cashier:', data.cashierName);
+
+  // Cash Drawer Section (if provided)
+  if (data.beginningCash !== undefined || data.expectedCash !== undefined) {
+    builder
+      .separator()
+      .bold(true)
+      .println('CASH DRAWER')
+      .bold(false);
+
+    if (data.beginningCash !== undefined) {
+      builder.leftRight('Beginning Cash:', `P${data.beginningCash.toFixed(2)}`);
+    }
+
+    // Show detailed breakdown if available, otherwise fall back to combined cashFund
+    if (data.openingFund !== undefined || data.cashIn !== undefined) {
+      if ((data.openingFund || 0) > 0) {
+        builder.leftRight('Add: Opening Fund:', `P${(data.openingFund || 0).toFixed(2)}`);
+      }
+      if ((data.cashIn || 0) > 0) {
+        builder.leftRight('Add: Cash In:', `P${(data.cashIn || 0).toFixed(2)}`);
+      }
+    } else if (data.cashFund !== undefined && data.cashFund > 0) {
+      builder.leftRight('Add: Cash Fund:', `P${data.cashFund.toFixed(2)}`);
+    }
+
+    if (data.cashSales !== undefined) {
+      builder.leftRight('Add: Cash Sales:', `P${data.cashSales.toFixed(2)}`);
+    }
+
+    if ((data.customerPaymentsCash || 0) > 0) {
+      builder.leftRight('Add: AR Cash:', `P${(data.customerPaymentsCash || 0).toFixed(2)}`);
+    }
+
+    // Show detailed breakdown if available, otherwise fall back to combined pettyCash
+    if (data.cashOut !== undefined) {
+      if ((data.cashOut || 0) > 0) {
+        builder.leftRight('Less: Cash Out:', `-P${(data.cashOut || 0).toFixed(2)}`);
+      }
+      if ((data.pettyCash || 0) > 0) {
+        builder.leftRight('Less: Petty Cash:', `-P${(data.pettyCash || 0).toFixed(2)}`);
+      }
+    } else if (data.pettyCash !== undefined && data.pettyCash > 0) {
+      builder.leftRight('Less: Petty Cash:', `-P${data.pettyCash.toFixed(2)}`);
+    }
+
+    if (data.cashRefunds !== undefined && data.cashRefunds > 0) {
+      builder.leftRight('Less: Cash Refunds:', `-P${data.cashRefunds.toFixed(2)}`);
+    }
+
+    if (data.expectedCash !== undefined) {
+      builder
+        .separator()
+        .bold(true)
+        .leftRight('Expected Cash:', `P${data.expectedCash.toFixed(2)}`)
+        .bold(false);
+    }
+
+    if (data.actualCash !== undefined) {
+      builder.leftRight('Actual Cash:', `P${data.actualCash.toFixed(2)}`);
+    }
+
+    if (data.cashVariance !== undefined) {
+      const varianceLabel = data.cashVariance === 0 ? 'BALANCED' :
+        data.cashVariance < 0 ? `SHORT:` : `OVER:`;
+      const varianceValue = data.cashVariance === 0 ? '' : `P${Math.abs(data.cashVariance).toFixed(2)}`;
+
+      builder
+        .bold(true)
+        .leftRight(varianceLabel, varianceValue)
+        .bold(false);
+    }
+  }
+
+  builder
     .feed()
     .align('center')
     .doubleSeparator()
@@ -738,7 +992,6 @@ export function buildZReading(
     .println('*** END OF DAY REPORT ***')
     .bold(false)
     .println(new Date().toLocaleString())
-    .feed(2)
     .cut();
 
   return builder;
@@ -885,7 +1138,6 @@ export function buildPaymentReceipt(
     .println('*** PAYMENT ACKNOWLEDGMENT ***')
     .bold(false)
     .println(new Date().toLocaleString())
-    .feed(2)
     .cut();
 
   return builder;
@@ -1045,7 +1297,6 @@ export function buildReturnReceipt(
     .println('*** SALES RETURN ACKNOWLEDGMENT ***')
     .bold(false)
     .println(new Date().toLocaleString())
-    .feed(2)
     .cut();
 
   return builder;
@@ -1141,7 +1392,232 @@ export function buildPurchaseOrder(
 
   builder.align('center');
   builder.println(new Date().toLocaleString('en-PH'));
-  builder.feed(2).cut();
+  builder.cut();
+
+  return builder;
+}
+
+/**
+ * Label Template Configuration Interface
+ */
+export interface LabelTemplate {
+  showCode: boolean;          // Show product code below barcode
+  showName: boolean;          // Show product name
+  showPrice: boolean;         // Show selling price
+  showCategory: boolean;      // Show category name
+  showAdditionalText: boolean; // Show custom text
+  additionalText: string;     // Custom text content
+}
+
+/**
+ * Barcode Label Data Interface
+ */
+export interface BarcodeLabelData {
+  productCode: string;        // Barcode data (CODE128 format)
+  productName?: string;
+  price?: number;
+  categoryName?: string;
+  additionalText?: string;
+}
+
+/**
+ * Build a barcode label for thermal printer
+ * Optimized for product label printing on 58mm and 80mm printers
+ */
+export function buildBarcodeLabel(
+  data: BarcodeLabelData,
+  template: LabelTemplate,
+  printerWidth: number = PRINTER_WIDTH.MM_58
+): ESCPOSBuilder {
+  const builder = new ESCPOSBuilder(printerWidth);
+
+  // Barcode dimensions based on paper size
+  const barcodeHeight = printerWidth === PRINTER_WIDTH.MM_80 ? 80 : 60;
+  const barcodeWidth = printerWidth === PRINTER_WIDTH.MM_80 ? 3 : 2;
+
+  // Maximum text width for word wrapping
+  const maxTextWidth = printerWidth === PRINTER_WIDTH.MM_80 ? 44 : 28;
+
+  // Helper function to truncate or wrap text
+  const truncateText = (text: string, maxLength: number): string => {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength - 2) + '..';
+  };
+
+  // Top margin
+  builder.feed(1);
+
+  // Center align all content
+  builder.align('center');
+
+  // Print barcode using native ESC/POS command
+  builder.barcode(data.productCode, BARCODE_TYPE.CODE128, barcodeHeight, barcodeWidth);
+
+  // Spacing after barcode
+  builder.feed(1);
+
+  // Print product code (if enabled in template)
+  if (template.showCode) {
+    builder.bold(true);
+    builder.println(data.productCode);
+    builder.bold(false);
+  }
+
+  // Print product name (if enabled and provided)
+  if (template.showName && data.productName) {
+    const truncatedName = truncateText(data.productName, maxTextWidth);
+    builder.println(truncatedName);
+  }
+
+  // Print price (if enabled and provided)
+  if (template.showPrice && data.price !== undefined) {
+    builder.bold(true);
+    builder.println(`₱${data.price.toFixed(2)}`);
+    builder.bold(false);
+  }
+
+  // Print category (if enabled and provided)
+  if (template.showCategory && data.categoryName) {
+    const truncatedCategory = truncateText(data.categoryName, maxTextWidth);
+    builder.println(truncatedCategory);
+  }
+
+  // Print additional text (if enabled)
+  if (template.showAdditionalText && template.additionalText) {
+    const truncatedText = truncateText(template.additionalText, maxTextWidth);
+    builder.println(truncatedText);
+  }
+
+  // Cut paper
+  builder.cut();
+
+  return builder;
+}
+
+// Cash Movement Receipt Data interface
+export interface CashMovementReceiptData {
+  businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  tin?: string;
+  movementType: 'OPENING_FUND' | 'CASH_IN' | 'PETTY_CASH' | 'CASH_OUT';
+  amount: number;
+  description: string;
+  approvedBy?: string;
+  cashierName: string;
+  movementDate: Date;
+  referenceNumber?: string;
+  footerText?: string;
+}
+
+export function buildCashMovementReceipt(
+  data: CashMovementReceiptData,
+  printerWidth: number = PRINTER_WIDTH.MM_58
+): ESCPOSBuilder {
+  const builder = new ESCPOSBuilder(printerWidth);
+
+  const formatDate = (date: Date): string => {
+    return date.toLocaleDateString('en-PH', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  };
+
+  const formatTime = (date: Date): string => {
+    return date.toLocaleTimeString('en-PH', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  const typeLabels: Record<string, string> = {
+    OPENING_FUND: 'CASH FUND',
+    CASH_IN: 'CASH IN',
+    PETTY_CASH: 'PETTY CASH WITHDRAWAL',
+    CASH_OUT: 'CASH OUT',
+  };
+
+  const typeLabel = typeLabels[data.movementType] || data.movementType;
+  const isWithdrawal = data.movementType === 'PETTY_CASH' || data.movementType === 'CASH_OUT';
+
+  // Header
+  builder
+    .initialize()
+    .align('center')
+    .bold(true)
+    .println(data.businessName || 'STORE')
+    .bold(false);
+
+  if (data.businessAddress) {
+    builder.println(data.businessAddress);
+  }
+  if (data.businessPhone) {
+    builder.println(`Tel: ${data.businessPhone}`);
+  }
+  if (data.tin) {
+    builder.println(`TIN: ${data.tin}`);
+  }
+
+  builder
+    .doubleSeparator()
+    .bold(true)
+    .println(typeLabel)
+    .bold(false)
+    .separator()
+    .align('left');
+
+  // Details
+  builder
+    .leftRight('Date:', formatDate(data.movementDate))
+    .leftRight('Time:', formatTime(data.movementDate))
+    .leftRight('Cashier:', data.cashierName);
+
+  if (data.referenceNumber) {
+    builder.leftRight('Ref #:', data.referenceNumber);
+  }
+
+  builder.separator();
+
+  // Amount
+  builder
+    .bold(true)
+    .leftRight(
+      isWithdrawal ? 'AMOUNT WITHDRAWN:' : 'AMOUNT ADDED:',
+      `P${data.amount.toFixed(2)}`
+    )
+    .bold(false)
+    .separator();
+
+  // Description
+  builder.println(`Purpose: ${data.description}`);
+
+  if (data.approvedBy) {
+    builder
+      .feed()
+      .leftRight('Approved By:', data.approvedBy);
+  }
+
+  builder.separator();
+
+  // Footer
+  builder
+    .align('center')
+    .println(isWithdrawal ? 'Cash Withdrawal Acknowledged' : 'Cash Fund Acknowledged');
+
+  if (data.footerText) {
+    builder.feed().println(data.footerText);
+  }
+
+  builder
+    .feed()
+    .doubleSeparator()
+    .bold(true)
+    .println(isWithdrawal ? '*** PETTY CASH VOUCHER ***' : '*** CASH FUND RECEIPT ***')
+    .bold(false)
+    .println(new Date().toLocaleString())
+    .cut();
 
   return builder;
 }
@@ -1158,4 +1634,6 @@ export default {
   buildPaymentReceipt,
   buildReturnReceipt,
   buildPurchaseOrder,
+  buildBarcodeLabel,
+  buildCashMovementReceipt,
 };

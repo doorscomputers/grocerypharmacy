@@ -17,7 +17,6 @@ import {
   Chip,
   useTheme,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
@@ -27,6 +26,7 @@ import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService } from '../utils/permissions';
 import { StableTextInput } from '../components/StableTextInput';
 import { hashPassword } from '../utils/passwordHash';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type UserManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -57,6 +57,7 @@ export default function UserManagementScreen({ navigation }: Props) {
   });
   const theme = useTheme();
   const { user: currentUser } = useAuth();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const DEFAULT_PASSWORD = '123456';
 
@@ -190,9 +191,9 @@ export default function UserManagementScreen({ navigation }: Props) {
 
   return (
     <RoleGuard permission="MANAGE_USERS">
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.header}>
-          <Title style={styles.title}>User Management</Title>
+          <Title style={[styles.title, { fontSize: fs.h2 }]}>User Management</Title>
           <Button
             mode="contained"
             onPress={() => setDialogVisible(true)}
@@ -203,9 +204,9 @@ export default function UserManagementScreen({ navigation }: Props) {
           </Button>
         </View>
 
-        <ScrollView style={styles.content}>
+        <ScrollView style={styles.content} contentContainerStyle={{ padding: lo.screenPadding }}>
           <Card style={styles.card}>
-            <Card.Content>
+            <Card.Content style={{ padding: sp.md }}>
               <DataTable>
                 <DataTable.Header>
                   <DataTable.Title>Username</DataTable.Title>
@@ -383,7 +384,7 @@ export default function UserManagementScreen({ navigation }: Props) {
             </Dialog.Actions>
           </Dialog>
         </Portal>
-      </SafeAreaView>
+      </View>
     </RoleGuard>
   );
 }

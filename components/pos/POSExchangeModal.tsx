@@ -15,6 +15,10 @@ import {
 } from 'react-native';
 import { IconButton, Checkbox } from 'react-native-paper';
 import { DatabaseService } from '../../database/DatabaseService';
+import POSInvoiceListPicker, { InvoiceTransaction } from './POSInvoiceListPicker';
+import POSDiscountWarningBanner from './POSDiscountWarningBanner';
+import POSTransactionCompleteDialog, { TransactionCompleteData } from './POSTransactionCompleteDialog';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface POSExchangeModalProps {
   visible: boolean;
@@ -47,8 +51,8 @@ export default function POSExchangeModal({
   cashierId,
   onSuccess,
 }: POSExchangeModalProps) {
+  const { sp, fs, lo } = useResponsiveTheme();
   const [step, setStep] = useState<'search' | 'select_returns' | 'add_new'>('search');
-  const [invoiceNumber, setInvoiceNumber] = useState('');
   const [transaction, setTransaction] = useState<any>(null);
   const [returnItems, setReturnItems] = useState<ReturnItem[]>([]);
   const [newItems, setNewItems] = useState<NewItem[]>([]);
@@ -58,17 +62,45 @@ export default function POSExchangeModal({
   const [productSearch, setProductSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
   const [isSearchingProducts, setIsSearchingProducts] = useState(false);
+  const [showCompleteDialog, setShowCompleteDialog] = useState(false);
+  const [completeData, setCompleteData] = useState<TransactionCompleteData | null>(null);
+  const [cashierName, setCashierName] = useState<string>('');
 
-  const handleSearch = async () => {
-    if (!invoiceNumber.trim()) {
-      Alert.alert('Error', 'Please enter an invoice number');
-      return;
+  // Load cashier name
+  useEffect(() => {
+    const loadCashierName = async () => {
+      try {
+        const db = DatabaseService.getInstance();
+        const user = await db.getUserById(cashierId);
+        if (user) {
+          setCashierName(user.full_name || user.username);
+        }
+      } catch (error) {
+        console.error('Error loading cashier name:', error);
+      }
+    };
+    if (cashierId) {
+      loadCashierName();
     }
+  }, [cashierId]);
 
+  // Helper to set up transaction for exchange
+  const setupTransactionForExchange = (result: any) => {
+    setTransaction(result);
+    setReturnItems(result.items.map((item: any) => ({
+      ...item,
+      return_quantity: 0,
+      selected: false,
+    })));
+    setStep('select_returns');
+  };
+
+  // Handle invoice search from the picker
+  const handleSearchInvoice = async (invoiceNumber: string) => {
     setIsSearching(true);
     try {
       const db = DatabaseService.getInstance();
-      const result = await db.searchTransactionByInvoice(invoiceNumber.trim());
+      const result = await db.searchTransactionByInvoice(invoiceNumber);
 
       if (!result) {
         Alert.alert('Not Found', 'No transaction found');
@@ -79,16 +111,30 @@ export default function POSExchangeModal({
         return;
       }
 
-      setTransaction(result);
-      setReturnItems(result.items.map((item: any) => ({
-        ...item,
-        return_quantity: 0,
-        selected: false,
-      })));
-      setStep('select_returns');
+      setupTransactionForExchange(result);
     } catch (error) {
       console.error('Error searching:', error);
       Alert.alert('Error', 'Failed to search');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Handle invoice selection from browse list
+  const handleSelectInvoice = async (invoice: InvoiceTransaction) => {
+    setIsSearching(true);
+    try {
+      const db = DatabaseService.getInstance();
+      // Fetch full transaction details including items
+      const result = await db.searchTransactionByInvoice(invoice.invoice_number || invoice.transaction_number);
+      if (result && result.status !== 'VOID') {
+        setupTransactionForExchange(result);
+      } else if (result?.status === 'VOID') {
+        Alert.alert('Invalid', 'Cannot exchange from voided transaction');
+      }
+    } catch (error) {
+      console.error('Error fetching transaction details:', error);
+      Alert.alert('Error', 'Failed to load transaction details');
     } finally {
       setIsSearching(false);
     }
@@ -200,15 +246,29 @@ export default function POSExchangeModal({
     }
 
     const difference = calculateDifference();
-    const differenceText = difference > 0
-      ? `Customer pays additional: ${formatCurrency(difference)}`
-      : difference < 0
-        ? `Customer receives: ${formatCurrency(Math.abs(difference))}`
-        : 'No payment difference';
+    const isCreditTransaction = transaction.payment_method === 'CHARGE_INVOICE';
+
+    let differenceText = '';
+    if (difference > 0) {
+      differenceText = isCreditTransaction
+        ? `Customer balance increases by: ${formatCurrency(difference)}`
+        : `Customer pays additional: ${formatCurrency(difference)}`;
+    } else if (difference < 0) {
+      differenceText = isCreditTransaction
+        ? `Customer balance decreases by: ${formatCurrency(Math.abs(difference))}`
+        : `Customer receives: ${formatCurrency(Math.abs(difference))}`;
+    } else {
+      differenceText = 'No payment difference';
+    }
+
+    const hasDiscount = transaction.discount_amount > 0;
+    const discountWarning = hasDiscount
+      ? `\n\n⚠️ NOTE: Original transaction had a ₱${transaction.discount_amount.toFixed(2)} discount. Exchange values are based on actual paid amounts.`
+      : '';
 
     Alert.alert(
       'Confirm Exchange',
-      `Return ${selectedReturns.length} item(s) for ${newItems.length} new item(s).\n\n${differenceText}`,
+      `Return ${selectedReturns.length} item(s) for ${newItems.length} new item(s).\n\n${differenceText}${discountWarning}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -250,23 +310,73 @@ export default function POSExchangeModal({
                 });
               }
 
-              // Handle cash difference
+              // Handle difference based on payment method
               if (difference !== 0) {
-                if (difference < 0) {
-                  // Customer receives money - cash refund
-                  await db.createCashMovement({
-                    movement_type: 'CASH_REFUND',
-                    amount: Math.abs(difference),
-                    description: `Exchange difference refund - ${transaction.invoice_number}`,
-                    reference_number: transaction.invoice_number,
-                    cashier_id: cashierId,
-                  });
+                const isCreditTx = transaction.payment_method === 'CHARGE_INVOICE';
+
+                if (isCreditTx) {
+                  // Credit transaction - adjust AR balance instead of cash
+                  // New balance = original balance - returned amount + replacement amount
+                  // If difference < 0: balance decreases (customer owes less)
+                  // If difference > 0: balance increases (customer owes more)
+                  await db.adjustAccountsReceivableForExchange(
+                    transaction.id,
+                    difference, // positive = increase balance, negative = decrease balance
+                    `Exchange adjustment - ${returnResult.returnNumber}`,
+                    cashierId
+                  );
+                } else {
+                  // Cash transaction - handle cash movements
+                  if (difference < 0) {
+                    // Customer receives money - cash refund
+                    await db.createCashMovement({
+                      movement_type: 'CASH_REFUND',
+                      amount: Math.abs(difference),
+                      description: `Exchange difference refund - ${transaction.invoice_number}`,
+                      reference_number: transaction.invoice_number,
+                      cashier_id: cashierId,
+                    });
+                  } else {
+                    // Customer pays additional - record cash received
+                    await db.createCashMovement({
+                      movement_type: 'CASH_IN',
+                      amount: difference,
+                      description: `Exchange additional payment - ${transaction.invoice_number}`,
+                      reference_number: transaction.invoice_number,
+                      cashier_id: cashierId,
+                    });
+                  }
                 }
-                // If difference > 0, customer pays - this would be handled in a new sale
               }
 
-              Alert.alert('Success', 'Exchange processed successfully');
-              handleClose();
+              // Prepare data for complete dialog
+              const isCreditTx = transaction.payment_method === 'CHARGE_INVOICE';
+              setCompleteData({
+                transactionType: 'EXCHANGE',
+                referenceNumber: returnResult.returnNumber,
+                originalInvoice: transaction.invoice_number,
+                customerName: transaction.customer_name,
+                totalAmount: calculateReturnTotal(),
+                reason: exchangeReason.trim(),
+                items: selectedReturns.map(item => ({
+                  name: item.product_name,
+                  quantity: item.return_quantity,
+                  unitPrice: item.unit_price,
+                  totalAmount: item.unit_price * item.return_quantity,
+                })),
+                newItems: newItems.map(item => ({
+                  name: item.name,
+                  quantity: item.quantity,
+                  unitPrice: item.price,
+                  totalAmount: item.price * item.quantity,
+                })),
+                difference: difference,
+                isCreditTransaction: isCreditTx,
+                refundMethod: 'EXCHANGE',
+                cashierName: cashierName,
+                transactionDate: new Date(),
+              });
+              setShowCompleteDialog(true);
               onSuccess?.();
             } catch (error) {
               console.error('Error processing exchange:', error);
@@ -281,7 +391,6 @@ export default function POSExchangeModal({
   };
 
   const handleClose = () => {
-    setInvoiceNumber('');
     setTransaction(null);
     setReturnItems([]);
     setNewItems([]);
@@ -289,7 +398,15 @@ export default function POSExchangeModal({
     setProductSearch('');
     setProducts([]);
     setStep('search');
+    setShowCompleteDialog(false);
+    setCompleteData(null);
     onClose();
+  };
+
+  const handleCompleteDialogClose = () => {
+    setShowCompleteDialog(false);
+    setCompleteData(null);
+    handleClose();
   };
 
   const formatCurrency = (value: number) => {
@@ -297,39 +414,46 @@ export default function POSExchangeModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
+    <>
+    <Modal visible={visible && !showCompleteDialog} transparent animationType="slide" onRequestClose={handleClose}>
       <KeyboardAvoidingView
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Exchange Item</Text>
+            <Text style={[styles.headerTitle, { fontSize: fs.h2 }]}>Exchange Item</Text>
             <IconButton icon="close" size={24} iconColor="#FFF" onPress={handleClose} />
           </View>
 
-          <ScrollView style={styles.content}>
+          <ScrollView style={[styles.content, { padding: sp.md }]}>
             {step === 'search' && (
-              <View style={styles.searchBox}>
-                <Text style={styles.label}>Original Invoice Number</Text>
-                <View style={styles.searchRow}>
-                  <TextInput
-                    style={styles.searchInput}
-                    value={invoiceNumber}
-                    onChangeText={setInvoiceNumber}
-                    placeholder="Enter invoice number"
-                    placeholderTextColor="#9E9E9E"
-                  />
-                  <TouchableOpacity style={styles.searchBtn} onPress={handleSearch} disabled={isSearching}>
-                    {isSearching ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={styles.searchBtnText}>Search</Text>}
-                  </TouchableOpacity>
-                </View>
+              <View style={styles.pickerContainer}>
+                <POSInvoiceListPicker
+                  onSelectInvoice={handleSelectInvoice}
+                  onSearchInvoice={handleSearchInvoice}
+                  isSearching={isSearching}
+                  accentColor="#2196F3"
+                  excludeWithReturns={true}
+                />
               </View>
             )}
 
             {(step === 'select_returns' || step === 'add_new') && transaction && (
               <>
+                {/* Discount Warning Banner */}
+                {transaction.discount_amount > 0 && (
+                  <POSDiscountWarningBanner
+                    discountAmount={transaction.discount_amount}
+                    totalAmount={transaction.total_amount}
+                    originalAmount={(transaction.subtotal || 0) + (transaction.tax_amount || 0)}
+                    scPwdId={transaction.sc_pwd_id}
+                    scPwdName={transaction.sc_pwd_name}
+                    scPwdType={transaction.sc_pwd_type}
+                  />
+                )}
+
                 <View style={styles.infoBox}>
                   <Text style={styles.invoiceLabel}>{transaction.invoice_number}</Text>
                   <Text style={styles.customerLabel}>{transaction.customer_name || 'Walk-in'}</Text>
@@ -426,7 +550,15 @@ export default function POSExchangeModal({
                 {/* Difference */}
                 <View style={[styles.differenceBox, calculateDifference() > 0 ? styles.diffPositive : calculateDifference() < 0 ? styles.diffNegative : styles.diffZero]}>
                   <Text style={styles.diffLabel}>
-                    {calculateDifference() > 0 ? 'Customer Pays:' : calculateDifference() < 0 ? 'Customer Receives:' : 'Even Exchange'}
+                    {(() => {
+                      const diff = calculateDifference();
+                      const isCreditTx = transaction?.payment_method === 'CHARGE_INVOICE';
+                      if (diff === 0) return 'Even Exchange';
+                      if (isCreditTx) {
+                        return diff > 0 ? 'Balance Increases:' : 'Balance Reduced By:';
+                      }
+                      return diff > 0 ? 'Customer Pays:' : 'Customer Receives:';
+                    })()}
                   </Text>
                   <Text style={styles.diffValue}>{formatCurrency(Math.abs(calculateDifference()))}</Text>
                 </View>
@@ -448,8 +580,14 @@ export default function POSExchangeModal({
 
           {/* Footer */}
           <View style={styles.footer}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={handleClose} disabled={isProcessing}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={transaction ? () => { setTransaction(null); setStep('search'); setReturnItems([]); setNewItems([]); } : handleClose}
+              disabled={isProcessing}
+            >
+              <Text style={styles.cancelBtnText}>
+                {transaction ? 'Back' : 'Cancel'}
+              </Text>
             </TouchableOpacity>
             {transaction && (
               <TouchableOpacity
@@ -457,13 +595,21 @@ export default function POSExchangeModal({
                 onPress={handleExchange}
                 disabled={isProcessing}
               >
-                <Text style={styles.exchangeBtnText}>{isProcessing ? 'Processing...' : 'Process Exchange'}</Text>
+                <Text style={[styles.exchangeBtnText, { fontSize: fs.button }]}>{isProcessing ? 'Processing...' : 'Process Exchange'}</Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
+
+    {/* Transaction Complete Dialog with Print/Email */}
+    <POSTransactionCompleteDialog
+      visible={showCompleteDialog}
+      onClose={handleCompleteDialogClose}
+      data={completeData}
+    />
+    </>
   );
 }
 
@@ -473,6 +619,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingLeft: 20, paddingRight: 8, paddingVertical: 12, backgroundColor: '#2196F3', borderTopLeftRadius: 16, borderTopRightRadius: 16 },
   headerTitle: { fontSize: 20, fontWeight: '700', color: '#FFF' },
   content: { padding: 16 },
+  pickerContainer: { minHeight: 450 },
   searchBox: { marginBottom: 16 },
   label: { fontSize: 14, fontWeight: '600', color: '#616161', marginBottom: 8 },
   searchRow: { flexDirection: 'row', gap: 10 },

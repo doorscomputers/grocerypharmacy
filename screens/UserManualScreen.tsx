@@ -3,7 +3,7 @@ import {
   View,
   ScrollView,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   Platform,
 } from 'react-native';
 import {
@@ -25,9 +25,9 @@ import {
 } from 'react-native-paper';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
-const { width } = Dimensions.get('window');
+// width moved inside component via useWindowDimensions()
 
 // Manual content organized by sections
 const MANUAL_SECTIONS = [
@@ -830,6 +830,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingTop: 8,
+    flexGrow: 1,
   },
   sectionCard: {
     marginBottom: 8,

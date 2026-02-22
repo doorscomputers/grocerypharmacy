@@ -9,8 +9,10 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface ScPwdInfo {
   id: string;
@@ -43,6 +45,7 @@ export default function POSSeniorDiscountModal({
   onClear,
   onClose,
 }: POSSeniorDiscountModalProps) {
+  const { sp, fs, lo } = useResponsiveTheme();
   const [totalCustomers, setTotalCustomers] = useState('1');
   const [seniorCount, setSeniorCount] = useState('1');
   // BIR Compliance: SC/PWD ID and Name capture
@@ -176,229 +179,237 @@ export default function POSSeniorDiscountModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <Text style={styles.headerIcon}>👴</Text>
-              <Text style={styles.headerTitle}>Senior Citizen / PWD Discount</Text>
+              <Text style={[styles.headerTitle, { fontSize: fs.body }]}>Senior Citizen / PWD Discount</Text>
             </View>
             <IconButton icon="close" size={24} onPress={onClose} />
           </View>
 
-          {/* Info Banner */}
-          <View style={styles.infoBanner}>
-            <Text style={styles.infoBannerText}>
-              20% discount on VAT-exclusive price + VAT exemption
-            </Text>
-            <Text style={styles.infoBannerSubtext}>
-              (Applies only to senior's portion)
-            </Text>
-          </View>
+          {/* Scrollable Content */}
+          <ScrollView
+            style={styles.scrollContent}
+            contentContainerStyle={styles.scrollContentContainer}
+            showsVerticalScrollIndicator={true}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Info Banner */}
+            <View style={styles.infoBanner}>
+              <Text style={styles.infoBannerText}>
+                20% discount on VAT-exclusive price + VAT exemption
+              </Text>
+              <Text style={styles.infoBannerSubtext}>
+                (Applies only to senior's portion)
+              </Text>
+            </View>
 
-          {/* Customer Count Input */}
-          <View style={styles.inputSection}>
-            <Text style={styles.inputLabel}>Total Number of Customers</Text>
-            <View style={styles.inputRow}>
-              <TouchableOpacity
-                style={styles.stepButton}
-                onPress={() => {
-                  const current = parseInt(totalCustomers) || 0;
-                  if (current > 1) {
-                    const newVal = (current - 1).toString();
-                    handleTotalChange(newVal);
-                  }
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.stepButtonText}>−</Text>
-              </TouchableOpacity>
+              {/* Customer Count Input */}
+            <View style={styles.inputSection}>
+              <Text style={styles.inputLabel}>Total Number of Customers</Text>
+              <View style={styles.inputRow}>
+                <TouchableOpacity
+                  style={styles.stepButton}
+                  onPress={() => {
+                    const current = parseInt(totalCustomers) || 0;
+                    if (current > 1) {
+                      const newVal = (current - 1).toString();
+                      handleTotalChange(newVal);
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.stepButtonText}>−</Text>
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.input}
+                  value={totalCustomers}
+                  onChangeText={handleTotalChange}
+                  keyboardType="number-pad"
+                  placeholder="1"
+                  placeholderTextColor="#9E9E9E"
+                  textAlign="center"
+                />
+                <TouchableOpacity
+                  style={styles.stepButton}
+                  onPress={() => {
+                    const current = parseInt(totalCustomers) || 0;
+                    handleTotalChange((current + 1).toString());
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.stepButtonText}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Senior Count Input */}
+            <View style={styles.inputSection}>
+              <Text style={styles.inputLabel}>Number of Senior Citizens / PWD</Text>
+              <View style={styles.inputRow}>
+                <TouchableOpacity
+                  style={styles.stepButton}
+                  onPress={() => {
+                    const current = parseInt(seniorCount) || 0;
+                    if (current > 1) {
+                      setSeniorCount((current - 1).toString());
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.stepButtonText}>−</Text>
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.input}
+                  value={seniorCount}
+                  onChangeText={handleSeniorChange}
+                  keyboardType="number-pad"
+                  placeholder="1"
+                  placeholderTextColor="#9E9E9E"
+                  textAlign="center"
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.stepButton,
+                    seniors >= total && styles.stepButtonDisabled,
+                  ]}
+                  onPress={() => {
+                    const current = parseInt(seniorCount) || 0;
+                    const max = parseInt(totalCustomers) || 0;
+                    if (current < max) {
+                      setSeniorCount((current + 1).toString());
+                    }
+                  }}
+                  activeOpacity={0.7}
+                  disabled={seniors >= total}
+                >
+                  <Text style={[
+                    styles.stepButtonText,
+                    seniors >= total && styles.stepButtonTextDisabled,
+                  ]}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* BIR Compliance: Discount Type Selector */}
+            <View style={styles.inputSection}>
+              <Text style={styles.inputLabel}>Discount Type (BIR Required)</Text>
+              <View style={styles.typeSelector}>
+                <TouchableOpacity
+                  style={[
+                    styles.typeButton,
+                    discountType === 'SENIOR' && styles.typeButtonActive,
+                  ]}
+                  onPress={() => setDiscountType('SENIOR')}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[
+                    styles.typeButtonText,
+                    discountType === 'SENIOR' && styles.typeButtonTextActive,
+                  ]}>Senior Citizen</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.typeButton,
+                    discountType === 'PWD' && styles.typeButtonActive,
+                  ]}
+                  onPress={() => setDiscountType('PWD')}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[
+                    styles.typeButtonText,
+                    discountType === 'PWD' && styles.typeButtonTextActive,
+                  ]}>PWD</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* BIR Compliance: SC/PWD ID Input */}
+            <View style={styles.inputSection}>
+              <Text style={styles.inputLabel}>
+                {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} ID Number *
+              </Text>
               <TextInput
-                style={styles.input}
-                value={totalCustomers}
-                onChangeText={handleTotalChange}
-                keyboardType="number-pad"
-                placeholder="1"
+                style={styles.textInputField}
+                value={scPwdId}
+                onChangeText={setScPwdId}
+                placeholder={`Enter ${discountType === 'SENIOR' ? 'OSCA' : 'PWD'} ID Number`}
                 placeholderTextColor="#9E9E9E"
-                textAlign="center"
+                autoCapitalize="characters"
               />
-              <TouchableOpacity
-                style={styles.stepButton}
-                onPress={() => {
-                  const current = parseInt(totalCustomers) || 0;
-                  handleTotalChange((current + 1).toString());
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.stepButtonText}>+</Text>
-              </TouchableOpacity>
             </View>
-          </View>
 
-          {/* Senior Count Input */}
-          <View style={styles.inputSection}>
-            <Text style={styles.inputLabel}>Number of Senior Citizens / PWD</Text>
-            <View style={styles.inputRow}>
-              <TouchableOpacity
-                style={styles.stepButton}
-                onPress={() => {
-                  const current = parseInt(seniorCount) || 0;
-                  if (current > 1) {
-                    setSeniorCount((current - 1).toString());
-                  }
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.stepButtonText}>−</Text>
-              </TouchableOpacity>
+            {/* BIR Compliance: SC/PWD Name Input */}
+            <View style={styles.inputSection}>
+              <Text style={styles.inputLabel}>
+                {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} Name *
+              </Text>
               <TextInput
-                style={styles.input}
-                value={seniorCount}
-                onChangeText={handleSeniorChange}
-                keyboardType="number-pad"
-                placeholder="1"
+                style={styles.textInputField}
+                value={scPwdName}
+                onChangeText={setScPwdName}
+                placeholder="Enter full name as shown on ID"
                 placeholderTextColor="#9E9E9E"
-                textAlign="center"
+                autoCapitalize="words"
               />
-              <TouchableOpacity
-                style={[
-                  styles.stepButton,
-                  seniors >= total && styles.stepButtonDisabled,
-                ]}
-                onPress={() => {
-                  const current = parseInt(seniorCount) || 0;
-                  const max = parseInt(totalCustomers) || 0;
-                  if (current < max) {
-                    setSeniorCount((current + 1).toString());
-                  }
-                }}
-                activeOpacity={0.7}
-                disabled={seniors >= total}
-              >
-                <Text style={[
-                  styles.stepButtonText,
-                  seniors >= total && styles.stepButtonTextDisabled,
-                ]}>+</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* BIR Compliance: Discount Type Selector */}
-          <View style={styles.inputSection}>
-            <Text style={styles.inputLabel}>Discount Type (BIR Required)</Text>
-            <View style={styles.typeSelector}>
-              <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  discountType === 'SENIOR' && styles.typeButtonActive,
-                ]}
-                onPress={() => setDiscountType('SENIOR')}
-                activeOpacity={0.7}
-              >
-                <Text style={[
-                  styles.typeButtonText,
-                  discountType === 'SENIOR' && styles.typeButtonTextActive,
-                ]}>Senior Citizen</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  discountType === 'PWD' && styles.typeButtonActive,
-                ]}
-                onPress={() => setDiscountType('PWD')}
-                activeOpacity={0.7}
-              >
-                <Text style={[
-                  styles.typeButtonText,
-                  discountType === 'PWD' && styles.typeButtonTextActive,
-                ]}>PWD</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* BIR Compliance: SC/PWD ID Input */}
-          <View style={styles.inputSection}>
-            <Text style={styles.inputLabel}>
-              {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} ID Number *
-            </Text>
-            <TextInput
-              style={styles.textInputField}
-              value={scPwdId}
-              onChangeText={setScPwdId}
-              placeholder={`Enter ${discountType === 'SENIOR' ? 'OSCA' : 'PWD'} ID Number`}
-              placeholderTextColor="#9E9E9E"
-              autoCapitalize="characters"
-            />
-          </View>
-
-          {/* BIR Compliance: SC/PWD Name Input */}
-          <View style={styles.inputSection}>
-            <Text style={styles.inputLabel}>
-              {discountType === 'SENIOR' ? 'Senior Citizen' : 'PWD'} Name *
-            </Text>
-            <TextInput
-              style={styles.textInputField}
-              value={scPwdName}
-              onChangeText={setScPwdName}
-              placeholder="Enter full name as shown on ID"
-              placeholderTextColor="#9E9E9E"
-              autoCapitalize="words"
-            />
-          </View>
-
-          {/* Calculation Preview */}
-          <View style={styles.previewSection}>
-            <Text style={styles.previewTitle}>Discount Preview</Text>
-
-            <View style={styles.previewRow}>
-              <Text style={styles.previewLabel}>Subtotal (VAT-exclusive):</Text>
-              <Text style={styles.previewValue}>₱{subtotal.toFixed(2)}</Text>
             </View>
 
-            <View style={styles.previewRow}>
-              <Text style={styles.previewLabel}>VAT Amount:</Text>
-              <Text style={styles.previewValue}>₱{vatAmount.toFixed(2)}</Text>
+            {/* Calculation Preview */}
+            <View style={styles.previewSection}>
+              <Text style={styles.previewTitle}>Discount Preview</Text>
+
+              <View style={styles.previewRow}>
+                <Text style={styles.previewLabel}>Subtotal (VAT-exclusive):</Text>
+                <Text style={styles.previewValue}>₱{subtotal.toFixed(2)}</Text>
+              </View>
+
+              <View style={styles.previewRow}>
+                <Text style={styles.previewLabel}>VAT Amount:</Text>
+                <Text style={styles.previewValue}>₱{vatAmount.toFixed(2)}</Text>
+              </View>
+
+              {total > 0 && seniors > 0 && (
+                <>
+                  <View style={styles.divider} />
+
+                  <View style={styles.previewRow}>
+                    <Text style={styles.previewLabel}>
+                      Senior Portion ({seniors}/{total}):
+                    </Text>
+                    <Text style={styles.previewValue}>₱{seniorPortion.toFixed(2)}</Text>
+                  </View>
+
+                  <View style={styles.previewRow}>
+                    <Text style={styles.previewLabelHighlight}>20% SC Discount:</Text>
+                    <Text style={styles.previewValueDiscount}>
+                      -₱{previewDiscount.toFixed(2)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.previewRow}>
+                    <Text style={styles.previewLabelHighlight}>VAT Exemption:</Text>
+                    <Text style={styles.previewValueDiscount}>
+                      -₱{vatSaved.toFixed(2)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.previewRow}>
+                    <Text style={styles.totalSavingsLabel}>Total Savings:</Text>
+                    <Text style={styles.totalSavingsValue}>
+                      ₱{(previewDiscount + vatSaved).toFixed(2)}
+                    </Text>
+                  </View>
+                </>
+              )}
             </View>
-
-            {total > 0 && seniors > 0 && (
-              <>
-                <View style={styles.divider} />
-
-                <View style={styles.previewRow}>
-                  <Text style={styles.previewLabel}>
-                    Senior Portion ({seniors}/{total}):
-                  </Text>
-                  <Text style={styles.previewValue}>₱{seniorPortion.toFixed(2)}</Text>
-                </View>
-
-                <View style={styles.previewRow}>
-                  <Text style={styles.previewLabelHighlight}>20% SC Discount:</Text>
-                  <Text style={styles.previewValueDiscount}>
-                    -₱{previewDiscount.toFixed(2)}
-                  </Text>
-                </View>
-
-                <View style={styles.previewRow}>
-                  <Text style={styles.previewLabelHighlight}>VAT Exemption:</Text>
-                  <Text style={styles.previewValueDiscount}>
-                    -₱{vatSaved.toFixed(2)}
-                  </Text>
-                </View>
-
-                <View style={styles.divider} />
-
-                <View style={styles.previewRow}>
-                  <Text style={styles.totalSavingsLabel}>Total Savings:</Text>
-                  <Text style={styles.totalSavingsValue}>
-                    ₱{(previewDiscount + vatSaved).toFixed(2)}
-                  </Text>
-                </View>
-              </>
-            )}
-          </View>
+          </ScrollView>
 
           {/* Buttons */}
-          <View style={styles.buttonRow}>
+          <View style={[styles.buttonRow, { padding: sp.md }]}>
             {isSeniorApplied && (
               <TouchableOpacity
                 style={styles.clearButton}
@@ -442,11 +453,19 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     width: '100%',
     maxWidth: 400,
+    maxHeight: '90%',
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
+  },
+  scrollContent: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  scrollContentContainer: {
+    paddingBottom: 8,
   },
   header: {
     flexDirection: 'row',

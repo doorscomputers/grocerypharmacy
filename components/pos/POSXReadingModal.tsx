@@ -8,7 +8,6 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
-  Platform,
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
 import { DatabaseService } from '../../database/DatabaseService';
@@ -16,9 +15,11 @@ import BluetoothPrinterService from '../../utils/BluetoothPrinterService';
 import { buildXReading, PRINTER_WIDTH } from '../../utils/escpos';
 import {
   XReadingPdfData,
+  printXReadingPdf,
   shareXReadingPdf,
   emailXReadingPdf,
 } from '../../utils/ReceiptPdfService';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 interface POSXReadingModalProps {
   visible: boolean;
@@ -39,15 +40,29 @@ interface XReadingData {
   discount_amount: number;
   void_amount: number;
   void_count: number;
+  exchange_amount: number;
+  exchange_count: number;
   refund_amount: number;
+  refund_count: number;
   net_sales: number;
   cash_sales: number;
   card_sales: number;
   check_sales: number;
+  online_sales: number;
   credit_sales: number;
   beginning_cash: number;
-  cash_fund: number;
+  opening_fund: number;
+  cash_in: number;
+  cash_out: number;
+  cash_fund: number;  // For backward compatibility (opening_fund + cash_in)
   petty_cash: number;
+  cash_refunds: number;
+  customer_payments_cash: number;
+  customer_payments_check: number;
+  customer_payments_card: number;
+  customer_payments_online: number;
+  customer_payments_bank_transfer: number;
+  customer_payments_total: number;
   expected_cash: number;
 }
 
@@ -57,6 +72,7 @@ export default function POSXReadingModal({
   cashierId,
   targetDate,
 }: POSXReadingModalProps) {
+  const { sp, fs, lo } = useResponsiveTheme();
   const [data, setData] = useState<XReadingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -227,6 +243,7 @@ export default function POSXReadingModal({
       gross_sales: data.gross_sales,
       discount_amount: data.discount_amount,
       refund_amount: data.refund_amount,
+      refund_count: data.refund_count || 0,
       net_sales: data.net_sales,
       vat_sales: data.vat_sales,
       vat_amount: data.vat_amount,
@@ -235,58 +252,95 @@ export default function POSXReadingModal({
       cash_sales: data.cash_sales,
       card_sales: data.card_sales,
       check_sales: data.check_sales,
+      online_sales: data.online_sales,
       credit_sales: data.credit_sales,
       void_count: data.void_count,
       void_amount: data.void_amount,
+      exchange_count: data.exchange_count || 0,
+      exchange_amount: data.exchange_amount || 0,
       beginning_cash: data.beginning_cash,
+      opening_fund: data.opening_fund || 0,
+      cash_in: data.cash_in || 0,
+      cash_out: data.cash_out || 0,
       cash_fund: data.cash_fund,
       petty_cash: data.petty_cash,
+      cash_refunds: data.cash_refunds || 0,
+      customer_payments_cash: data.customer_payments_cash,
+      customer_payments_check: data.customer_payments_check,
+      customer_payments_card: data.customer_payments_card,
+      customer_payments_online: data.customer_payments_online,
+      customer_payments_bank_transfer: data.customer_payments_bank_transfer,
+      customer_payments_total: data.customer_payments_total,
       expected_cash: data.expected_cash,
     };
   };
 
-  // Print to thermal printer
+  // Print to thermal printer or PDF fallback
   const handlePrint = async () => {
     if (!data) return;
 
-    // Check if BLE is available (not on web)
-    if (Platform.OS === 'web') {
-      Alert.alert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
-      return;
-    }
-
-    const printerService = BluetoothPrinterService.getInstance();
-    if (!printerService.isConnected()) {
-      Alert.alert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
-      return;
-    }
-
     setIsPrinting(true);
     try {
-      const settings = printerService.getSettings();
-      const printerWidth = settings.printerWidth;
+      const printerService = BluetoothPrinterService.getInstance();
 
-      const xReadingBuilder = buildXReading(
-        {
-          businessName: businessInfo.name,
-          tin: businessInfo.tin,
-          readingNumber: 0, // X-Reading doesn't track number like Z-Reading
-          cashierName: cashierName || 'Cashier',
-          startTime: new Date(),
-          endTime: new Date(),
-          transactionCount: data.transaction_count,
-          grossSales: data.gross_sales,
-          netSales: data.net_sales,
-          vatAmount: data.vat_amount,
-          discounts: data.discount_amount,
-          voidCount: data.void_count,
-          voidAmount: data.void_amount,
-        },
-        printerWidth
-      );
+      if (printerService.isConnected()) {
+        // Bluetooth thermal printer
+        const settings = printerService.getSettings();
+        const printerWidth = settings.printerWidth;
 
-      await printerService.print(xReadingBuilder);
-      Alert.alert('Success', 'X-Reading printed successfully!');
+        const xReadingBuilder = buildXReading(
+          {
+            businessName: businessInfo.name,
+            businessAddress: businessInfo.address,
+            tin: businessInfo.tin,
+            cashierName: cashierName || 'Cashier',
+            date: formatDate(data.date),
+            time: data.time,
+            transactionCount: data.transaction_count,
+            grossSales: data.gross_sales,
+            discounts: data.discount_amount,
+            refundAmount: data.refund_amount,
+            netSales: data.net_sales,
+            vatSales: data.vat_sales,
+            vatAmount: data.vat_amount,
+            vatExemptSales: data.vat_exempt_sales,
+            zeroRatedSales: data.zero_rated_sales,
+            cashSales: data.cash_sales,
+            cardSales: data.card_sales,
+            checkSales: data.check_sales,
+            onlineSales: data.online_sales,
+            creditSales: data.credit_sales,
+            voidCount: data.void_count,
+            voidAmount: data.void_amount,
+            exchangeCount: data.exchange_count || 0,
+            exchangeAmount: data.exchange_amount || 0,
+            refundCount: data.refund_count || 0,
+            customerPaymentsCash: data.customer_payments_cash,
+            customerPaymentsCheck: data.customer_payments_check,
+            customerPaymentsCard: data.customer_payments_card,
+            customerPaymentsOnline: data.customer_payments_online,
+            customerPaymentsBankTransfer: data.customer_payments_bank_transfer,
+            customerPaymentsTotal: data.customer_payments_total,
+            beginningCash: data.beginning_cash,
+            openingFund: data.opening_fund || 0,
+            cashIn: data.cash_in || 0,
+            cashOut: data.cash_out || 0,
+            pettyCash: data.petty_cash,
+            cashRefunds: data.cash_refunds || 0,
+            expectedCash: data.expected_cash,
+          },
+          printerWidth
+        );
+
+        await printerService.print(xReadingBuilder);
+        Alert.alert('Success', 'X-Reading printed successfully!');
+      } else {
+        // PDF fallback via system print dialog
+        const pdfData = buildPdfData();
+        if (!pdfData) throw new Error('No data available');
+        const paperWidth = getPaperWidth();
+        await printXReadingPdf(pdfData, paperWidth);
+      }
     } catch (error) {
       console.error('Print error:', error);
       Alert.alert('Print Error', error instanceof Error ? error.message : 'Failed to print');
@@ -346,6 +400,7 @@ export default function POSXReadingModal({
       gross_sales: record.gross_sales || 0,
       discount_amount: record.discount_amount || 0,
       refund_amount: record.refund_amount || 0,
+      refund_count: record.refund_count || 0,
       net_sales: record.net_sales || 0,
       vat_sales: record.vat_sales || 0,
       vat_amount: record.vat_amount || 0,
@@ -354,55 +409,92 @@ export default function POSXReadingModal({
       cash_sales: record.cash_sales || 0,
       card_sales: record.card_sales || 0,
       check_sales: record.check_sales || 0,
+      online_sales: record.online_sales || 0,
       credit_sales: record.credit_sales || 0,
       void_count: record.void_count || 0,
       void_amount: record.void_amount || 0,
+      exchange_count: record.exchange_count || 0,
+      exchange_amount: record.exchange_amount || 0,
       beginning_cash: record.beginning_cash || 0,
+      opening_fund: record.opening_fund || 0,
+      cash_in: record.cash_in || 0,
+      cash_out: record.cash_out || 0,
       cash_fund: record.cash_fund || 0,
       petty_cash: record.petty_cash || 0,
+      cash_refunds: record.cash_refunds || 0,
+      customer_payments_cash: record.customer_payments_cash || 0,
+      customer_payments_check: record.customer_payments_check || 0,
+      customer_payments_card: record.customer_payments_card || 0,
+      customer_payments_online: record.customer_payments_online || 0,
+      customer_payments_bank_transfer: record.customer_payments_bank_transfer || 0,
+      customer_payments_total: record.customer_payments_total || 0,
       expected_cash: record.expected_cash || 0,
     };
   };
 
   // Print historical X-Reading
   const handleHistoryPrint = async (record: any) => {
-    if (Platform.OS === 'web') {
-      Alert.alert('Not Available', 'Thermal printing is not available on web. Please use Export to PDF instead.');
-      return;
-    }
-
-    const printerService = BluetoothPrinterService.getInstance();
-    if (!printerService.isConnected()) {
-      Alert.alert('Not Connected', 'Please connect to a Bluetooth printer in Settings > Printer Settings first.');
-      return;
-    }
-
     setIsHistoryPrinting(true);
     try {
-      const settings = printerService.getSettings();
-      const printerWidth = settings.printerWidth;
+      const printerService = BluetoothPrinterService.getInstance();
 
-      const xReadingBuilder = buildXReading(
-        {
-          businessName: businessInfo.name,
-          tin: businessInfo.tin,
-          readingNumber: record.id || 0,
-          cashierName: record.cashier_name || record.cashier_username || 'Cashier',
-          startTime: new Date(record.date),
-          endTime: new Date(record.date),
-          transactionCount: record.transaction_count || 0,
-          grossSales: record.gross_sales || 0,
-          netSales: record.net_sales || 0,
-          vatAmount: record.vat_amount || 0,
-          discounts: record.discount_amount || 0,
-          voidCount: record.void_count || 0,
-          voidAmount: record.void_amount || 0,
-        },
-        printerWidth
-      );
+      if (printerService.isConnected()) {
+        // Bluetooth thermal printer
+        const settings = printerService.getSettings();
+        const printerWidth = settings.printerWidth;
 
-      await printerService.print(xReadingBuilder);
-      Alert.alert('Success', 'X-Reading printed successfully!');
+        const xReadingBuilder = buildXReading(
+          {
+            businessName: businessInfo.name,
+            businessAddress: businessInfo.address,
+            tin: businessInfo.tin,
+            cashierName: record.cashier_name || record.cashier_username || 'Cashier',
+            date: formatDate(record.date),
+            time: record.time || '',
+            transactionCount: record.transaction_count || 0,
+            grossSales: record.gross_sales || 0,
+            discounts: record.discount_amount || 0,
+            refundAmount: record.refund_amount || 0,
+            netSales: record.net_sales || 0,
+            vatSales: record.vat_sales || 0,
+            vatAmount: record.vat_amount || 0,
+            vatExemptSales: record.vat_exempt_sales || 0,
+            zeroRatedSales: record.zero_rated_sales || 0,
+            cashSales: record.cash_sales || 0,
+            cardSales: record.card_sales || 0,
+            checkSales: record.check_sales || 0,
+            onlineSales: record.online_sales || 0,
+            creditSales: record.credit_sales || 0,
+            voidCount: record.void_count || 0,
+            voidAmount: record.void_amount || 0,
+            exchangeCount: record.exchange_count || 0,
+            exchangeAmount: record.exchange_amount || 0,
+            refundCount: record.refund_count || 0,
+            customerPaymentsCash: record.customer_payments_cash || 0,
+            customerPaymentsCheck: record.customer_payments_check || 0,
+            customerPaymentsCard: record.customer_payments_card || 0,
+            customerPaymentsOnline: record.customer_payments_online || 0,
+            customerPaymentsBankTransfer: record.customer_payments_bank_transfer || 0,
+            customerPaymentsTotal: record.customer_payments_total || 0,
+            beginningCash: record.beginning_cash || 0,
+            openingFund: record.opening_fund || 0,
+            cashIn: record.cash_in || 0,
+            cashOut: record.cash_out || 0,
+            pettyCash: record.petty_cash || 0,
+            cashRefunds: record.cash_refunds || 0,
+            expectedCash: record.expected_cash || 0,
+          },
+          printerWidth
+        );
+
+        await printerService.print(xReadingBuilder);
+        Alert.alert('Success', 'X-Reading printed successfully!');
+      } else {
+        // PDF fallback via system print dialog
+        const pdfData = buildHistoryPdfData(record);
+        const paperWidth = getPaperWidth();
+        await printXReadingPdf(pdfData, paperWidth);
+      }
     } catch (error) {
       console.error('Print error:', error);
       Alert.alert('Print Error', error instanceof Error ? error.message : 'Failed to print');
@@ -462,11 +554,11 @@ export default function POSXReadingModal({
       onRequestClose={onClose}
     >
       <View style={styles.overlay}>
-        <View style={styles.container}>
+        <View style={[styles.container, { maxWidth: lo.modalMaxWidth }]}>
           {/* Header */}
           <View style={styles.header}>
             <View>
-              <Text style={styles.headerTitle}>X-Reading</Text>
+              <Text style={[styles.headerTitle, { fontSize: fs.h2 }]}>X-Reading</Text>
               <Text style={styles.headerSubtitle}>{showHistory ? 'History' : 'Mid-Day Inquiry Report'}</Text>
             </View>
             <View style={styles.headerRight}>
@@ -493,7 +585,7 @@ export default function POSXReadingModal({
                 <Text style={styles.loadingText}>Loading history...</Text>
               </View>
             ) : (
-              <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+              <ScrollView style={[styles.content, { padding: sp.md }]} showsVerticalScrollIndicator={false}>
                 {historyData.length === 0 ? (
                   <View style={styles.emptyContainer}>
                     <Text style={styles.emptyText}>No X-Reading history yet</Text>
@@ -551,6 +643,18 @@ export default function POSXReadingModal({
                             <Text style={styles.historyDetailLabel}>Voids:</Text>
                             <Text style={styles.historyDetailValueRed}>
                               {record.void_count || 0} ({formatCurrency(record.void_amount || 0)})
+                            </Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Exchanges:</Text>
+                            <Text style={styles.historyDetailValueRed}>
+                              {record.exchange_count || 0} ({formatCurrency(record.exchange_amount || 0)})
+                            </Text>
+                          </View>
+                          <View style={styles.historyDetailRow}>
+                            <Text style={styles.historyDetailLabel}>Refunds:</Text>
+                            <Text style={styles.historyDetailValueRed}>
+                              {record.refund_count || 0} ({formatCurrency(record.refund_amount || 0)})
                             </Text>
                           </View>
 
@@ -612,7 +716,7 @@ export default function POSXReadingModal({
               <Text style={styles.loadingText}>Loading data...</Text>
             </View>
           ) : data ? (
-            <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+            <ScrollView style={[styles.content, { padding: sp.md }]} showsVerticalScrollIndicator={false}>
               {/* Date/Time */}
               <View style={styles.dateTimeBox}>
                 <Text style={styles.dateText}>{formatDate(data.date)}</Text>
@@ -681,14 +785,18 @@ export default function POSXReadingModal({
                   <Text style={styles.rowValue}>{formatCurrency(data.check_sales)}</Text>
                 </View>
                 <View style={styles.row}>
+                  <Text style={styles.rowLabel}>GCash/Maya Sales</Text>
+                  <Text style={styles.rowValue}>{formatCurrency(data.online_sales)}</Text>
+                </View>
+                <View style={styles.row}>
                   <Text style={styles.rowLabel}>Credit/Charge Sales</Text>
                   <Text style={styles.rowValue}>{formatCurrency(data.credit_sales)}</Text>
                 </View>
               </View>
 
-              {/* Voids */}
+              {/* Voids / Exchanges / Refunds */}
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>VOIDS</Text>
+                <Text style={styles.sectionTitle}>VOIDS / EXCHANGES / REFUNDS</Text>
                 <View style={styles.row}>
                   <Text style={styles.rowLabel}>Void Count</Text>
                   <Text style={styles.rowValue}>{data.void_count}</Text>
@@ -697,7 +805,54 @@ export default function POSXReadingModal({
                   <Text style={styles.rowLabel}>Void Amount</Text>
                   <Text style={styles.rowValueRed}>{formatCurrency(data.void_amount)}</Text>
                 </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Exchange Count</Text>
+                  <Text style={styles.rowValue}>{data.exchange_count || 0}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Exchange Amount</Text>
+                  <Text style={styles.rowValueRed}>{formatCurrency(data.exchange_amount || 0)}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Refund Count</Text>
+                  <Text style={styles.rowValue}>{data.refund_count || 0}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Refund Amount</Text>
+                  <Text style={styles.rowValueRed}>{formatCurrency(data.refund_amount)}</Text>
+                </View>
               </View>
+
+              {/* AR Collections (Customer Payments) */}
+              {data.customer_payments_total > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>AR COLLECTIONS (CUSTOMER PAYMENTS)</Text>
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>💵 Cash</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_cash)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>📝 Check</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_check)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>💳 Card</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_card)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>📱 GCash/Online</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_online)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>🏦 Bank Transfer</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_bank_transfer)}</Text>
+                  </View>
+                  <View style={styles.rowTotal}>
+                    <Text style={styles.rowLabelBold}>Total Collections</Text>
+                    <Text style={styles.rowValueBold}>{formatCurrency(data.customer_payments_total)}</Text>
+                  </View>
+                </View>
+              )}
 
               {/* Cash Drawer */}
               <View style={styles.sectionHighlight}>
@@ -707,16 +862,34 @@ export default function POSXReadingModal({
                   <Text style={styles.rowValue}>{formatCurrency(data.beginning_cash)}</Text>
                 </View>
                 <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Add: Opening Fund</Text>
+                  <Text style={styles.rowValue}>{formatCurrency(data.opening_fund || 0)}</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Add: Cash In</Text>
+                  <Text style={styles.rowValue}>{formatCurrency(data.cash_in || 0)}</Text>
+                </View>
+                <View style={styles.row}>
                   <Text style={styles.rowLabel}>Add: Cash Sales</Text>
                   <Text style={styles.rowValue}>{formatCurrency(data.cash_sales)}</Text>
                 </View>
+                {data.customer_payments_cash > 0 && (
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>Add: AR Collections (Cash)</Text>
+                    <Text style={styles.rowValue}>{formatCurrency(data.customer_payments_cash)}</Text>
+                  </View>
+                )}
                 <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Add: Cash Fund</Text>
-                  <Text style={styles.rowValue}>{formatCurrency(data.cash_fund)}</Text>
+                  <Text style={styles.rowLabel}>Less: Cash Out</Text>
+                  <Text style={styles.rowValueRed}>({formatCurrency(data.cash_out || 0)})</Text>
                 </View>
                 <View style={styles.row}>
                   <Text style={styles.rowLabel}>Less: Petty Cash</Text>
                   <Text style={styles.rowValueRed}>({formatCurrency(data.petty_cash)})</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={styles.rowLabel}>Less: Cash Refunds</Text>
+                  <Text style={styles.rowValueRed}>({formatCurrency(data.cash_refunds || 0)})</Text>
                 </View>
                 <View style={styles.rowTotal}>
                   <Text style={styles.rowLabelBold}>Expected Cash</Text>

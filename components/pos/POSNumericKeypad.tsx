@@ -1,5 +1,6 @@
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useResponsive, responsiveValue, useResponsiveTheme } from '../../utils/responsive';
 
 interface POSNumericKeypadProps {
   value: string;
@@ -21,6 +22,36 @@ function POSNumericKeypad({
   maxLength = 10,
   showDecimal = true,
 }: POSNumericKeypadProps) {
+  // Get responsive dimensions
+  const { width: screenWidth } = useResponsive();
+  const { sp, fs, lo } = useResponsiveTheme();
+
+  // Calculate responsive key dimensions
+  const keyDimensions = useMemo(() => {
+    const keyWidth = responsiveValue(screenWidth, {
+      smallPhone: Math.floor((screenWidth - 64) / 3.5), // Dynamic for small screens
+      largePhone: Math.floor((screenWidth - 64) / 3.5),
+      smallTablet: 72,
+      default: 72,
+    });
+
+    const keyHeight = responsiveValue(screenWidth, {
+      smallPhone: 48,
+      largePhone: 52,
+      smallTablet: 56,
+      default: 52,
+    });
+
+    const keyMargin = responsiveValue(screenWidth, {
+      smallPhone: 3,
+      largePhone: 4,
+      smallTablet: 4,
+      default: 4,
+    });
+
+    return { keyWidth, keyHeight, keyMargin };
+  }, [screenWidth]);
+
   const handleKeyPress = useCallback((key: string) => {
     if (key === '⌫') {
       // Backspace
@@ -44,13 +75,25 @@ function POSNumericKeypad({
   }, [value, onChange, maxLength, showDecimal]);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { padding: sp.sm }]}>
       {KEYS.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {row.map(key => {
             // Hide decimal key if not needed
             if (key === '.' && !showDecimal) {
-              return <View key={key} style={styles.keyEmpty} />;
+              return (
+                <View
+                  key={key}
+                  style={[
+                    styles.keyEmpty,
+                    {
+                      width: keyDimensions.keyWidth,
+                      height: keyDimensions.keyHeight,
+                      marginHorizontal: keyDimensions.keyMargin,
+                    },
+                  ]}
+                />
+              );
             }
 
             return (
@@ -58,6 +101,11 @@ function POSNumericKeypad({
                 key={key}
                 style={[
                   styles.key,
+                  {
+                    width: keyDimensions.keyWidth,
+                    height: keyDimensions.keyHeight,
+                    marginHorizontal: keyDimensions.keyMargin,
+                  },
                   key === '⌫' && styles.keyBackspace,
                 ]}
                 onPress={() => handleKeyPress(key)}
@@ -66,6 +114,7 @@ function POSNumericKeypad({
                 <Text
                   style={[
                     styles.keyText,
+                    { fontSize: fs.h2 },
                     key === '⌫' && styles.keyTextBackspace,
                   ]}
                 >
@@ -92,13 +141,11 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   key: {
-    width: 72,
-    height: 52,
+    // Width, height, and marginHorizontal now set dynamically via inline styles
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    marginHorizontal: 4,
     elevation: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -109,9 +156,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFEBEE',
   },
   keyEmpty: {
-    width: 72,
-    height: 52,
-    marginHorizontal: 4,
+    // Width, height, and marginHorizontal now set dynamically via inline styles
   },
   keyText: {
     fontSize: 24,

@@ -5,7 +5,7 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { useTheme } from 'react-native-paper';
 import { Product } from '../../database/schema';
@@ -17,8 +17,6 @@ interface POSSearchDropdownProps {
   searchQuery: string;
 }
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-
 function POSSearchDropdown({
   products,
   visible,
@@ -26,6 +24,7 @@ function POSSearchDropdown({
   searchQuery,
 }: POSSearchDropdownProps) {
   const theme = useTheme();
+  const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
 
   const handleSelect = useCallback((product: Product) => {
     onSelect(product);
@@ -36,7 +35,7 @@ function POSSearchDropdown({
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { width: SCREEN_WIDTH - 24, maxHeight: SCREEN_HEIGHT * 0.5 }]}>
       <View style={styles.header}>
         <Text style={styles.headerText}>
           {products.length} result{products.length !== 1 ? 's' : ''} for "{searchQuery}"
@@ -90,12 +89,10 @@ const styles = StyleSheet.create({
   container: {
     position: 'absolute',
     top: '100%',
-    left: 0,
-    right: 0,
+    left: -12,
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
     marginTop: 4,
-    maxHeight: SCREEN_HEIGHT * 0.4,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },

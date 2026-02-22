@@ -20,9 +20,9 @@ import {
   Text,
   IconButton,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { DeviceBindingService } from '../utils/DeviceBindingService';
+import { DeviceBindingService, TrialStatus } from '../utils/DeviceBindingService';
 import * as Clipboard from 'expo-clipboard';
+import { useResponsiveTheme } from '../utils/responsive';
 
 // ============================================
 // SELLER CONTACT CONFIGURATION
@@ -42,11 +42,23 @@ export default function ActivationScreen({ onActivationSuccess }: ActivationScre
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [isTrialExpired, setIsTrialExpired] = useState(false);
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadDeviceId();
+    checkTrialStatus();
   }, []);
+
+  const checkTrialStatus = async () => {
+    try {
+      const status = await DeviceBindingService.getTrialStatus();
+      setIsTrialExpired(status.isTrialExpired);
+    } catch (err) {
+      console.error('Error checking trial status:', err);
+    }
+  };
 
   const loadDeviceId = async () => {
     try {
@@ -181,20 +193,22 @@ export default function ActivationScreen({ onActivationSuccess }: ActivationScre
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <View style={styles.content}>
-            <Card style={styles.card}>
+          <View style={[styles.content, { padding: lo.screenPadding }]}>
+            <Card style={[styles.card, { maxWidth: lo.modalMaxWidth, alignSelf: 'center', width: '100%' }]}>
               <Card.Content>
-                <Title style={[styles.title, { color: theme.colors.primary }]}>
-                  Activate IgoroTech POS
+                <Title style={[styles.title, { color: isTrialExpired ? '#D32F2F' : theme.colors.primary, fontSize: fs.h2 }]}>
+                  {isTrialExpired ? 'Trial Expired' : 'Activate IgoroTech POS'}
                 </Title>
                 <Paragraph style={styles.subtitle}>
-                  Enter your license key to activate this device
+                  {isTrialExpired
+                    ? 'Your 30-day trial has ended. Enter a license key to continue using the app.'
+                    : 'Enter your license key to activate this device'}
                 </Paragraph>
 
                 <Divider style={styles.divider} />
@@ -317,7 +331,7 @@ export default function ActivationScreen({ onActivationSuccess }: ActivationScre
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 

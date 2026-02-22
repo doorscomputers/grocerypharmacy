@@ -21,13 +21,14 @@ import {
   Portal,
   Dialog,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { toLocalDateString, formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PhysicalCountReportScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -82,12 +83,26 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadReportData();
+    loadCompanySettings();
   }, [dateRange]);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -101,8 +116,8 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
       const dbService = getDatabase();
 
       // Format dates for database query
-      const actualStartDate = dateRange.startDate.toISOString().split('T')[0];
-      const actualEndDate = dateRange.endDate.toISOString().split('T')[0];
+      const actualStartDate = toLocalDateString(dateRange.startDate);
+      const actualEndDate = toLocalDateString(dateRange.endDate);
       console.log('🔍 PhysicalCountReport Debug:');
       console.log('  Actual Start Date:', actualStartDate);
       console.log('  Actual End Date:', actualEndDate);
@@ -117,7 +132,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
           session_id: s.session_id,
           date: s.date,
           date_type: typeof s.date,
-          actual_date: new Date(s.date).toISOString().split('T')[0]
+          actual_date: toLocalDateString(new Date(s.date))
         }));
         console.log('  Sample session dates:', sessionDates);
 
@@ -212,11 +227,11 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString();
+    return new Date(dateString).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
   };
 
   const formatDateTime = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
+    return new Date(dateString).toLocaleString('en-PH', { timeZone: 'Asia/Manila' });
   };
 
   const toggleSessionExpansion = (sessionId: string) => {
@@ -295,8 +310,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
       .normalSize()
       .bold(false)
       .feed()
-      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
-      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatPrinterDateTime(now))
       .doubleSeparator();
 
     // Date Range
@@ -305,8 +319,8 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
       .bold(true)
       .println('DATE RANGE')
       .bold(false)
-      .leftRight('From:', dateRange.startDate.toLocaleDateString('en-PH'))
-      .leftRight('To:', dateRange.endDate.toLocaleDateString('en-PH'))
+      .leftRight('From:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
       .separator();
 
     // Summary
@@ -374,11 +388,133 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     builder
       .align('center')
       .println('*** PHYSICAL COUNT REPORT ***')
-      .println(now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatPrinterDateTime(now))
       .feed(2)
       .cut();
 
     return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+
+    const totalSessions = reportData.length;
+    const completedSessions = reportData.filter(r => r.session.status === 'completed').length;
+    const totalDiscrepancies = reportData.reduce((sum, r) => sum + (r.session.discrepancy_count || 0), 0);
+    const totalValueImpact = reportData.reduce((sum, r) => sum + (r.session.total_discrepancy_value || 0), 0);
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .text-center { text-align: center; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+          .summary-item { flex: 1; min-width: 120px; padding: 10px; background: #f9f9f9; border-radius: 5px; text-align: center; }
+          .summary-label { font-size: 10px; color: #666; }
+          .summary-value { font-size: 14px; font-weight: bold; }
+          .positive { color: #4CAF50; }
+          .negative { color: #F44336; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+          .session-card { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin: 10px 0; }
+          .session-header { font-weight: bold; margin-bottom: 8px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">PHYSICAL COUNT REPORT</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+          <div class="date-time">Period: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Summary</div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Total Sessions</div>
+              <div class="summary-value">${totalSessions}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Completed</div>
+              <div class="summary-value">${completedSessions}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Discrepancies</div>
+              <div class="summary-value">${totalDiscrepancies}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Value Impact</div>
+              <div class="summary-value ${totalValueImpact < 0 ? 'negative' : 'positive'}">₱${Math.abs(totalValueImpact).toFixed(2)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Sessions (${reportData.length})</div>
+          ${reportData.map(report => `
+            <div class="session-card">
+              <div class="session-header">${report.session.session_id}</div>
+              <table>
+                <tr><td><strong>Date:</strong></td><td>${formatDate(report.session.date)}</td></tr>
+                <tr><td><strong>Status:</strong></td><td>${report.session.status.toUpperCase()}</td></tr>
+                <tr><td><strong>Started By:</strong></td><td>${report.session.started_by_name}</td></tr>
+                <tr><td><strong>Items Counted:</strong></td><td>${report.session.counted_items || 0} / ${report.session.total_items || 0}</td></tr>
+                <tr><td><strong>Discrepancies:</strong></td><td>${report.session.discrepancy_count || 0}</td></tr>
+                <tr><td><strong>Value Impact:</strong></td><td class="${(report.session.total_discrepancy_value || 0) < 0 ? 'negative' : 'positive'}">₱${Math.abs(report.session.total_discrepancy_value || 0).toFixed(2)}</td></tr>
+              </table>
+              ${report.details.length > 0 ? `
+                <div style="margin-top: 10px;"><strong>Details:</strong></div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th class="text-right">System</th>
+                      <th class="text-right">Physical</th>
+                      <th class="text-right">Diff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${report.details.slice(0, 10).map(detail => `
+                      <tr>
+                        <td>${detail.product_name}<br><small>${detail.product_code}</small></td>
+                        <td class="text-right">${detail.system_quantity}</td>
+                        <td class="text-right">${detail.physical_quantity}</td>
+                        <td class="text-right ${detail.discrepancy < 0 ? 'negative' : 'positive'}">${detail.discrepancy >= 0 ? '+' : ''}${detail.discrepancy}</td>
+                      </tr>
+                    `).join('')}
+                    ${report.details.length > 10 ? `<tr><td colspan="4" class="text-center"><em>...and ${report.details.length - 10} more items</em></td></tr>` : ''}
+                  </tbody>
+                </table>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="footer">
+          Report generated on ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
   };
 
   const renderSession = ({ item: report }: { item: GroupedReport }) => (
@@ -410,22 +546,22 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
           {/* Session Information */}
           <View style={styles.sessionInfoSection}>
             <View style={styles.sessionSummary}>
-              <Text style={styles.summaryTitle}>Session Summary</Text>
+              <Text style={[styles.summaryTitle, { fontSize: fs.h3 }]}>Session Summary</Text>
               <View style={styles.summaryGrid}>
                 <View style={styles.summaryItem}>
-                  <Text style={styles.summaryLabel}>Total Items</Text>
+                  <Text style={[styles.summaryLabel, { fontSize: fs.caption }]}>Total Items</Text>
                   <Text style={styles.summaryValue}>{report.session.total_items || 0}</Text>
                 </View>
                 <View style={styles.summaryItem}>
-                  <Text style={styles.summaryLabel}>Counted</Text>
+                  <Text style={[styles.summaryLabel, { fontSize: fs.caption }]}>Counted</Text>
                   <Text style={styles.summaryValue}>{report.session.counted_items || 0}</Text>
                 </View>
                 <View style={styles.summaryItem}>
-                  <Text style={styles.summaryLabel}>Discrepancies</Text>
+                  <Text style={[styles.summaryLabel, { fontSize: fs.caption }]}>Discrepancies</Text>
                   <Text style={styles.summaryValue}>{report.session.discrepancy_count || 0}</Text>
                 </View>
                 <View style={styles.summaryItem}>
-                  <Text style={styles.summaryLabel}>Value Impact</Text>
+                  <Text style={[styles.summaryLabel, { fontSize: fs.caption }]}>Value Impact</Text>
                   <Text style={[
                     styles.summaryValue,
                     { color: (report.session.total_discrepancy_value || 0) < 0 ? '#F44336' : '#4CAF50' }
@@ -529,23 +665,6 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     <View>
       <Card style={styles.headerCard}>
         <Card.Content>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.headerTitle}>Physical Count Reports</Title>
-              <Paragraph style={styles.headerSubtitle}>
-                View detailed physical inventory count sessions grouped by user and date
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-              disabled={reportData.length === 0}
-            >
-              Print
-            </Button>
-          </View>
           <View style={styles.headerButtons}>
             <Button
               mode="outlined"
@@ -595,16 +714,23 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
 
   if (loading && reportData.length === 0) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.loadingContainer}>
           <Title>Loading Physical Count Reports...</Title>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Physical Count Report"
+        reportFileName="PhysicalCountReport"
+        disabled={reportData.length === 0}
+      />
       <FlatList
         data={reportData}
         renderItem={renderSession}
@@ -623,13 +749,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
         contentContainerStyle={styles.flatListContent}
       />
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Physical Count Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+      </View>
   );
 }
 
@@ -652,29 +772,6 @@ const styles = StyleSheet.create({
     margin: 16,
     marginBottom: 8,
     elevation: 4,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  headerTitles: {
-    flex: 1,
-    marginRight: 12,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1976D2',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  headerSubtitle: {
-    textAlign: 'center',
-    marginBottom: 16,
-    fontSize: 16,
-    color: '#666',
   },
   headerButtons: {
     flexDirection: 'row',

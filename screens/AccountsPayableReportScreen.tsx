@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView } from 'react-native';
 import {
   Card,
   Title,
@@ -14,8 +14,10 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'AccountsPayableReport'>;
@@ -57,6 +59,7 @@ interface SupplierAging extends Supplier {
 
 export default function AccountsPayableReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [suppliers, setSuppliers] = useState<SupplierAging[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,11 +68,24 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   useEffect(() => {
     loadData(dateRange.startDate, dateRange.endDate);
+    loadCompanySettings();
   }, [dateRange]);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -202,8 +218,8 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
 
     // Date range
     builder
-      .leftRight('From:', dateRange.startDate.toLocaleDateString('en-PH'))
-      .leftRight('To:', dateRange.endDate.toLocaleDateString('en-PH'))
+      .leftRight('From:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
       .separator();
 
     // Summary totals
@@ -246,33 +262,163 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
       .separator()
       .align('center')
       .println('Report Generated:')
-      .println(new Date().toLocaleString('en-PH'))
+      .println(formatPrinterDateTime(new Date()))
       .feed(2)
       .cut();
 
     return builder;
   };
 
+  const buildPdfHtml = (): string => {
+    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #E91E63; }
+          .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          .total-box { text-align: center; background: #fce4ec; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+          .total-amount { font-size: 28px; font-weight: bold; color: #E91E63; }
+          .aging-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+          .aging-item { flex: 1; min-width: 100px; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; border-left: 4px solid #ccc; }
+          .aging-item.current { border-left-color: #4CAF50; }
+          .aging-item.days30 { border-left-color: #FF9800; }
+          .aging-item.days60 { border-left-color: #F44336; }
+          .aging-item.days90 { border-left-color: #B71C1C; }
+          .aging-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .aging-value { font-size: 14px; font-weight: bold; }
+          .stats-row { display: flex; justify-content: space-around; margin: 16px 0; }
+          .stat-item { text-align: center; }
+          .stat-label { font-size: 11px; color: #666; }
+          .stat-value { font-size: 18px; font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .footer-row { background-color: #e8f5e9 !important; }
+          .footer-row td { font-weight: bold; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">ACCOUNTS PAYABLE REPORT</div>
+        <div class="date-range">Period: ${startDateStr} to ${endDateStr}</div>
+
+        <div class="total-box">
+          <div style="font-size: 12px; color: #666;">Total Payables</div>
+          <div class="total-amount">${formatCurrency(totals.total)}</div>
+        </div>
+
+        <div class="section-title">Aging Summary</div>
+        <div class="aging-grid">
+          <div class="aging-item current">
+            <div class="aging-label">Current (0-30)</div>
+            <div class="aging-value" style="color: #4CAF50;">${formatCurrency(totals.current)}</div>
+          </div>
+          <div class="aging-item days30">
+            <div class="aging-label">31-60 Days</div>
+            <div class="aging-value" style="color: #FF9800;">${formatCurrency(totals.days30)}</div>
+          </div>
+          <div class="aging-item days60">
+            <div class="aging-label">61-90 Days</div>
+            <div class="aging-value" style="color: #F44336;">${formatCurrency(totals.days60)}</div>
+          </div>
+          <div class="aging-item days90">
+            <div class="aging-label">90+ Days</div>
+            <div class="aging-value" style="color: #B71C1C;">${formatCurrency(totals.days90Plus)}</div>
+          </div>
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-item">
+            <div class="stat-label">Suppliers with Balance</div>
+            <div class="stat-value" style="color: #2196F3;">${suppliers.length}</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Unpaid POs</div>
+            <div class="stat-value" style="color: #FF9800;">${suppliers.reduce((sum, s) => sum + s.purchaseOrders.length, 0)}</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Average Balance</div>
+            <div class="stat-value" style="color: #E91E63;">${formatCurrency(suppliers.length > 0 ? totals.total / suppliers.length : 0)}</div>
+          </div>
+        </div>
+
+        ${suppliers.length > 0 ? `
+          <div class="section-title">Aging by Supplier</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Supplier</th>
+                <th>Current</th>
+                <th>31-60</th>
+                <th>61-90</th>
+                <th>90+</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${suppliers.sort((a, b) => b.aging.total - a.aging.total).map(supplier => `
+                <tr>
+                  <td>${supplier.name}</td>
+                  <td style="color: #4CAF50;">${supplier.aging.current > 0 ? formatCurrency(supplier.aging.current) : '-'}</td>
+                  <td style="color: #FF9800;">${supplier.aging.days30 > 0 ? formatCurrency(supplier.aging.days30) : '-'}</td>
+                  <td style="color: #F44336;">${supplier.aging.days60 > 0 ? formatCurrency(supplier.aging.days60) : '-'}</td>
+                  <td style="color: #B71C1C;">${supplier.aging.days90Plus > 0 ? formatCurrency(supplier.aging.days90Plus) : '-'}</td>
+                  <td><strong>${formatCurrency(supplier.aging.total)}</strong></td>
+                </tr>
+              `).join('')}
+              <tr class="footer-row">
+                <td>TOTAL</td>
+                <td style="color: #4CAF50;">${formatCurrency(totals.current)}</td>
+                <td style="color: #FF9800;">${formatCurrency(totals.days30)}</td>
+                <td style="color: #F44336;">${formatCurrency(totals.days60)}</td>
+                <td style="color: #B71C1C;">${formatCurrency(totals.days90Plus)}</td>
+                <td>${formatCurrency(totals.total)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : '<p style="text-align: center; color: #999;">No outstanding payables</p>'}
+
+        <div class="footer">
+          <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Accounts Payable Report</p>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Accounts Payable Report"
+        reportFileName={`AP_Report_${dateRange.startDate.toISOString().split('T')[0]}_to_${dateRange.endDate.toISOString().split('T')[0]}`}
+        emailBody={`Please find attached the Accounts Payable Report.\n\nPeriod: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}\nTotal Payables: ${formatCurrency(totals.total)}\nSuppliers with Balance: ${suppliers.length}\n\n---\nGenerated by IgoroTech POS`}
+        disabled={loading || suppliers.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Accounts Payable Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Supplier balances and aging analysis
-              </Paragraph>
-            </View>
-            <Button mode="contained" icon="printer" onPress={() => setPrintDialogVisible(true)} compact>Print</Button>
-          </View>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -301,7 +447,7 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
         {/* Summary Totals */}
         <Card style={styles.summaryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Total Payables</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Total Payables</Title>
             <Title style={[styles.totalAmount, { color: '#E91E63' }]}>
               {formatCurrency(totals.total)}
             </Title>
@@ -370,7 +516,7 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
         {viewMode === 'summary' && (
           <Card style={styles.tableCard}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Supplier Balances</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Supplier Balances</Title>
 
               {suppliers.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No outstanding payables</Paragraph>
@@ -405,7 +551,7 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
         {viewMode === 'aging' && (
           <Card style={styles.tableCard}>
             <Card.Content>
-              <Title style={styles.sectionTitle}>Aging by Supplier</Title>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Aging by Supplier</Title>
 
               {suppliers.length === 0 ? (
                 <Paragraph style={styles.emptyText}>No outstanding payables</Paragraph>
@@ -538,65 +684,26 @@ export default function AccountsPayableReportScreen({ navigation }: Props) {
         )}
 
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
             Report generated on {new Date().toLocaleString('en-PH')}
           </Paragraph>
         </View>
       </ScrollView>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print AP Report"
-        onPrint={buildPrintReport}
-      />
-    </View>
+          </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 16,

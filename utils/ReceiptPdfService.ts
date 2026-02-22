@@ -240,8 +240,8 @@ function buildPurchaseOrderHtml(data: PurchaseOrderPdfData): string {
       </td>
       <td style="text-align:center; padding:6px 8px; border-bottom:1px solid #eee;">${item.quantityOrdered}</td>
       ${item.quantityReceived !== undefined ? `<td style="text-align:center; padding:6px 8px; border-bottom:1px solid #eee;">${item.quantityReceived}</td>` : ''}
-      <td style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">${formatPeso(item.unitCost)}</td>
-      <td style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">${formatPeso(item.totalAmount)}</td>
+      <td style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">${formatPesoCurrency(item.unitCost)}</td>
+      <td style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">${formatPesoCurrency(item.totalAmount)}</td>
     </tr>
   `).join('');
 
@@ -307,7 +307,7 @@ function buildPurchaseOrderHtml(data: PurchaseOrderPdfData): string {
         </tbody>
       </table>
 
-      <div class="total-row">TOTAL: ${formatPeso(data.totalAmount)}</div>
+      <div class="total-row">TOTAL: ${formatPesoCurrency(data.totalAmount)}</div>
 
       ${data.notes ? `<div class="notes"><strong>Notes:</strong> ${data.notes}</div>` : ''}
 
@@ -378,6 +378,7 @@ export interface XReadingPdfData {
   gross_sales: number;
   discount_amount: number;
   refund_amount: number;
+  refund_count?: number;
   net_sales: number;
   // VAT Breakdown
   vat_sales: number;
@@ -388,14 +389,29 @@ export interface XReadingPdfData {
   cash_sales: number;
   card_sales: number;
   check_sales: number;
+  online_sales: number;
   credit_sales: number;
   // Voids
   void_count: number;
   void_amount: number;
+  // Exchanges
+  exchange_count?: number;
+  exchange_amount?: number;
   // Cash Drawer
   beginning_cash: number;
-  cash_fund: number;
+  opening_fund: number;
+  cash_in: number;
+  cash_out: number;
+  cash_fund: number;  // For backward compatibility (opening_fund + cash_in)
   petty_cash: number;
+  cash_refunds: number;
+  // AR Collections (Customer Payments)
+  customer_payments_cash?: number;
+  customer_payments_check?: number;
+  customer_payments_card?: number;
+  customer_payments_online?: number;
+  customer_payments_bank_transfer?: number;
+  customer_payments_total?: number;
   expected_cash: number;
 }
 
@@ -536,23 +552,45 @@ function buildXReadingHtml(data: XReadingPdfData, paperWidth: '58mm' | '80mm' = 
         <div class="row"><span class="row-label">Cash Sales</span><span class="row-value">${formatPeso(data.cash_sales)}</span></div>
         <div class="row"><span class="row-label">Card Sales</span><span class="row-value">${formatPeso(data.card_sales)}</span></div>
         <div class="row"><span class="row-label">Check Sales</span><span class="row-value">${formatPeso(data.check_sales)}</span></div>
+        <div class="row"><span class="row-label">GCash/Maya Sales</span><span class="row-value">${formatPeso(data.online_sales)}</span></div>
         <div class="row"><span class="row-label">Credit/Charge Sales</span><span class="row-value">${formatPeso(data.credit_sales)}</span></div>
       </div>
 
-      <!-- Voids -->
+      <!-- Voids / Exchanges / Refunds -->
       <div class="section">
-        <div class="section-title">VOIDS</div>
+        <div class="section-title">VOIDS / EXCHANGES / REFUNDS</div>
         <div class="row"><span class="row-label">Void Count</span><span class="row-value">${data.void_count}</span></div>
         <div class="row"><span class="row-label">Void Amount</span><span class="row-value-red">${formatPeso(data.void_amount)}</span></div>
+        <div class="row"><span class="row-label">Exchange Count</span><span class="row-value">${data.exchange_count || 0}</span></div>
+        <div class="row"><span class="row-label">Exchange Amount</span><span class="row-value-red">${formatPeso(data.exchange_amount || 0)}</span></div>
+        <div class="row"><span class="row-label">Refund Count</span><span class="row-value">${data.refund_count || 0}</span></div>
+        <div class="row"><span class="row-label">Refund Amount</span><span class="row-value-red">${formatPeso(data.refund_amount)}</span></div>
       </div>
+
+      ${(data.customer_payments_total || 0) > 0 ? `
+      <!-- AR Collections -->
+      <div class="section">
+        <div class="section-title">AR COLLECTIONS (CUSTOMER PAYMENTS)</div>
+        <div class="row"><span class="row-label">Cash</span><span class="row-value">${formatPeso(data.customer_payments_cash || 0)}</span></div>
+        <div class="row"><span class="row-label">Check</span><span class="row-value">${formatPeso(data.customer_payments_check || 0)}</span></div>
+        <div class="row"><span class="row-label">Card</span><span class="row-value">${formatPeso(data.customer_payments_card || 0)}</span></div>
+        <div class="row"><span class="row-label">GCash/Online</span><span class="row-value">${formatPeso(data.customer_payments_online || 0)}</span></div>
+        <div class="row"><span class="row-label">Bank Transfer</span><span class="row-value">${formatPeso(data.customer_payments_bank_transfer || 0)}</span></div>
+        <div class="row-total"><span>Total Collections</span><span class="row-value">${formatPeso(data.customer_payments_total || 0)}</span></div>
+      </div>
+      ` : ''}
 
       <!-- Cash Drawer -->
       <div class="section-highlight">
         <div class="section-title">CASH DRAWER</div>
         <div class="row"><span class="row-label">Beginning Cash</span><span class="row-value">${formatPeso(data.beginning_cash)}</span></div>
+        <div class="row"><span class="row-label">Add: Opening Fund</span><span class="row-value">${formatPeso(data.opening_fund || 0)}</span></div>
+        <div class="row"><span class="row-label">Add: Cash In</span><span class="row-value">${formatPeso(data.cash_in || 0)}</span></div>
         <div class="row"><span class="row-label">Add: Cash Sales</span><span class="row-value">${formatPeso(data.cash_sales)}</span></div>
-        <div class="row"><span class="row-label">Add: Cash Fund</span><span class="row-value">${formatPeso(data.cash_fund)}</span></div>
+        ${(data.customer_payments_cash || 0) > 0 ? `<div class="row"><span class="row-label">Add: AR Collections (Cash)</span><span class="row-value">${formatPeso(data.customer_payments_cash || 0)}</span></div>` : ''}
+        <div class="row"><span class="row-label">Less: Cash Out</span><span class="row-value-red">(${formatPeso(data.cash_out || 0)})</span></div>
         <div class="row"><span class="row-label">Less: Petty Cash</span><span class="row-value-red">(${formatPeso(data.petty_cash)})</span></div>
+        <div class="row"><span class="row-label">Less: Cash Refunds</span><span class="row-value-red">(${formatPeso(data.cash_refunds || 0)})</span></div>
         <div class="row-total"><span>Expected Cash</span><span class="row-value-green">${formatPeso(data.expected_cash)}</span></div>
       </div>
 
@@ -590,6 +628,17 @@ export async function generateXReadingPdf(
   });
 
   return uri;
+}
+
+/**
+ * Print X-Reading using system print dialog (PDF fallback when no Bluetooth printer)
+ */
+export async function printXReadingPdf(
+  data: XReadingPdfData,
+  paperWidth: '58mm' | '80mm' = '58mm'
+): Promise<void> {
+  const html = buildXReadingHtml(data, paperWidth);
+  await Print.printAsync({ html });
 }
 
 /**
@@ -657,6 +706,7 @@ export interface ZReadingPdfData {
   gross_sales: number;
   discount_amount: number;
   sales_returns: number;
+  refund_count?: number;
   net_sales: number;
   // VAT Breakdown
   vat_sales: number;
@@ -667,14 +717,29 @@ export interface ZReadingPdfData {
   cash_sales: number;
   card_sales: number;
   check_sales: number;
+  online_sales: number;
   credit_sales: number;
-  gcash_sales?: number;
   // Voids
   void_count: number;
   void_amount: number;
+  // Exchanges
+  exchange_count?: number;
+  exchange_amount?: number;
+  // AR Collections (Customer Payments)
+  customer_payments_cash?: number;
+  customer_payments_check?: number;
+  customer_payments_card?: number;
+  customer_payments_online?: number;
+  customer_payments_bank_transfer?: number;
+  customer_payments_total?: number;
+  // Supplier Payments
+  supplier_payments_made?: number;
   // Cash Drawer
   beginning_cash: number;
-  cash_fund: number;
+  opening_fund: number;
+  cash_in: number;
+  cash_out: number;
+  cash_fund: number;  // For backward compatibility (opening_fund + cash_in)
   petty_cash: number;
   cash_refunds: number;
   expected_cash: number;
@@ -843,24 +908,52 @@ function buildZReadingHtml(data: ZReadingPdfData, paperWidth: '58mm' | '80mm' = 
         <div class="row"><span class="row-label">Cash Sales</span><span class="row-value">${formatPeso(data.cash_sales)}</span></div>
         <div class="row"><span class="row-label">Card Sales</span><span class="row-value">${formatPeso(data.card_sales)}</span></div>
         <div class="row"><span class="row-label">Check Sales</span><span class="row-value">${formatPeso(data.check_sales)}</span></div>
-        ${data.gcash_sales ? `<div class="row"><span class="row-label">GCash/Online</span><span class="row-value">${formatPeso(data.gcash_sales)}</span></div>` : ''}
+        <div class="row"><span class="row-label">GCash/Maya Sales</span><span class="row-value">${formatPeso(data.online_sales)}</span></div>
         <div class="row"><span class="row-label">Charge Invoice (AR)</span><span class="row-value">${formatPeso(data.credit_sales)}</span></div>
       </div>
 
-      <!-- Voids -->
+      <!-- Voids / Exchanges / Refunds -->
       <div class="section">
-        <div class="section-title">VOIDS</div>
+        <div class="section-title">VOIDS / EXCHANGES / REFUNDS</div>
         <div class="row"><span class="row-label">Void Count</span><span class="row-value">${data.void_count}</span></div>
         <div class="row"><span class="row-label">Void Amount</span><span class="row-value-red">${formatPeso(data.void_amount)}</span></div>
+        <div class="row"><span class="row-label">Exchange Count</span><span class="row-value">${data.exchange_count || 0}</span></div>
+        <div class="row"><span class="row-label">Exchange Amount</span><span class="row-value-red">${formatPeso(data.exchange_amount || 0)}</span></div>
+        <div class="row"><span class="row-label">Refund Count</span><span class="row-value">${data.refund_count || 0}</span></div>
+        <div class="row"><span class="row-label">Refund Amount</span><span class="row-value-red">${formatPeso(data.sales_returns)}</span></div>
       </div>
+
+      ${(data.customer_payments_total || 0) > 0 ? `
+      <!-- AR Collections -->
+      <div class="section">
+        <div class="section-title">AR COLLECTIONS (CUSTOMER PAYMENTS)</div>
+        <div class="row"><span class="row-label">Cash</span><span class="row-value">${formatPeso(data.customer_payments_cash || 0)}</span></div>
+        <div class="row"><span class="row-label">Check</span><span class="row-value">${formatPeso(data.customer_payments_check || 0)}</span></div>
+        <div class="row"><span class="row-label">Card</span><span class="row-value">${formatPeso(data.customer_payments_card || 0)}</span></div>
+        <div class="row"><span class="row-label">GCash/Online</span><span class="row-value">${formatPeso(data.customer_payments_online || 0)}</span></div>
+        <div class="row"><span class="row-label">Bank Transfer</span><span class="row-value">${formatPeso(data.customer_payments_bank_transfer || 0)}</span></div>
+        <div class="row-total"><span>Total Collections</span><span class="row-value">${formatPeso(data.customer_payments_total || 0)}</span></div>
+      </div>
+      ` : ''}
+
+      ${(data.supplier_payments_made || 0) > 0 ? `
+      <!-- Supplier Payments -->
+      <div class="section">
+        <div class="section-title">SUPPLIER PAYMENTS</div>
+        <div class="row-total"><span>Total Payments Made</span><span class="row-value-red">${formatPeso(data.supplier_payments_made || 0)}</span></div>
+      </div>
+      ` : ''}
 
       <!-- Cash Drawer Accountability -->
       <div class="section-cash">
         <div class="section-title">💵 CASH DRAWER ACCOUNTABILITY</div>
         <div class="row"><span class="row-label">Beginning Cash</span><span class="row-value">${formatPeso(data.beginning_cash)}</span></div>
+        ${(data.opening_fund || 0) > 0 ? `<div class="row"><span class="row-label">Add: Opening Fund</span><span class="row-value">${formatPeso(data.opening_fund)}</span></div>` : ''}
+        ${(data.cash_in || 0) > 0 ? `<div class="row"><span class="row-label">Add: Cash In</span><span class="row-value">${formatPeso(data.cash_in)}</span></div>` : ''}
         <div class="row"><span class="row-label">Add: Cash Sales</span><span class="row-value">${formatPeso(data.cash_sales)}</span></div>
-        ${data.cash_fund > 0 ? `<div class="row"><span class="row-label">Add: Cash Fund</span><span class="row-value">${formatPeso(data.cash_fund)}</span></div>` : ''}
+        ${(data.customer_payments_cash || 0) > 0 ? `<div class="row"><span class="row-label">Add: AR Collections (Cash)</span><span class="row-value">${formatPeso(data.customer_payments_cash || 0)}</span></div>` : ''}
         ${data.cash_refunds > 0 ? `<div class="row"><span class="row-label">Less: Cash Refunds</span><span class="row-value-red">(${formatPeso(data.cash_refunds)})</span></div>` : ''}
+        ${(data.cash_out || 0) > 0 ? `<div class="row"><span class="row-label">Less: Cash Out</span><span class="row-value-red">(${formatPeso(data.cash_out)})</span></div>` : ''}
         ${data.petty_cash > 0 ? `<div class="row"><span class="row-label">Less: Petty Cash</span><span class="row-value-red">(${formatPeso(data.petty_cash)})</span></div>` : ''}
         <div class="row-total"><span>Expected Cash</span><span>${formatPeso(data.expected_cash)}</span></div>
         <div class="row"><span class="row-label">Actual Cash (Counted)</span><span class="row-value">${formatPeso(data.actual_cash)}</span></div>
@@ -904,6 +997,17 @@ export async function generateZReadingPdf(
   });
 
   return uri;
+}
+
+/**
+ * Print Z-Reading using system print dialog (PDF fallback when no Bluetooth printer)
+ */
+export async function printZReadingPdf(
+  data: ZReadingPdfData,
+  paperWidth: '58mm' | '80mm' = '58mm'
+): Promise<void> {
+  const html = buildZReadingHtml(data, paperWidth);
+  await Print.printAsync({ html });
 }
 
 /**
@@ -1019,7 +1123,7 @@ const ENTRY_TYPE_COLORS: Record<string, string> = {
   SYSTEM: '#607D8B',
 };
 
-function buildEJournalHtml(data: EJournalPdfData, paperWidth: '58mm' | '80mm' = '80mm'): string {
+export function buildEJournalHtml(data: EJournalPdfData, paperWidth: '58mm' | '80mm' = '80mm'): string {
   const maxWidth = paperWidth === '58mm' ? '280px' : '380px';
   const fontSize = paperWidth === '58mm' ? '10px' : '11px';
   const headerFontSize = paperWidth === '58mm' ? '14px' : '16px';
@@ -1115,8 +1219,8 @@ function buildEJournalHtml(data: EJournalPdfData, paperWidth: '58mm' | '80mm' = 
           ${data.minNumber ? `<div class="header-text">MIN: ${data.minNumber}</div>` : ''}
         </div>
 
-        <div class="report-title">ELECTRONIC JOURNAL</div>
-        <div class="report-subtitle">BIR Audit Trail Report</div>
+        <div class="report-title">eSALES JOURNAL</div>
+        <div class="report-subtitle">Electronic Sales Journal</div>
         <div class="report-subtitle">Period: ${data.startDate} to ${data.endDate}</div>
 
         <div class="section">
@@ -1225,7 +1329,7 @@ export async function shareEJournalPdf(
 
   await Sharing.shareAsync(newUri, {
     mimeType: 'application/pdf',
-    dialogTitle: 'Share eJournal Report',
+    dialogTitle: 'Share eSales Journal',
   });
 }
 
@@ -1251,8 +1355,575 @@ export async function emailEJournalPdf(
 
   await MailComposer.composeAsync({
     recipients: recipientEmail ? [recipientEmail] : [],
-    subject: `eJournal Report - ${data.startDate} to ${data.endDate}`,
+    subject: `eSales Journal - ${data.startDate} to ${data.endDate}`,
     body: `Please find attached the Electronic Journal (BIR Audit Trail) report.\n\nPeriod: ${data.startDate} to ${data.endDate}\nTotal Entries: ${data.summary.totalEntries}\nTotal Sales: ${formatPeso(data.summary.totalSales)}\nTotal Voids: ${formatPeso(data.summary.totalVoids)}\nTotal Returns: ${formatPeso(data.summary.totalReturns)}\nTotal Payments: ${formatPeso(data.summary.totalPayments)}\n\n---\nGenerated by IgoroTech POS\nBIR Compliance Electronic Journal`,
     attachments: [newUri],
   });
+}
+
+// ========================================
+// GENERIC REPORT PDF UTILITIES
+// ========================================
+
+/**
+ * Generic Report PDF Data interface for flexible report generation
+ */
+export interface GenericReportPdfData {
+  companyName: string;
+  companyAddress?: string;
+  companyTin?: string;
+  reportTitle: string;
+  reportSubtitle?: string;
+  dateRange?: { startDate: string; endDate: string };
+  generatedAt?: string;
+  sections: Array<{
+    title?: string;
+    type: 'summary' | 'table' | 'list' | 'text';
+    data: any;
+  }>;
+}
+
+/**
+ * Build generic report HTML for PDF generation
+ */
+export function buildGenericReportHtml(data: GenericReportPdfData): string {
+  const generatedDate = data.generatedAt || new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' });
+
+  const buildSummarySection = (section: { title?: string; data: Record<string, { label: string; value: string; color?: string }[]> }) => {
+    const items = Object.values(section.data).flat();
+    return `
+      ${section.title ? `<div class="section-title">${section.title}</div>` : ''}
+      <div class="summary-grid">
+        ${items.map(item => `
+          <div class="summary-item">
+            <div class="summary-label">${item.label}</div>
+            <div class="summary-value" style="${item.color ? `color: ${item.color};` : ''}">${item.value}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  };
+
+  const buildTableSection = (section: { title?: string; data: { headers: string[]; rows: string[][]; footerRow?: string[] } }) => {
+    return `
+      ${section.title ? `<div class="section-title">${section.title}</div>` : ''}
+      <table>
+        <thead>
+          <tr>
+            ${section.data.headers.map(h => `<th>${h}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${section.data.rows.map(row => `
+            <tr>
+              ${row.map(cell => `<td>${cell}</td>`).join('')}
+            </tr>
+          `).join('')}
+          ${section.data.footerRow ? `
+            <tr class="footer-row">
+              ${section.data.footerRow.map(cell => `<td><strong>${cell}</strong></td>`).join('')}
+            </tr>
+          ` : ''}
+        </tbody>
+      </table>
+    `;
+  };
+
+  const buildListSection = (section: { title?: string; data: Array<{ label: string; value: string; color?: string }> }) => {
+    return `
+      ${section.title ? `<div class="section-title">${section.title}</div>` : ''}
+      <div class="list-section">
+        ${section.data.map(item => `
+          <div class="list-row">
+            <span class="list-label">${item.label}</span>
+            <span class="list-value" style="${item.color ? `color: ${item.color};` : ''}">${item.value}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  };
+
+  const buildTextSection = (section: { title?: string; data: string }) => {
+    return `
+      ${section.title ? `<div class="section-title">${section.title}</div>` : ''}
+      <div class="text-section">${section.data}</div>
+    `;
+  };
+
+  const sectionsHtml = data.sections.map(section => {
+    switch (section.type) {
+      case 'summary':
+        return buildSummarySection(section as any);
+      case 'table':
+        return buildTableSection(section as any);
+      case 'list':
+        return buildListSection(section as any);
+      case 'text':
+        return buildTextSection(section as any);
+      default:
+        return '';
+    }
+  }).join('<div class="section-divider"></div>');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          font-size: 12px;
+          color: #333;
+          margin: 0;
+          padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        .header {
+          text-align: center;
+          margin-bottom: 16px;
+          border-bottom: 2px solid #333;
+          padding-bottom: 16px;
+        }
+        .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+        .header-text { font-size: 11px; color: #666; margin: 2px 0; }
+        .report-title {
+          font-size: 20px;
+          font-weight: bold;
+          text-align: center;
+          margin: 16px 0;
+          color: #1976D2;
+        }
+        .report-subtitle {
+          font-size: 13px;
+          text-align: center;
+          color: #666;
+          margin-bottom: 8px;
+        }
+        .date-range {
+          text-align: center;
+          font-size: 12px;
+          color: #666;
+          margin-bottom: 16px;
+          background: #f5f5f5;
+          padding: 8px;
+          border-radius: 4px;
+        }
+        .section-title {
+          font-size: 14px;
+          font-weight: bold;
+          border-bottom: 1px solid #ddd;
+          padding-bottom: 4px;
+          margin-bottom: 12px;
+          margin-top: 16px;
+          color: #333;
+        }
+        .section-divider {
+          height: 1px;
+          background: #eee;
+          margin: 16px 0;
+        }
+        .summary-grid {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin: 12px 0;
+        }
+        .summary-item {
+          flex: 1;
+          min-width: 120px;
+          background: #f5f5f5;
+          border-radius: 8px;
+          padding: 12px;
+          text-align: center;
+        }
+        .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+        .summary-value { font-size: 16px; font-weight: bold; color: #333; }
+        table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+        th {
+          background-color: #f5f5f5;
+          padding: 8px;
+          text-align: left;
+          font-weight: 600;
+          border-bottom: 2px solid #ddd;
+          font-size: 11px;
+        }
+        td { padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 11px; }
+        tr:nth-child(even) { background-color: #fafafa; }
+        .footer-row { background-color: #e8f5e9 !important; }
+        .footer-row td { font-weight: bold; }
+        .list-section { margin: 8px 0; }
+        .list-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 6px 0;
+          border-bottom: 1px solid #eee;
+        }
+        .list-label { color: #666; }
+        .list-value { font-weight: 600; }
+        .text-section {
+          background: #f5f5f5;
+          padding: 12px;
+          border-radius: 6px;
+          margin: 8px 0;
+        }
+        .footer {
+          margin-top: 24px;
+          text-align: center;
+          font-size: 10px;
+          color: #999;
+          border-top: 1px solid #ddd;
+          padding-top: 12px;
+        }
+        @media print {
+          body { padding: 10px; }
+          .page-break { page-break-before: always; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="company-name">${data.companyName || 'IgoroTech POS'}</div>
+          ${data.companyAddress ? `<div class="header-text">${data.companyAddress}</div>` : ''}
+          ${data.companyTin ? `<div class="header-text">TIN: ${data.companyTin}</div>` : ''}
+        </div>
+
+        <div class="report-title">${data.reportTitle}</div>
+        ${data.reportSubtitle ? `<div class="report-subtitle">${data.reportSubtitle}</div>` : ''}
+        ${data.dateRange ? `
+          <div class="date-range">
+            Period: ${data.dateRange.startDate} to ${data.dateRange.endDate}
+          </div>
+        ` : ''}
+
+        ${sectionsHtml}
+
+        <div class="footer">
+          <p>Generated: ${generatedDate}</p>
+          <p>IgoroTech POS - Report System</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Format number as Philippine Peso (exported for use in report screens)
+ */
+export function formatPesoCurrency(amount: number): string {
+  const safe = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
+  return `₱${safe.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * Build HTML for Supplier Payments report
+ */
+export function buildSupplierPaymentsHtml(
+  payments: any[],
+  startDate: Date,
+  endDate: Date
+): string {
+  const totalAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+
+  const paymentsHtml = payments.map(payment => `
+    <tr>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">${payment.payment_number}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">${new Date(payment.payment_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">${payment.supplier_name}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${payment.payment_method}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">${payment.purchase_number || '-'}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold;">₱${payment.amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          padding: 20px;
+          max-width: 1000px;
+          margin: 0 auto;
+        }
+        .header {
+          text-align: center;
+          margin-bottom: 30px;
+          border-bottom: 2px solid #2196F3;
+          padding-bottom: 20px;
+        }
+        .company-name {
+          font-size: 24px;
+          font-weight: bold;
+          color: #2196F3;
+          margin-bottom: 10px;
+        }
+        .report-title {
+          font-size: 20px;
+          font-weight: bold;
+          margin: 20px 0 10px 0;
+        }
+        .date-range {
+          font-size: 14px;
+          color: #666;
+          margin-bottom: 20px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 20px 0;
+        }
+        th {
+          background-color: #2196F3;
+          color: white;
+          padding: 12px 8px;
+          text-align: left;
+          font-weight: bold;
+        }
+        .summary-box {
+          background-color: #E3F2FD;
+          padding: 15px;
+          border-radius: 8px;
+          margin-top: 20px;
+          border-left: 4px solid #2196F3;
+        }
+        .summary-row {
+          display: flex;
+          justify-content: space-between;
+          margin: 8px 0;
+          font-size: 16px;
+        }
+        .summary-label {
+          font-weight: bold;
+        }
+        .summary-value {
+          color: #2196F3;
+          font-weight: bold;
+        }
+        .footer {
+          margin-top: 40px;
+          text-align: center;
+          font-size: 11px;
+          color: #999;
+          border-top: 1px solid #ddd;
+          padding-top: 15px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div class="company-name">IgoroTech POS</div>
+        <div class="report-title">SUPPLIER PAYMENTS</div>
+        <div class="date-range">
+          ${startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })} - ${endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Payment #</th>
+            <th>Date</th>
+            <th>Supplier</th>
+            <th style="text-align: center;">Method</th>
+            <th>PO #</th>
+            <th style="text-align: right;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${paymentsHtml}
+        </tbody>
+      </table>
+
+      <div class="summary-box">
+        <div class="summary-row">
+          <span class="summary-label">Total Payments:</span>
+          <span class="summary-value">₱${totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Total Count:</span>
+          <span class="summary-value">${payments.length} payments</span>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+        <p>IgoroTech POS - Supplier Payments Report</p>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Build HTML for Unpaid Payables report
+ */
+export function buildUnpaidPayablesHtml(
+  payables: any[],
+  unpaidOnly: boolean
+): string {
+  const totalOutstanding = payables.reduce((sum, p) => sum + p.balance_amount, 0);
+  const totalOriginal = payables.reduce((sum, p) => sum + p.original_amount, 0);
+  const totalPaid = payables.reduce((sum, p) => sum + p.paid_amount, 0);
+
+  const payablesHtml = payables.map(payable => {
+    const statusColor =
+      (payable.current_status || payable.status) === 'PAID' ? '#4CAF50' :
+      (payable.current_status || payable.status) === 'OVERDUE' ? '#F44336' :
+      (payable.current_status || payable.status) === 'PARTIALLY_PAID' ? '#FF9800' :
+      '#2196F3';
+
+    return `
+      <tr>
+        <td style="padding: 8px; border-bottom: 1px solid #eee;">${payable.purchase_number}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee;">${payable.supplier_name}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${new Date(payable.due_date).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">₱${payable.original_amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">₱${payable.paid_amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold; color: #F44336;">₱${payable.balance_amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">
+          <span style="background: ${statusColor}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">
+            ${payable.current_status || payable.status}
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          padding: 20px;
+          max-width: 1200px;
+          margin: 0 auto;
+        }
+        .header {
+          text-align: center;
+          margin-bottom: 30px;
+          border-bottom: 2px solid #F44336;
+          padding-bottom: 20px;
+        }
+        .company-name {
+          font-size: 24px;
+          font-weight: bold;
+          color: #F44336;
+          margin-bottom: 10px;
+        }
+        .report-title {
+          font-size: 20px;
+          font-weight: bold;
+          margin: 20px 0 10px 0;
+        }
+        .date-info {
+          font-size: 14px;
+          color: #666;
+          margin-bottom: 20px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 20px 0;
+        }
+        th {
+          background-color: #F44336;
+          color: white;
+          padding: 12px 8px;
+          text-align: left;
+          font-weight: bold;
+          font-size: 13px;
+        }
+        .summary-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 15px;
+          margin-top: 20px;
+        }
+        .summary-card {
+          background-color: #FFEBEE;
+          padding: 15px;
+          border-radius: 8px;
+          border-left: 4px solid #F44336;
+        }
+        .summary-label {
+          font-size: 12px;
+          color: #666;
+          margin-bottom: 5px;
+        }
+        .summary-value {
+          font-size: 20px;
+          font-weight: bold;
+          color: #F44336;
+        }
+        .footer {
+          margin-top: 40px;
+          text-align: center;
+          font-size: 11px;
+          color: #999;
+          border-top: 1px solid #ddd;
+          padding-top: 15px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div class="company-name">IgoroTech POS</div>
+        <div class="report-title">${unpaidOnly ? 'UNPAID SUPPLIER INVOICES' : 'SUPPLIER INVOICES'}</div>
+        <div class="date-info">As of: ${new Date().toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>PO #</th>
+            <th>Supplier</th>
+            <th style="text-align: center;">Due Date</th>
+            <th style="text-align: right;">Original</th>
+            <th style="text-align: right;">Paid</th>
+            <th style="text-align: right;">Balance</th>
+            <th style="text-align: center;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${payablesHtml}
+        </tbody>
+      </table>
+
+      <div class="summary-grid">
+        <div class="summary-card">
+          <div class="summary-label">Total Original Amount</div>
+          <div class="summary-value">₱${totalOriginal.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">Total Paid Amount</div>
+          <div class="summary-value">₱${totalPaid.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">Total Outstanding Balance</div>
+          <div class="summary-value">₱${totalOutstanding.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 20px; padding: 10px; background: #FFF3E0; border-radius: 8px; border-left: 4px solid #FF9800;">
+        <div style="font-weight: bold; margin-bottom: 5px;">Summary</div>
+        <div>Total Invoices: ${payables.length}</div>
+        ${unpaidOnly ? `<div style="color: #F44336; font-weight: bold;">Showing only unpaid/partially paid invoices</div>` : ''}
+      </div>
+
+      <div class="footer">
+        <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+        <p>IgoroTech POS - ${unpaidOnly ? 'Unpaid ' : ''}Supplier Invoices Report</p>
+      </div>
+    </body>
+    </html>
+  `;
 }

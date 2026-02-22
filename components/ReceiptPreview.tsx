@@ -346,6 +346,7 @@ export default function ReceiptPreview({
               onPress={onClose}
               style={styles.actionButton}
               disabled={isPrinting}
+              compact
             >
               New Sale
             </Button>
@@ -356,7 +357,7 @@ export default function ReceiptPreview({
               onPress={onEmail}
               style={styles.actionButton}
               disabled={isPrinting}
-              icon="email-outline"
+              compact
             >
               Email
             </Button>
@@ -368,7 +369,7 @@ export default function ReceiptPreview({
               style={styles.actionButton}
               loading={isPrinting}
               disabled={isPrinting}
-              icon="printer"
+              compact
             >
               Print
             </Button>
@@ -514,14 +515,16 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    padding: 16,
+    justifyContent: 'space-between',
+    padding: 12,
+    paddingHorizontal: 8,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
   },
   actionButton: {
     flex: 1,
-    marginHorizontal: 8,
+    marginHorizontal: 4,
+    minWidth: 70,
   },
   supplierSection: {
     alignItems: 'center',

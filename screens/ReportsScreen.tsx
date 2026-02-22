@@ -20,7 +20,6 @@ import {
   ActivityIndicator,
   DataTable,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
@@ -51,6 +50,7 @@ interface InventorySession {
 }
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type ReportsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -102,6 +102,7 @@ export default function ReportsScreen({ navigation }: Props) {
     return { startDate: range.startDate, endDate: range.endDate };
   });
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const handleInventoryDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -589,7 +590,7 @@ export default function ReportsScreen({ navigation }: Props) {
       .map(transaction => `
         <tr>
           <td>${transaction.invoice_number}</td>
-          <td>${new Date(transaction.transaction_date).toLocaleTimeString()}</td>
+          <td>${new Date(transaction.transaction_date).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' })}</td>
           <td style="text-align: right;">₱${transaction.total_amount.toFixed(2)}</td>
           <td>${transaction.payment_method}</td>
         </tr>
@@ -653,8 +654,8 @@ export default function ReportsScreen({ navigation }: Props) {
     const reportTitle = reportData.reportTitle || 'Physical Inventory Count History';
 
     const sessionsHTML = inventoryHistory.map((session: any, sessionIndex: number) => {
-      const sessionDate = new Date(session.created_at).toLocaleDateString();
-      const sessionTime = new Date(session.created_at).toLocaleTimeString();
+      const sessionDate = new Date(session.created_at).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+      const sessionTime = new Date(session.created_at).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
       const discrepancyValue = Math.abs(session.amount);
       const performedBy = session.performed_by || 'Unknown User';
       const username = session.user_username || '';
@@ -803,12 +804,12 @@ export default function ReportsScreen({ navigation }: Props) {
   const stats = getTodayStats();
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView style={styles.scrollView}>
-        <View style={styles.content}>
+        <View style={[styles.content, { padding: lo.screenPadding }]}>
           <Card style={styles.statsCard}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Today's Summary</Title>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Today's Summary</Title>
               <View style={styles.statsGrid}>
                 <View style={styles.statItem}>
                   <Paragraph style={styles.statLabel}>Total Sales</Paragraph>
@@ -836,7 +837,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
           <Card style={styles.reportsCard}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Sales Reports</Title>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Sales Reports</Title>
               <Paragraph style={styles.cardSubtitle}>
                 Generate official Professional reports
               </Paragraph>
@@ -899,7 +900,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
           <Card style={styles.inventoryCard}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Inventory Management</Title>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Inventory Management</Title>
               <Paragraph style={styles.cardSubtitle}>
                 Physical inventory count history and discrepancy reports
               </Paragraph>
@@ -971,7 +972,7 @@ export default function ReportsScreen({ navigation }: Props) {
                       <DataTable.Row key={session.reference_number || index}>
                         <DataTable.Cell>{session.reference_number}</DataTable.Cell>
                         <DataTable.Cell>
-                          {new Date(session.created_at).toLocaleDateString()}
+                          {new Date(session.created_at).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
                         </DataTable.Cell>
                         <DataTable.Cell numeric>
                           <Paragraph style={[
@@ -997,7 +998,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
           <Card style={styles.transactionsCard}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Today's Transactions</Title>
+              <Title style={[styles.cardTitle, { fontSize: fs.h3 }]}>Today's Transactions</Title>
 
               {todayTransactions.length === 0 ? (
                 <Paragraph style={styles.emptyText}>
@@ -1158,7 +1159,7 @@ export default function ReportsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

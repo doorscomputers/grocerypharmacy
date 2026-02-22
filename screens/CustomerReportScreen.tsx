@@ -14,13 +14,15 @@ import {
   useTheme,
   Chip,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Picker } from '@react-native-picker/picker';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'CustomerReport'>;
@@ -33,13 +35,27 @@ export default function CustomerReportScreen({ navigation }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
   const [selectedReportType, setSelectedReportType] = useState<string>('INVOICES');
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -131,8 +147,7 @@ export default function CustomerReportScreen({ navigation }: Props) {
     // Date/Time
     builder
       .align('left')
-      .leftRight('Date:', now.toLocaleDateString('en-PH'))
-      .leftRight('Time:', now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }))
+      .leftRight('Date:', formatPrinterDate(now))
       .separator();
 
     // Summary Section
@@ -186,11 +201,115 @@ export default function CustomerReportScreen({ navigation }: Props) {
       .feed()
       .align('center')
       .println('*** END OF REPORT ***')
-      .println(now.toLocaleString('en-PH'))
+      .println(formatPrinterDateTime(now))
       .feed(2)
       .cut();
 
     return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    // Calculate summary totals
+    let totalOutstanding = 0;
+    let customersWithBalance = 0;
+    let customersCleared = 0;
+
+    filteredCustomers.forEach((customer) => {
+      const balance = getCustomerBalance(customer.id);
+      totalOutstanding += balance;
+      if (balance > 0) customersWithBalance++;
+      else if (balance === 0) customersCleared++;
+    });
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #2196F3; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          .summary-grid { display: flex; gap: 12px; margin: 12px 0; }
+          .summary-item { flex: 1; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; }
+          .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .summary-value { font-size: 18px; font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .balance-positive { color: #F44336; }
+          .balance-clear { color: #4CAF50; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">CUSTOMER REPORT</div>
+
+        <div class="section-title">Summary</div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Total Customers</div>
+            <div class="summary-value" style="color: #2196F3;">${filteredCustomers.length}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">With Balance</div>
+            <div class="summary-value" style="color: #F44336;">${customersWithBalance}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Cleared</div>
+            <div class="summary-value" style="color: #4CAF50;">${customersCleared}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Total Outstanding</div>
+            <div class="summary-value" style="color: #E91E63;">₱${totalOutstanding.toFixed(2)}</div>
+          </div>
+        </div>
+
+        <div class="section-title">Customer List</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Balance</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredCustomers.map(customer => {
+              const balance = getCustomerBalance(customer.id);
+              const statusClass = balance > 0 ? 'balance-positive' : 'balance-clear';
+              const status = balance > 0 ? 'HAS BALANCE' : balance === 0 ? 'CLEAR' : 'CREDIT';
+              return `
+                <tr>
+                  <td>${customer.code || '-'}</td>
+                  <td>${customer.name || 'N/A'}</td>
+                  <td>${customer.phone || '-'}</td>
+                  <td class="${statusClass}">₱${balance.toFixed(2)}</td>
+                  <td>${status}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+
+        <div class="footer">
+          <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Customer Report</p>
+        </div>
+      </body>
+      </html>
+    `;
   };
 
   const renderCustomerCard = ({ item }: { item: any }) => {
@@ -208,7 +327,7 @@ export default function CustomerReportScreen({ navigation }: Props) {
         <Card.Content>
           <View style={styles.customerRow}>
             <View style={styles.customerInfo}>
-              <Paragraph style={styles.customerName}>{item.name}</Paragraph>
+              <Paragraph style={[styles.customerName, { fontSize: fs.body }]}>{item.name}</Paragraph>
               <Paragraph style={styles.customerCode}>{item.code}</Paragraph>
               {item.phone && (
                 <Paragraph style={styles.customerPhone}>{item.phone}</Paragraph>
@@ -259,25 +378,15 @@ export default function CustomerReportScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <View style={styles.headerTitles}>
-            <Title style={styles.headerTitle}>Customer Reports</Title>
-            <Paragraph style={styles.headerSubtitle}>
-              Select a customer and choose a report to view
-            </Paragraph>
-          </View>
-          <Button
-            mode="contained"
-            icon="printer"
-            onPress={() => setPrintDialogVisible(true)}
-            compact
-          >
-            Print
-          </Button>
-        </View>
-      </View>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Report Actions: Print, PDF, Email */}
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Customer Report"
+        reportFileName={`CustomerReport_${new Date().toISOString().split('T')[0]}`}
+        disabled={filteredCustomers.length === 0}
+      />
 
       {/* Report Type Selector */}
       <View style={styles.reportTypeContainer}>
@@ -308,7 +417,7 @@ export default function CustomerReportScreen({ navigation }: Props) {
         data={filteredCustomers}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderCustomerCard}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadData}
@@ -333,13 +442,7 @@ export default function CustomerReportScreen({ navigation }: Props) {
         </Button>
       </View>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Customer Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+          </View>
   );
 }
 
@@ -446,6 +549,7 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     padding: 16,
+    paddingBottom: 48,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     backgroundColor: 'white',

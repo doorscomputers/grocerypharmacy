@@ -12,12 +12,15 @@ import {
   Chip,
   Divider,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import ReportActionsBar from '../components/ReportActionsBar';
+import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime, formatPhilippineDate, toLocalDateString } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'CustomerReportDetail'>;
@@ -35,11 +38,27 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
     return { startDate: range.startDate, endDate: range.endDate };
   });
 
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
+
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, [dateRange]);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -139,12 +158,197 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
   };
 
   const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-PH', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
+    return formatPhilippineDate(dateStr);
+  };
+
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+    const now = new Date();
+
+    // Header
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('CUSTOMER REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .println(formatPrinterDateTime(now))
+      .doubleSeparator();
+
+    // Customer info
+    builder
+      .align('left')
+      .bold(true)
+      .println(customerName)
+      .bold(false)
+      .leftRight('Report:', getReportTitle())
+      .leftRight('Period:', `${formatPrinterDate(dateRange.startDate)}`)
+      .leftRight('To:', `${formatPrinterDate(dateRange.endDate)}`)
+      .separator();
+
+    // Summary
+    builder
+      .bold(true)
+      .leftRight('Records:', data.length.toString())
+      .leftRight('Total:', `P${getTotalAmount().toFixed(2)}`)
+      .leftRight('Balance:', `P${customerBalance.toFixed(2)}`)
+      .bold(false)
+      .doubleSeparator();
+
+    // Detail list
+    if (data.length > 0) {
+      builder.bold(true).println('DETAILS').bold(false).separator();
+
+      data.slice(0, 25).forEach((item: any) => {
+        if (reportType === 'INVOICES') {
+          builder
+            .println(item.invoice_number || '-')
+            .leftRight(`  ${formatPrinterDate(item.created_at)}`, `P${(item.total_amount || 0).toFixed(2)}`)
+            .leftRight(`  ${item.payment_method || '-'}`, item.status || '-');
+        } else if (reportType === 'RETURNS') {
+          builder
+            .println(item.return_number || '-')
+            .leftRight(`  ${formatPrinterDate(item.return_date)}`, `-P${(item.total_amount || 0).toFixed(2)}`)
+            .leftRight(`  ${item.refund_method || '-'}`, item.status || '-');
+        } else if (reportType === 'PAYMENTS') {
+          builder
+            .println(item.payment_number || '-')
+            .leftRight(`  ${formatPrinterDate(item.payment_date)}`, `P${(item.amount_paid || 0).toFixed(2)}`)
+            .leftRight(`  ${item.payment_method || '-'}`, item.invoice_number || '-');
+        }
+        builder.separator('-');
+      });
+
+      if (data.length > 25) {
+        builder.println(`... and ${data.length - 25} more`);
+      }
+    }
+
+    // Footer
+    builder
+      .feed()
+      .align('center')
+      .println('*** END OF REPORT ***')
+      .println(formatPrinterDateTime(now))
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+
+    let detailRows = '';
+    if (reportType === 'INVOICES') {
+      detailRows = `
+        <thead><tr><th>Invoice #</th><th>Date</th><th>Method</th><th>Status</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${data.map((item: any) => `
+            <tr>
+              <td>${item.invoice_number || '-'}</td>
+              <td>${formatPhilippineDate(item.created_at)}</td>
+              <td>${item.payment_method || '-'}</td>
+              <td>${item.status || '-'}</td>
+              <td style="text-align: right;">&#8369;${(item.total_amount || 0).toFixed(2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+    } else if (reportType === 'RETURNS') {
+      detailRows = `
+        <thead><tr><th>Return #</th><th>Date</th><th>Method</th><th>Status</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${data.map((item: any) => `
+            <tr>
+              <td>${item.return_number || '-'}</td>
+              <td>${formatPhilippineDate(item.return_date)}</td>
+              <td>${item.refund_method || '-'}</td>
+              <td>${item.status || '-'}</td>
+              <td style="text-align: right; color: #F44336;">-&#8369;${(item.total_amount || 0).toFixed(2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+    } else if (reportType === 'PAYMENTS') {
+      detailRows = `
+        <thead><tr><th>Payment #</th><th>Date</th><th>Invoice</th><th>Method</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${data.map((item: any) => `
+            <tr>
+              <td>${item.payment_number || '-'}</td>
+              <td>${formatPhilippineDate(item.payment_date)}</td>
+              <td>${item.invoice_number || '-'}</td>
+              <td>${item.payment_method || '-'}</td>
+              <td style="text-align: right; color: #4CAF50;">&#8369;${(item.amount_paid || 0).toFixed(2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+    }
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #2196F3; }
+          .customer-name { font-size: 16px; font-weight: bold; text-align: center; margin: 8px 0; }
+          .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+          .summary-grid { display: flex; gap: 12px; margin: 12px 0; }
+          .summary-item { flex: 1; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; }
+          .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .summary-value { font-size: 18px; font-weight: bold; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">CUSTOMER ${getReportTitle().toUpperCase()} REPORT</div>
+        <div class="customer-name">${customerName}</div>
+        <div class="date-range">Period: ${formatPhilippineDate(dateRange.startDate)} to ${formatPhilippineDate(dateRange.endDate)}</div>
+
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Records</div>
+            <div class="summary-value" style="color: #2196F3;">${data.length}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Total Amount</div>
+            <div class="summary-value">&#8369;${getTotalAmount().toFixed(2)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Outstanding Balance</div>
+            <div class="summary-value" style="color: ${customerBalance > 0 ? '#F44336' : '#4CAF50'};">&#8369;${customerBalance.toFixed(2)}</div>
+          </div>
+        </div>
+
+        <div class="section-title">${getReportTitle()} (${data.length})</div>
+        ${data.length > 0 ? `<table>${detailRows}</table>` : '<p style="text-align: center; color: #999;">No records found</p>'}
+
+        <div class="footer">
+          <p>Generated: ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Customer Report</p>
+        </div>
+      </body>
+      </html>
+    `;
   };
 
   const renderInvoiceItem = ({ item }: { item: any }) => (
@@ -255,13 +459,13 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
   const totalAmount = getTotalAmount();
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       {/* Customer Header */}
       <Card style={styles.customerHeader}>
         <Card.Content>
           <View style={styles.customerRow}>
             <View>
-              <Title style={styles.customerName}>{customerName}</Title>
+              <Title style={[styles.customerName, { fontSize: fs.h2 }]}>{customerName}</Title>
               <Paragraph style={styles.reportTypeLabel}>{getReportTitle()}</Paragraph>
             </View>
             <View style={styles.balanceBox}>
@@ -279,6 +483,14 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
         </Card.Content>
       </Card>
 
+      {/* Report Actions: Print, PDF, Email */}
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle={`Customer ${getReportTitle()} - ${customerName}`}
+        reportFileName={`Customer_${customerName}_${getReportTitle()}_${toLocalDateString(dateRange.startDate)}`}
+      />
+
       {/* Date Filter */}
       <Card style={styles.dateFilterCard}>
         <Card.Content>
@@ -293,13 +505,13 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
       <View style={styles.summaryRow}>
         <Card style={[styles.summaryCard, { backgroundColor: '#E3F2FD' }]}>
           <Card.Content style={styles.summaryContent}>
-            <Paragraph style={styles.summaryLabel}>Records</Paragraph>
+            <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Records</Paragraph>
             <Title style={styles.summaryValue}>{data.length}</Title>
           </Card.Content>
         </Card>
         <Card style={[styles.summaryCard, { backgroundColor: '#E8F5E9' }]}>
           <Card.Content style={styles.summaryContent}>
-            <Paragraph style={styles.summaryLabel}>Total Amount</Paragraph>
+            <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Total Amount</Paragraph>
             <Title style={styles.summaryValue}>{'\u20B1'}{totalAmount.toFixed(2)}</Title>
           </Card.Content>
         </Card>
@@ -312,7 +524,7 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
         data={data}
         keyExtractor={(item, index) => (item.id || index).toString()}
         renderItem={renderItem}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadData}
@@ -324,7 +536,7 @@ export default function CustomerReportDetailScreen({ navigation, route }: Props)
           </View>
         }
       />
-    </SafeAreaView>
+    </View>
   );
 }
 

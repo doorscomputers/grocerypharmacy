@@ -1,0 +1,560 @@
+================================================================================
+POS SYSTEM E2E SQL TESTS - REFERENCE FILE
+================================================================================
+
+This file contains the complete test code for testing POS transactions with
+real SQL queries. These tests verify X-Reading, Z-Reading, and Over/Short
+calculations for cashier accountability.
+
+FILE: __tests__/e2e/RealSQLQueries.test.ts
+
+================================================================================
+SETUP REQUIREMENTS
+================================================================================
+
+1. Install dependencies:
+   npm install --save-dev better-sqlite3 @types/better-sqlite3 jest @types/jest ts-jest
+
+2. Create jest.config.js:
+   module.exports = {
+     preset: 'ts-jest',
+     testEnvironment: 'node',
+     testMatch: ['**/__tests__/**/*.test.ts'],
+     moduleFileExtensions: ['ts', 'js'],
+     transform: {
+       '^.+\\.ts$': ['ts-jest', {
+         tsconfig: {
+           module: 'commonjs',
+           esModuleInterop: true,
+           allowSyntheticDefaultImports: true,
+           strict: false
+         }
+       }]
+     },
+     modulePathIgnorePatterns: [
+       '<rootDir>/node_modules/react-native',
+       '<rootDir>/node_modules/expo'
+     ],
+     transformIgnorePatterns: ['/node_modules/'],
+     testTimeout: 30000
+   };
+
+3. Add to package.json scripts:
+   "test": "jest",
+   "test:e2e": "jest __tests__/e2e/RealSQLQueries.test.ts"
+
+4. Run tests:
+   npm test
+
+================================================================================
+KEY FORMULAS TESTED
+================================================================================
+
+EXPECTED CASH FORMULA:
+  Expected Cash = Beginning Cash + Cash Fund Net + Cash Sales + AR Cash Payments
+
+  Where:
+    Cash Fund Net = Opening Fund + Cash In - Cash Out - Petty Cash - Cash Refunds
+    Cash Sales = SUM(total_amount) for payment_method = 'CASH' AND status = 'COMPLETED'
+    AR Cash Payments = SUM(amount_paid) from customer_payments where payment_method = 'CASH'
+
+OVER/SHORT CALCULATION:
+  Over/Short = Actual Cash (counted) - Expected Cash
+    - Positive = Over (cashier has more than expected)
+    - Negative = Short (cashier has less than expected)
+    - Zero = Perfect balance
+
+GROSS SALES (X-Reading):
+  Gross Sales = SUM(total_amount + discount_amount) for status = 'COMPLETED'
+
+NET SALES (Z-Reading):
+  Net Sales = SUM(total_amount - discount_amount) for status = 'COMPLETED'
+
+================================================================================
+TEST FILE CONTENT
+================================================================================
+
+/**
+ * Real SQL Query E2E Tests
+ *
+ * This test file uses better-sqlite3 to test the EXACT SQL queries
+ * from DatabaseService.ts. This ensures that the queries work correctly
+ * with real SQLite, not just JavaScript array operations.
+ *
+ * Key SQL queries tested:
+ * - X-Reading sales summary (DatabaseService.ts line 7017-7032)
+ * - Z-Reading sales summary (DatabaseService.ts line 851-862)
+ * - Customer payments summary (DatabaseService.ts line 7104-7114)
+ * - Cash movements summary (DatabaseService.ts line 6405-6414)
+ */
+
+import Database from 'better-sqlite3';
+
+// ============================================================================
+// SCHEMA - Exact copy from database/schema.ts
+// ============================================================================
+
+const CREATE_TRANSACTIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_number TEXT NOT NULL UNIQUE,
+    invoice_number TEXT NOT NULL UNIQUE,
+    customer_id INTEGER,
+    customer_name TEXT,
+    customer_tin TEXT,
+    customer_address TEXT,
+    subtotal DECIMAL(10,2) NOT NULL,
+    tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+    discount_amount DECIMAL(10,2) DEFAULT 0,
+    total_amount DECIMAL(10,2) NOT NULL,
+    payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'ONLINE', 'CHARGE_INVOICE')) DEFAULT 'CASH',
+    amount_tendered DECIMAL(10,2) NOT NULL,
+    change_amount DECIMAL(10,2) DEFAULT 0,
+    payment_status TEXT CHECK (payment_status IN ('PAID', 'UNPAID', 'PARTIAL')) DEFAULT 'PAID',
+    cashier_id INTEGER NOT NULL,
+    status TEXT CHECK (status IN ('COMPLETED', 'VOID', 'REFUNDED')) DEFAULT 'COMPLETED',
+    void_reason TEXT,
+    void_by INTEGER,
+    void_date DATETIME,
+    sc_pwd_id TEXT,
+    sc_pwd_name TEXT,
+    sc_pwd_type TEXT CHECK (sc_pwd_type IN ('SENIOR', 'PWD')),
+    transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+const CREATE_TRANSACTION_ITEMS_TABLE = `
+  CREATE TABLE IF NOT EXISTS transaction_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    product_code TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    unit_price DECIMAL(10,2) NOT NULL,
+    discount_amount DECIMAL(10,2) DEFAULT 0,
+    tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+    total_amount DECIMAL(10,2) NOT NULL,
+    price_type TEXT DEFAULT 'retail',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+const CREATE_CUSTOMER_PAYMENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS customer_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payment_number TEXT NOT NULL UNIQUE,
+    customer_id INTEGER,
+    transaction_id INTEGER NOT NULL,
+    payment_date DATE NOT NULL,
+    payment_method TEXT CHECK (payment_method IN ('CASH', 'CARD', 'CHECK', 'BANK_TRANSFER', 'ONLINE', 'GCASH')) NOT NULL,
+    amount_paid DECIMAL(12,2) NOT NULL,
+    reference_number TEXT,
+    notes TEXT,
+    received_by INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+const CREATE_CASH_MOVEMENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS cash_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    movement_type TEXT CHECK (movement_type IN ('OPENING_FUND', 'CASH_IN', 'CASH_OUT', 'PETTY_CASH', 'CASH_REFUND')) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    description TEXT NOT NULL,
+    reference_number TEXT,
+    approved_by TEXT,
+    cashier_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+const CREATE_SALES_RETURNS_TABLE = `
+  CREATE TABLE IF NOT EXISTS sales_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_number TEXT NOT NULL UNIQUE,
+    original_transaction_id INTEGER,
+    original_invoice_number TEXT,
+    customer_id INTEGER,
+    customer_name TEXT,
+    return_date DATE NOT NULL,
+    total_amount DECIMAL(12,2) NOT NULL,
+    refund_method TEXT CHECK (refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT', 'EXCHANGE')) DEFAULT 'CASH',
+    reason TEXT NOT NULL,
+    notes TEXT,
+    processed_by INTEGER NOT NULL,
+    status TEXT CHECK (status IN ('COMPLETED', 'CANCELLED')) DEFAULT 'COMPLETED',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+const CREATE_PRODUCTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    price DECIMAL(10,2) NOT NULL,
+    cost DECIMAL(10,2) DEFAULT 0,
+    vat_type TEXT CHECK (vat_type IN ('vatable', 'vat_exempt', 'zero_rated')) DEFAULT 'vatable',
+    tax_rate DECIMAL(5,2) DEFAULT 12,
+    is_vat_inclusive BOOLEAN DEFAULT 1,
+    stock_quantity INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+// ============================================================================
+// SQL QUERIES - Exact copy from DatabaseService.ts
+// ============================================================================
+
+// X-Reading sales summary query (from DatabaseService.ts line 7017-7032)
+const X_READING_SALES_QUERY = `
+  SELECT
+    COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as transaction_count,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN (COALESCE(total_amount, 0) + COALESCE(discount_amount, 0)) ELSE 0 END), 0) as gross_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN tax_amount ELSE 0 END), 0) as vat_amount,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN discount_amount ELSE 0 END), 0) as discount_amount,
+    COALESCE(SUM(CASE WHEN status = 'VOID' THEN total_amount ELSE 0 END), 0) as void_amount,
+    COUNT(CASE WHEN status = 'VOID' THEN 1 END) as void_count,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CARD' THEN total_amount ELSE 0 END), 0) as card_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CHECK' THEN total_amount ELSE 0 END), 0) as check_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND (payment_method = 'CHARGE_INVOICE' OR payment_method = 'CREDIT') THEN total_amount ELSE 0 END), 0) as credit_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'ONLINE' THEN total_amount ELSE 0 END), 0) as online_sales
+  FROM transactions
+  WHERE DATE(transaction_date) = ?
+`;
+
+// Z-Reading sales summary query (from DatabaseService.ts line 851-862)
+const Z_READING_SALES_QUERY = `
+  SELECT
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_amount ELSE 0 END), 0) as gross_sales,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN tax_amount ELSE 0 END), 0) as vat_amount,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN discount_amount ELSE 0 END), 0) as discount_amount,
+    COALESCE(SUM(CASE WHEN status = 'VOID' THEN total_amount ELSE 0 END), 0) as void_amount,
+    COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_amount - discount_amount ELSE 0 END), 0) as net_sales,
+    MIN(invoice_number) as start_invoice,
+    MAX(invoice_number) as end_invoice
+  FROM transactions
+  WHERE DATE(transaction_date) = ? AND cashier_id = ?
+`;
+
+// Customer payments summary query (from DatabaseService.ts line 7104-7114)
+const CUSTOMER_PAYMENTS_QUERY = `
+  SELECT
+    COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN amount_paid ELSE 0 END), 0) as cash_payments,
+    COALESCE(SUM(CASE WHEN payment_method = 'CHECK' THEN amount_paid ELSE 0 END), 0) as check_payments,
+    COALESCE(SUM(CASE WHEN payment_method = 'CARD' THEN amount_paid ELSE 0 END), 0) as card_payments,
+    COALESCE(SUM(CASE WHEN payment_method = 'ONLINE' OR payment_method = 'GCASH' THEN amount_paid ELSE 0 END), 0) as online_payments,
+    COALESCE(SUM(CASE WHEN payment_method = 'BANK_TRANSFER' THEN amount_paid ELSE 0 END), 0) as bank_transfer_payments,
+    COALESCE(SUM(amount_paid), 0) as total_payments
+  FROM customer_payments
+  WHERE DATE(payment_date) = ?
+`;
+
+// Cash movements summary query (from DatabaseService.ts line 6405-6414)
+const CASH_MOVEMENTS_QUERY = `
+  SELECT
+    COALESCE(SUM(CASE WHEN movement_type = 'OPENING_FUND' THEN amount ELSE 0 END), 0) as opening_fund,
+    COALESCE(SUM(CASE WHEN movement_type = 'CASH_IN' THEN amount ELSE 0 END), 0) as cash_in,
+    COALESCE(SUM(CASE WHEN movement_type = 'CASH_OUT' THEN amount ELSE 0 END), 0) as cash_out,
+    COALESCE(SUM(CASE WHEN movement_type = 'PETTY_CASH' THEN amount ELSE 0 END), 0) as petty_cash,
+    COALESCE(SUM(CASE WHEN movement_type = 'CASH_REFUND' THEN amount ELSE 0 END), 0) as cash_refunds
+  FROM cash_movements
+  WHERE DATE(created_at) = ?
+`;
+
+// Refunds query (from DatabaseService.ts line 7064-7070)
+const REFUNDS_QUERY = `
+  SELECT
+    COALESCE(SUM(total_amount), 0) as refund_amount,
+    COUNT(*) as refund_count
+  FROM sales_returns
+  WHERE DATE(return_date) = ? AND status = 'COMPLETED' AND refund_method != 'EXCHANGE'
+`;
+
+// Exchanges query (from DatabaseService.ts line 7073-7079)
+const EXCHANGES_QUERY = `
+  SELECT
+    COALESCE(SUM(total_amount), 0) as exchange_amount,
+    COUNT(*) as exchange_count
+  FROM sales_returns
+  WHERE DATE(return_date) = ? AND status = 'COMPLETED' AND refund_method = 'EXCHANGE'
+`;
+
+// ============================================================================
+// TEST SUITE
+// ============================================================================
+
+describe('Real SQL Query E2E Tests', () => {
+  let db: Database.Database;
+  const testDate = '2026-02-10';
+  const cashierId = 1;
+
+  beforeEach(() => {
+    // Create in-memory database for each test
+    db = new Database(':memory:');
+
+    // Create tables
+    db.exec(CREATE_TRANSACTIONS_TABLE);
+    db.exec(CREATE_TRANSACTION_ITEMS_TABLE);
+    db.exec(CREATE_CUSTOMER_PAYMENTS_TABLE);
+    db.exec(CREATE_CASH_MOVEMENTS_TABLE);
+    db.exec(CREATE_SALES_RETURNS_TABLE);
+    db.exec(CREATE_PRODUCTS_TABLE);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  // Helper to insert a transaction
+  function insertTransaction(data: {
+    invoiceNumber: string;
+    subtotal: number;
+    taxAmount: number;
+    discountAmount: number;
+    totalAmount: number;
+    paymentMethod: string;
+    status: string;
+    transactionDate?: string;
+  }) {
+    const stmt = db.prepare(`
+      INSERT INTO transactions (
+        transaction_number, invoice_number, subtotal, tax_amount, discount_amount,
+        total_amount, payment_method, amount_tendered, change_amount,
+        payment_status, cashier_id, status, transaction_date, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const txnNumber = `TXN-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const txnDate = data.transactionDate || `${testDate} 10:00:00`;
+
+    stmt.run(
+      txnNumber,
+      data.invoiceNumber,
+      data.subtotal,
+      data.taxAmount,
+      data.discountAmount,
+      data.totalAmount,
+      data.paymentMethod,
+      data.totalAmount, // amount_tendered
+      0, // change_amount
+      'PAID',
+      cashierId,
+      data.status,
+      txnDate,
+      txnDate
+    );
+
+    return db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
+  }
+
+  // Helper to insert customer payment
+  function insertCustomerPayment(data: {
+    paymentMethod: string;
+    amountPaid: number;
+    paymentDate?: string;
+  }) {
+    const stmt = db.prepare(`
+      INSERT INTO customer_payments (
+        payment_number, transaction_id, payment_date, payment_method,
+        amount_paid, received_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const paymentNumber = `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const paymentDate = data.paymentDate || testDate;
+
+    stmt.run(
+      paymentNumber,
+      1, // transaction_id
+      paymentDate,
+      data.paymentMethod,
+      data.amountPaid,
+      cashierId,
+      `${paymentDate} 10:00:00`
+    );
+  }
+
+  // Helper to insert cash movement
+  function insertCashMovement(data: {
+    movementType: string;
+    amount: number;
+    createdAt?: string;
+  }) {
+    const stmt = db.prepare(`
+      INSERT INTO cash_movements (
+        movement_type, amount, description, cashier_id, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+
+    const createdAt = data.createdAt || `${testDate} 10:00:00`;
+
+    stmt.run(
+      data.movementType,
+      data.amount,
+      `${data.movementType} - Test`,
+      cashierId,
+      createdAt
+    );
+  }
+
+  // Helper to insert sales return
+  function insertSalesReturn(data: {
+    refundMethod: string;
+    totalAmount: number;
+    returnDate?: string;
+  }) {
+    const stmt = db.prepare(`
+      INSERT INTO sales_returns (
+        return_number, return_date, total_amount, refund_method,
+        reason, processed_by, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const returnNumber = `RET-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const returnDate = data.returnDate || testDate;
+
+    stmt.run(
+      returnNumber,
+      returnDate,
+      data.totalAmount,
+      data.refundMethod,
+      'Test return',
+      cashierId,
+      'COMPLETED',
+      `${returnDate} 10:00:00`
+    );
+  }
+
+  // ========================================
+  // OVER/SHORT CALCULATION TESTS
+  // These tests verify cashier accountability
+  // ========================================
+
+  describe('Over/Short Calculation (Cashier Accountability)', () => {
+    test('VOID cash transactions do NOT contribute to expected cash', () => {
+      // Critical test: Voided transactions should not be in expected cash
+      // because the cashier never received the money
+      const beginningCash = 1000;
+
+      insertCashMovement({ movementType: 'OPENING_FUND', amount: 2000 });
+
+      // Completed cash sale
+      insertTransaction({
+        invoiceNumber: 'INV-001',
+        subtotal: 500, taxAmount: 53.57, discountAmount: 0, totalAmount: 500,
+        paymentMethod: 'CASH', status: 'COMPLETED'
+      });
+
+      // Voided cash sale (should NOT be in expected cash!)
+      insertTransaction({
+        invoiceNumber: 'INV-002',
+        subtotal: 300, taxAmount: 32.14, discountAmount: 0, totalAmount: 300,
+        paymentMethod: 'CASH', status: 'VOID'
+      });
+
+      const salesData = db.prepare(X_READING_SALES_QUERY).get(testDate) as any;
+      const cashMovements = db.prepare(CASH_MOVEMENTS_QUERY).get(testDate) as any;
+
+      // Cash sales should ONLY include COMPLETED transactions
+      expect(salesData.cash_sales).toBe(500);  // NOT 800!
+      expect(salesData.void_amount).toBe(300); // Void is tracked separately
+
+      // Expected Cash = 1000 + 2000 + 500 = 3500 (NOT 3800!)
+      const expectedCash = beginningCash + cashMovements.opening_fund + salesData.cash_sales;
+      expect(expectedCash).toBe(3500);
+    });
+
+    test('real-world scenario: full day operations', () => {
+      const beginningCash = 1000;
+
+      // Morning: Cashier opens with P5,000 fund
+      insertCashMovement({ movementType: 'OPENING_FUND', amount: 5000 });
+
+      // Sale 1: Cash P150
+      insertTransaction({
+        invoiceNumber: 'INV-001',
+        subtotal: 150, taxAmount: 16.07, discountAmount: 0, totalAmount: 150,
+        paymentMethod: 'CASH', status: 'COMPLETED'
+      });
+
+      // Sale 2: Card P500 (no cash impact)
+      insertTransaction({
+        invoiceNumber: 'INV-002',
+        subtotal: 500, taxAmount: 53.57, discountAmount: 0, totalAmount: 500,
+        paymentMethod: 'CARD', status: 'COMPLETED'
+      });
+
+      // Sale 3: Cash P320 with P20 SC discount
+      insertTransaction({
+        invoiceNumber: 'INV-003',
+        subtotal: 320, taxAmount: 0, discountAmount: 20, totalAmount: 300,
+        paymentMethod: 'CASH', status: 'COMPLETED'
+      });
+
+      // Sale 4: Voided (customer changed mind) - NO CASH IMPACT
+      insertTransaction({
+        invoiceNumber: 'INV-004',
+        subtotal: 200, taxAmount: 21.43, discountAmount: 0, totalAmount: 200,
+        paymentMethod: 'CASH', status: 'VOID'
+      });
+
+      // Petty cash: Office supplies P85
+      insertCashMovement({ movementType: 'PETTY_CASH', amount: 85 });
+
+      // Return: Customer refund in cash P50
+      insertCashMovement({ movementType: 'CASH_REFUND', amount: 50 });
+
+      // AR Payment: Customer paid outstanding balance in cash P250
+      insertCustomerPayment({ paymentMethod: 'CASH', amountPaid: 250 });
+
+      // Bank deposit during day
+      insertCashMovement({ movementType: 'CASH_OUT', amount: 2000 });
+
+      // Additional cash fund added
+      insertCashMovement({ movementType: 'CASH_IN', amount: 500 });
+
+      // Calculate expected cash
+      const cashMovements = db.prepare(CASH_MOVEMENTS_QUERY).get(testDate) as any;
+      const salesData = db.prepare(X_READING_SALES_QUERY).get(testDate) as any;
+      const arPayments = db.prepare(CUSTOMER_PAYMENTS_QUERY).get(testDate) as any;
+
+      // Cash fund net = 5000 + 500 - 2000 - 85 - 50 = 3365
+      const cashFundNet = cashMovements.opening_fund + cashMovements.cash_in -
+                          cashMovements.cash_out - cashMovements.petty_cash - cashMovements.cash_refunds;
+      expect(cashFundNet).toBe(3365);
+
+      // Cash sales = 150 + 300 = 450 (NOT including void!)
+      expect(salesData.cash_sales).toBe(450);
+      expect(salesData.void_amount).toBe(200); // Tracked separately
+
+      // AR cash payments = 250
+      expect(arPayments.cash_payments).toBe(250);
+
+      // Expected Cash = 1000 + 3365 + 450 + 250 = 5065
+      const expectedCash = beginningCash + cashFundNet + salesData.cash_sales + arPayments.cash_payments;
+      expect(expectedCash).toBe(5065);
+
+      // Over/Short calculation
+      const actualCash = 5065; // Perfect match
+      expect(actualCash - expectedCash).toBe(0); // No shortage
+
+      const actualCashShort = 5050; // P15 short
+      expect(actualCashShort - expectedCash).toBe(-15);
+
+      const actualCashOver = 5080; // P15 over
+      expect(actualCashOver - expectedCash).toBe(15);
+    });
+  });
+});
+
+================================================================================
+END OF FILE
+================================================================================

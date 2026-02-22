@@ -140,7 +140,11 @@ export interface DatabaseSchema {
     zero_rated_sales: number;
     discount_amount: number;
     void_amount: number;
+    void_count: number;
     refund_amount: number;
+    refund_count: number;
+    exchange_amount: number;
+    exchange_count: number;
     net_sales: number;
     cumulative_grand_total: number; // Running total of net_sales across all Z-Readings (BIR requirement)
     reset_counter: number; // Cumulative counter (never resets)
@@ -206,7 +210,7 @@ export interface DatabaseSchema {
     quantity_after: number;  // Stock quantity after the transaction
     unit_cost: number;       // Cost per unit at time of transaction
     total_value: number;     // Total value of the movement (quantity * unit_cost)
-    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID';
+    reference_type: 'SALE' | 'PURCHASE' | 'MANUAL_ADJUSTMENT' | 'DAMAGE' | 'DAMAGE_REVERSAL' | 'PHYSICAL_COUNT' | 'SALES_RETURN' | 'PURCHASE_RETURN' | 'EXCHANGE' | 'VOID' | 'BEGINNING_BALANCE';
     reference_id?: number;
     reference_number?: string; // Human-readable reference (invoice number, purchase order, etc.)
     notes?: string;
@@ -471,17 +475,32 @@ export interface DatabaseSchema {
     gross_sales: number;
     discounts: number;
     sales_returns: number;
+    refund_count: number;
     net_sales: number;
     cash_sales: number;
     credit_sales: number;
     gcash_sales: number;
     card_sales: number;
+    check_sales: number;
     other_sales: number;
     void_amount: number;
     void_count: number;
+    exchange_amount: number;
+    exchange_count: number;
     transaction_count: number;
     customer_payments_received: number;
+    customer_payments_cash: number;
+    customer_payments_check: number;
+    customer_payments_card: number;
+    customer_payments_online: number;
+    customer_payments_bank_transfer: number;
     supplier_payments_made: number;
+    opening_fund: number;
+    cash_in: number;
+    cash_out: number;
+    petty_cash: number;
+    cash_refunds: number;
+    cash_fund: number;
     expected_cash: number;
     actual_cash: number;
     cash_variance: number;
@@ -564,7 +583,7 @@ export interface DatabaseSchema {
   device_binding: {
     id: number;
     device_id: string; // Unique device fingerprint hash
-    license_key: string; // License key used for activation
+    license_key: string; // License key used for activation (empty for trial)
     device_name: string;
     device_brand: string;
     device_model: string;
@@ -575,6 +594,10 @@ export interface DatabaseSchema {
     activated_at: string;
     last_verified_at: string;
     created_at: string;
+    // Trial version fields
+    license_type: 'trial' | 'full'; // Trial or full license
+    trial_start_date: string | null; // When trial started
+    trial_days: number; // Trial period in days (default 30)
   };
 
   // Reset Operations Log for audit trail
@@ -637,11 +660,12 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     await db.execAsync('PRAGMA foreign_keys = ON;');
     console.log('Foreign keys enabled successfully');
 
-    // Set synchronous mode to NORMAL (good balance of safety and speed)
-    // FULL is safest but slower, NORMAL is recommended for most apps
-    console.log('Setting PRAGMA synchronous = NORMAL...');
-    await db.execAsync('PRAGMA synchronous = NORMAL;');
-    console.log('Synchronous mode set to NORMAL');
+    // Set synchronous mode to FULL for maximum data durability
+    // FULL ensures data is safely written to disk before continuing
+    // This prevents data loss on crashes - critical for POS/financial data
+    console.log('Setting PRAGMA synchronous = FULL...');
+    await db.execAsync('PRAGMA synchronous = FULL;');
+    console.log('Synchronous mode set to FULL');
 
     // Test that PRAGMAs work
     const fkResult = await db.getFirstAsync('PRAGMA foreign_keys;');
@@ -1059,6 +1083,20 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     await db.execAsync(`ALTER TABLE z_readings ADD COLUMN cumulative_grand_total DECIMAL(12,2) NOT NULL DEFAULT 0;`);
   } catch (e) { /* Column may already exist */ }
 
+  // Migration: Add void_count, refund_count, exchange_amount, exchange_count to z_readings
+  try {
+    await db.execAsync(`ALTER TABLE z_readings ADD COLUMN void_count INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE z_readings ADD COLUMN refund_count INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE z_readings ADD COLUMN exchange_amount DECIMAL(10,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE z_readings ADD COLUMN exchange_count INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+
   // Migration: Fix ejournal entry_type CHECK constraint to include PAYMENT, RETURN, PURCHASE_RETURN
   console.log('Checking if ejournal entry_type constraint needs update...');
   try {
@@ -1248,6 +1286,18 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     console.warn('Migration check/update for accounts_receivable table:', e);
   }
 
+  // Fix any NULL paid_amount values in accounts_receivable (critical for partial payment calculations)
+  try {
+    await db.runAsync(`
+      UPDATE accounts_receivable
+      SET paid_amount = 0
+      WHERE paid_amount IS NULL
+    `);
+    console.log('Fixed NULL paid_amount values in accounts_receivable');
+  } catch (e) {
+    console.warn('Error fixing NULL paid_amount:', e);
+  }
+
   // Create inventory_movements table if it doesn't exist
   console.log('Creating inventory_movements table if not exists...');
   await db.execAsync(`
@@ -1262,7 +1312,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       quantity_after INTEGER NOT NULL DEFAULT 0,
       unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
       total_value DECIMAL(10,2) NOT NULL DEFAULT 0,
-      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT', 'SALES_RETURN', 'PURCHASE_RETURN', 'EXCHANGE', 'VOID')) NOT NULL,
+      reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT', 'SALES_RETURN', 'PURCHASE_RETURN', 'EXCHANGE', 'VOID', 'BEGINNING_BALANCE')) NOT NULL,
       reference_id INTEGER,
       reference_number TEXT,
       notes TEXT,
@@ -1295,6 +1345,65 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   try {
     await db.execAsync(`ALTER TABLE inventory_movements ADD COLUMN reference_number TEXT;`);
   } catch (e) { /* Column may already exist */ }
+
+  // Migration: Update CHECK constraint to include BEGINNING_BALANCE
+  // SQLite doesn't support ALTER CONSTRAINT, so we need to recreate the table
+  try {
+    // Check if migration is needed by trying to insert a test value
+    const testResult = await db.getFirstAsync<{ cnt: number }>(`
+      SELECT COUNT(*) as cnt FROM sqlite_master
+      WHERE type='table' AND name='inventory_movements'
+      AND sql NOT LIKE '%BEGINNING_BALANCE%'
+    `);
+
+    if (testResult && testResult.cnt > 0) {
+      console.log('Migrating inventory_movements table to add BEGINNING_BALANCE...');
+
+      // Create new table with updated constraint
+      await db.execAsync(`
+        CREATE TABLE inventory_movements_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_id INTEGER NOT NULL,
+          product_code TEXT NOT NULL DEFAULT '',
+          product_name TEXT NOT NULL DEFAULT '',
+          movement_type TEXT CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT')) NOT NULL,
+          quantity INTEGER NOT NULL,
+          quantity_before INTEGER NOT NULL DEFAULT 0,
+          quantity_after INTEGER NOT NULL DEFAULT 0,
+          unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
+          total_value DECIMAL(10,2) NOT NULL DEFAULT 0,
+          reference_type TEXT CHECK (reference_type IN ('SALE', 'PURCHASE', 'MANUAL_ADJUSTMENT', 'DAMAGE', 'DAMAGE_REVERSAL', 'PHYSICAL_COUNT', 'SALES_RETURN', 'PURCHASE_RETURN', 'EXCHANGE', 'VOID', 'BEGINNING_BALANCE')) NOT NULL,
+          reference_id INTEGER,
+          reference_number TEXT,
+          notes TEXT,
+          created_by INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (product_id) REFERENCES products (id),
+          FOREIGN KEY (created_by) REFERENCES users (id)
+        );
+      `);
+
+      // Copy data from old table
+      await db.execAsync(`
+        INSERT INTO inventory_movements_new
+        SELECT * FROM inventory_movements;
+      `);
+
+      // Drop old table
+      await db.execAsync(`DROP TABLE inventory_movements;`);
+
+      // Rename new table
+      await db.execAsync(`ALTER TABLE inventory_movements_new RENAME TO inventory_movements;`);
+
+      // Recreate index
+      await db.execAsync(`CREATE INDEX IF NOT EXISTS idx_inventory_product ON inventory_movements(product_id);`);
+
+      console.log('inventory_movements table migrated successfully');
+    }
+  } catch (e) {
+    console.log('inventory_movements migration check/update:', e);
+  }
+
   console.log('inventory_movements table ready');
 
   await db.execAsync(`
@@ -1701,6 +1810,58 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     );
   `);
 
+  // Migration: Add exchange and refund count columns to end_of_day_records (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN exchange_amount DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN exchange_count INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN refund_count INTEGER DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Migration: Add AR payment breakdown columns to end_of_day_records
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN customer_payments_cash DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN customer_payments_check DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN customer_payments_card DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN customer_payments_online DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN customer_payments_bank_transfer DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Migration: Add cash movement columns to end_of_day_records
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN opening_fund DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN cash_in DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN cash_out DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN petty_cash DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN cash_refunds DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN cash_fund DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+  // Migration: Add check_sales column to end_of_day_records
+  try {
+    await db.execAsync(`ALTER TABLE end_of_day_records ADD COLUMN check_sales DECIMAL(12,2) DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
+
   // Create shifts table for tracking cashier shifts
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS shifts (
@@ -1794,7 +1955,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
     CREATE TABLE IF NOT EXISTS device_binding (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       device_id TEXT NOT NULL UNIQUE,
-      license_key TEXT NOT NULL,
+      license_key TEXT NOT NULL DEFAULT '',
       device_name TEXT NOT NULL,
       device_brand TEXT NOT NULL,
       device_model TEXT NOT NULL,
@@ -1804,9 +1965,23 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       is_active BOOLEAN DEFAULT 1,
       activated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       last_verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      license_type TEXT DEFAULT 'trial' CHECK (license_type IN ('trial', 'full')),
+      trial_start_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+      trial_days INTEGER DEFAULT 30
     );
   `);
+
+  // Migration: Add trial fields if they don't exist (for existing databases)
+  try {
+    await db.execAsync(`ALTER TABLE device_binding ADD COLUMN license_type TEXT DEFAULT 'trial' CHECK (license_type IN ('trial', 'full'));`);
+  } catch (e) { /* Column already exists */ }
+  try {
+    await db.execAsync(`ALTER TABLE device_binding ADD COLUMN trial_start_date DATETIME DEFAULT CURRENT_TIMESTAMP;`);
+  } catch (e) { /* Column already exists */ }
+  try {
+    await db.execAsync(`ALTER TABLE device_binding ADD COLUMN trial_days INTEGER DEFAULT 30;`);
+  } catch (e) { /* Column already exists */ }
 
   // Create reset_operations_log table for tracking reset attempts
   await db.execAsync(`
@@ -2179,6 +2354,38 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       ('current_customer_payment_number', '1', 'Current customer payment number'),
       ('default_customer_credit_terms', '30', 'Default credit terms for customers in days');
   `);
+
+  // Migration: Add extended columns to x_readings for complete X-Reading snapshots
+  const xReadingColumns = [
+    'cash_sales DECIMAL(10,2) DEFAULT 0',
+    'card_sales DECIMAL(10,2) DEFAULT 0',
+    'check_sales DECIMAL(10,2) DEFAULT 0',
+    'credit_sales DECIMAL(10,2) DEFAULT 0',
+    'online_sales DECIMAL(10,2) DEFAULT 0',
+    'void_count INTEGER DEFAULT 0',
+    'exchange_count INTEGER DEFAULT 0',
+    'exchange_amount DECIMAL(10,2) DEFAULT 0',
+    'refund_count INTEGER DEFAULT 0',
+    'beginning_cash DECIMAL(10,2) DEFAULT 0',
+    'opening_fund DECIMAL(10,2) DEFAULT 0',
+    'cash_in DECIMAL(10,2) DEFAULT 0',
+    'cash_out DECIMAL(10,2) DEFAULT 0',
+    'cash_fund DECIMAL(10,2) DEFAULT 0',
+    'petty_cash DECIMAL(10,2) DEFAULT 0',
+    'cash_refunds DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_cash DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_check DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_card DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_online DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_bank_transfer DECIMAL(10,2) DEFAULT 0',
+    'customer_payments_total DECIMAL(10,2) DEFAULT 0',
+    'expected_cash DECIMAL(10,2) DEFAULT 0',
+  ];
+  for (const col of xReadingColumns) {
+    try {
+      await db.execAsync(`ALTER TABLE x_readings ADD COLUMN ${col};`);
+    } catch (e) { /* Column may already exist */ }
+  }
 };
 
 export const getNextInvoiceNumber = async (db: SQLite.SQLiteDatabase): Promise<string> => {
@@ -2192,7 +2399,20 @@ export const getNextInvoiceNumber = async (db: SQLite.SQLiteDatabase): Promise<s
     throw new Error('Invoice settings not found');
   }
 
-  const nextNumber = (parseInt(result.value) + 1).toString().padStart(8, '0');
+  // Get the max existing invoice number to prevent duplicates
+  const maxExisting = await db.getFirstAsync<{max_num: string}>(
+    `SELECT MAX(CAST(SUBSTR(invoice_number, LENGTH(?) + 1) AS INTEGER)) as max_num
+     FROM transactions
+     WHERE invoice_number LIKE ? || '%'`,
+    [result.series, result.series]
+  );
+
+  const counterValue = parseInt(result.value) || 0;
+  const maxExistingValue = maxExisting?.max_num ? parseInt(maxExisting.max_num) : 0;
+
+  // Use the higher of counter or max existing to prevent duplicates
+  const nextValue = Math.max(counterValue, maxExistingValue) + 1;
+  const nextNumber = nextValue.toString().padStart(8, '0');
   return `${result.series}${nextNumber}`;
 };
 

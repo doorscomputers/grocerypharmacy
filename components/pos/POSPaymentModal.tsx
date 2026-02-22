@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Button, TextInput, IconButton, useTheme } from 'react-native-paper';
 import POSNumericKeypad from './POSNumericKeypad';
+import { useResponsiveTheme } from '../../utils/responsive';
 import { CartTotals, DiscountState } from '../../hooks/usePOSCart';
 
 // Format currency with commas
@@ -45,8 +46,14 @@ interface POSPaymentModalProps {
     amountTendered: number;
     customerId?: number;
     customerName?: string;
+    checkNumber?: string;
+    checkPayee?: string;
+    referenceNumber?: string;
+    changeAmount?: number;
   }) => void;
   onQuickAddCustomer?: () => void;
+  onOpenSeniorDiscount?: () => void;
+  onOpenDiscount?: () => void;
   loading?: boolean;
   initialPaymentMethod?: PaymentMethod;
   initialCustomer?: Customer | null;
@@ -68,37 +75,81 @@ function POSPaymentModal({
   onClose,
   onComplete,
   onQuickAddCustomer,
+  onOpenSeniorDiscount,
+  onOpenDiscount,
   loading = false,
   initialPaymentMethod,
   initialCustomer,
 }: POSPaymentModalProps) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [amountTendered, setAmountTendered] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerList, setShowCustomerList] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
 
+  // CHECK payment fields
+  const [checkNumber, setCheckNumber] = useState('');
+  const [checkPayee, setCheckPayee] = useState('');
+  const [checkAmount, setCheckAmount] = useState('');
+
+  // CARD/ONLINE reference number
+  const [referenceNumber, setReferenceNumber] = useState('');
+
   // Reset state when modal opens, using initial values if provided
   useEffect(() => {
     if (visible) {
-      setPaymentMethod(initialPaymentMethod || 'CASH');
-      setAmountTendered('');
+      const method = initialPaymentMethod || 'CASH';
+      setPaymentMethod(method);
       setSelectedCustomer(initialCustomer || null);
       setShowCustomerList(false);
       setCustomerSearch('');
+      // Reset all payment fields
+      setCheckNumber('');
+      setCheckPayee('');
+      setCheckAmount('');
+      setReferenceNumber('');
+      // Set amount based on payment method
+      if (method === 'CARD' || method === 'ONLINE') {
+        setAmountTendered(totals.total.toFixed(2));
+      } else {
+        setAmountTendered('');
+      }
     }
-  }, [visible, initialPaymentMethod, initialCustomer]);
+  }, [visible, initialPaymentMethod, initialCustomer, totals.total]);
+
+  // Handle payment method change - reset amount and set appropriately
+  const handlePaymentMethodChange = useCallback((method: PaymentMethod) => {
+    setPaymentMethod(method);
+    // Reset all fields when switching
+    setCheckNumber('');
+    setCheckPayee('');
+    setCheckAmount('');
+    setReferenceNumber('');
+    // Set amount based on method
+    if (method === 'CARD' || method === 'ONLINE') {
+      setAmountTendered(totals.total.toFixed(2));
+    } else {
+      setAmountTendered('');
+    }
+  }, [totals.total]);
 
   // Calculate change
   const tenderedAmount = parseFloat(amountTendered) || 0;
-  const changeAmount = tenderedAmount - totals.total;
+  const checkAmountValue = parseFloat(checkAmount) || 0;
+  // For CHECK: change is check amount - total (cash given back)
+  // For others: change is amount tendered - total
+  const changeAmount = paymentMethod === 'CHECK'
+    ? checkAmountValue - totals.total
+    : tenderedAmount - totals.total;
 
-  // Quick amount buttons
+  // Quick amount buttons - fixed tender amounts
   const quickAmounts = [
     { label: 'Exact', value: totals.total },
-    { label: '+₱100', value: Math.ceil(totals.total / 100) * 100 },
-    { label: '+₱500', value: Math.ceil(totals.total / 500) * 500 },
+    { label: '₱100', value: 100 },
+    { label: '₱200', value: 200 },
+    { label: '₱500', value: 500 },
     { label: '₱1000', value: 1000 },
   ];
 
@@ -128,28 +179,104 @@ function POSPaymentModal({
   }, []);
 
   const handleComplete = useCallback(() => {
-    // Validation
+    // Validation based on payment method
     if (paymentMethod === 'CHARGE_INVOICE' && !selectedCustomer) {
       Alert.alert('Customer Required', 'Please select a customer for charge invoice.');
       return;
     }
 
-    if (paymentMethod !== 'CHARGE_INVOICE' && tenderedAmount < totals.total) {
+    // Credit limit validation for charge invoices
+    if (paymentMethod === 'CHARGE_INVOICE' && selectedCustomer) {
+      // Check if customer has zero credit limit
+      if (!selectedCustomer.credit_limit || selectedCustomer.credit_limit === 0) {
+        Alert.alert(
+          'No Credit Limit',
+          'This customer has zero credit limit and cannot make credit purchases. Please use a different payment method.'
+        );
+        return;
+      }
+
+      // Check if transaction would exceed credit limit
+      const currentBalance = selectedCustomer.outstanding_balance || 0;
+      const newBalance = currentBalance + totals.total;
+      const availableCredit = selectedCustomer.credit_limit - currentBalance;
+
+      if (newBalance > selectedCustomer.credit_limit) {
+        Alert.alert(
+          'Credit Limit Exceeded',
+          `This transaction would exceed the customer's credit limit.\n\n` +
+          `Credit Limit: ₱${formatCurrency(selectedCustomer.credit_limit)}\n` +
+          `Current Balance: ₱${formatCurrency(currentBalance)}\n` +
+          `Available Credit: ₱${formatCurrency(availableCredit)}\n` +
+          `Transaction Amount: ₱${formatCurrency(totals.total)}\n\n` +
+          `Please collect a payment first or use a different payment method.`
+        );
+        return;
+      }
+    }
+
+    if (paymentMethod === 'CHECK') {
+      if (!checkNumber.trim()) {
+        Alert.alert('Check Number Required', 'Please enter the check number.');
+        return;
+      }
+      if (!checkPayee.trim()) {
+        Alert.alert('Payee Required', 'Please enter the payee name.');
+        return;
+      }
+      if (checkAmountValue < totals.total) {
+        Alert.alert('Insufficient Check Amount', 'Check amount must be at least the total amount.');
+        return;
+      }
+    }
+
+    if (paymentMethod === 'CASH' && tenderedAmount < totals.total) {
       Alert.alert('Insufficient Payment', 'Amount tendered must be at least the total amount.');
       return;
     }
 
+    // For CARD/ONLINE, amount is always exact (already set)
+    // No validation needed for amount
+
+    // Determine the amount tendered based on payment method
+    let finalAmountTendered = 0;
+    if (paymentMethod === 'CHARGE_INVOICE') {
+      finalAmountTendered = 0;
+    } else if (paymentMethod === 'CHECK') {
+      finalAmountTendered = checkAmountValue; // Check amount (can be > total)
+    } else if (paymentMethod === 'CARD' || paymentMethod === 'ONLINE') {
+      finalAmountTendered = totals.total; // Always exact
+    } else {
+      finalAmountTendered = tenderedAmount; // CASH
+    }
+
     onComplete({
       paymentMethod,
-      amountTendered: paymentMethod === 'CHARGE_INVOICE' ? 0 : tenderedAmount,
+      amountTendered: finalAmountTendered,
       customerId: selectedCustomer?.id,
       customerName: selectedCustomer?.name,
+      // Additional fields for specific payment methods
+      checkNumber: paymentMethod === 'CHECK' ? checkNumber : undefined,
+      checkPayee: paymentMethod === 'CHECK' ? checkPayee : undefined,
+      referenceNumber: (paymentMethod === 'CARD' || paymentMethod === 'ONLINE') ? referenceNumber : undefined,
+      changeAmount: changeAmount > 0 ? changeAmount : 0,
     });
-  }, [paymentMethod, tenderedAmount, totals.total, selectedCustomer, onComplete]);
+  }, [paymentMethod, tenderedAmount, totals.total, selectedCustomer, onComplete, checkNumber, checkPayee, checkAmountValue, referenceNumber, changeAmount]);
 
-  const isValid = paymentMethod === 'CHARGE_INVOICE'
-    ? selectedCustomer !== null
-    : tenderedAmount >= totals.total;
+  // Validation based on payment method
+  const isValid = (() => {
+    if (paymentMethod === 'CHARGE_INVOICE') {
+      return selectedCustomer !== null;
+    }
+    if (paymentMethod === 'CHECK') {
+      return checkNumber.trim() !== '' && checkPayee.trim() !== '' && checkAmountValue >= totals.total;
+    }
+    if (paymentMethod === 'CARD' || paymentMethod === 'ONLINE') {
+      return true; // Always valid - amount is exact
+    }
+    // CASH
+    return tenderedAmount >= totals.total;
+  })();
 
   return (
     <Modal
@@ -163,10 +290,10 @@ function POSPaymentModal({
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.keyboardView}
         >
-          <View style={styles.container}>
+          <View style={[styles.container, { padding: sp.md }]}>
             {/* Header */}
             <View style={styles.header}>
-              <Text style={styles.headerTitle}>Payment</Text>
+              <Text style={[styles.headerTitle, { fontSize: fs.h2 }]}>Payment</Text>
               <IconButton
                 icon="close"
                 size={24}
@@ -257,17 +384,64 @@ function POSPaymentModal({
                 {/* Total Display */}
                 <View style={styles.totalDisplay}>
                   <Text style={styles.totalLabel}>Total Amount</Text>
-                  <Text style={[styles.totalAmount, { color: theme.colors.primary }]}>
+                  <Text style={[styles.totalAmount, { color: theme.colors.primary, fontSize: fs.hero }]}>
                     ₱{formatCurrency(totals.total)}
                   </Text>
                   {discount.isSeniorCitizen && (
                     <Text style={styles.discountNote}>SC/PWD discount applied</Text>
                   )}
+                  {(discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && (
+                    <Text style={styles.discountNote}>
+                      Discount: {discount.type === 'percent' ? `${discount.value}%` : `₱${discount.value}`}
+                    </Text>
+                  )}
                 </View>
+
+                {/* Compact Discount Buttons */}
+                {(onOpenSeniorDiscount || onOpenDiscount) && (
+                  <View style={styles.compactDiscountRow}>
+                    {onOpenSeniorDiscount && (
+                      <TouchableOpacity
+                        style={[
+                          styles.compactDiscountButton,
+                          discount.isSeniorCitizen && styles.compactDiscountButtonActive,
+                        ]}
+                        onPress={onOpenSeniorDiscount}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[
+                          styles.compactDiscountText,
+                          discount.isSeniorCitizen && styles.compactDiscountTextActive,
+                        ]}>
+                          {discount.isSeniorCitizen ? '👴 SC/PWD ✓' : '👴 SC/PWD'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {onOpenDiscount && (
+                      <TouchableOpacity
+                        style={[
+                          styles.compactDiscountButton,
+                          (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.compactDiscountButtonActive,
+                        ]}
+                        onPress={onOpenDiscount}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[
+                          styles.compactDiscountText,
+                          (discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen && styles.compactDiscountTextActive,
+                        ]}>
+                          {(discount.type === 'percent' || discount.type === 'amount') && !discount.isSeniorCitizen
+                            ? `💰 ${discount.type === 'percent' ? discount.value + '%' : '₱' + discount.value}`
+                            : '💰 Discount'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
 
                 {/* Payment Methods */}
                 <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Payment Method</Text>
+                  <Text style={[styles.sectionTitle, { fontSize: fs.bodySmall }]}>Payment Method</Text>
                   <View style={styles.paymentMethods}>
                     {PAYMENT_METHODS.map(method => (
                       <TouchableOpacity
@@ -279,7 +453,7 @@ function POSPaymentModal({
                             borderColor: theme.colors.primary,
                           },
                         ]}
-                        onPress={() => setPaymentMethod(method.key)}
+                        onPress={() => handlePaymentMethodChange(method.key)}
                         activeOpacity={0.7}
                       >
                         <Text style={styles.paymentMethodIcon}>{method.icon}</Text>
@@ -361,8 +535,8 @@ function POSPaymentModal({
                   </View>
                 )}
 
-                {/* Amount Tendered (for non-charge payments) */}
-                {paymentMethod !== 'CHARGE_INVOICE' && (
+                {/* CASH Payment - Amount Entry with Keypad */}
+                {paymentMethod === 'CASH' && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Amount Tendered</Text>
 
@@ -419,6 +593,98 @@ function POSPaymentModal({
                         </Text>
                       </View>
                     )}
+                  </View>
+                )}
+
+                {/* CHECK Payment - Check Details Entry */}
+                {paymentMethod === 'CHECK' && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Check Details</Text>
+
+                    {/* Check Number */}
+                    <TextInput
+                      label="Check Number *"
+                      value={checkNumber}
+                      onChangeText={setCheckNumber}
+                      mode="outlined"
+                      style={styles.checkInput}
+                      dense
+                      placeholder="Enter check number"
+                    />
+
+                    {/* Payee Name */}
+                    <TextInput
+                      label="Payee Name *"
+                      value={checkPayee}
+                      onChangeText={setCheckPayee}
+                      mode="outlined"
+                      style={styles.checkInput}
+                      dense
+                      placeholder="Enter payee name"
+                    />
+
+                    {/* Check Amount */}
+                    <TextInput
+                      label="Check Amount *"
+                      value={checkAmount}
+                      onChangeText={setCheckAmount}
+                      mode="outlined"
+                      style={styles.checkInput}
+                      dense
+                      keyboardType="decimal-pad"
+                      placeholder="Enter check amount"
+                      left={<TextInput.Affix text="₱" />}
+                    />
+
+                    {/* Check Amount Summary */}
+                    <View style={styles.checkSummary}>
+                      <View style={styles.checkSummaryRow}>
+                        <Text style={styles.checkSummaryLabel}>Total Amount:</Text>
+                        <Text style={styles.checkSummaryValue}>₱{formatCurrency(totals.total)}</Text>
+                      </View>
+                      <View style={styles.checkSummaryRow}>
+                        <Text style={styles.checkSummaryLabel}>Check Amount:</Text>
+                        <Text style={styles.checkSummaryValue}>₱{formatCurrency(checkAmountValue)}</Text>
+                      </View>
+                      {checkAmountValue >= totals.total && (
+                        <View style={[styles.checkSummaryRow, styles.checkChangeRow]}>
+                          <Text style={styles.checkChangeLabel}>Cash Change:</Text>
+                          <Text style={styles.checkChangeValue}>₱{formatCurrency(changeAmount)}</Text>
+                        </View>
+                      )}
+                      {checkAmountValue > 0 && checkAmountValue < totals.total && (
+                        <Text style={styles.checkWarning}>
+                          Check amount must be at least ₱{formatCurrency(totals.total)}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {/* CARD/ONLINE Payment - Exact Amount with Reference */}
+                {(paymentMethod === 'CARD' || paymentMethod === 'ONLINE') && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>
+                      {paymentMethod === 'CARD' ? 'Card Payment' : 'GCash/Maya Payment'}
+                    </Text>
+
+                    {/* Exact Amount Display */}
+                    <View style={styles.exactAmountDisplay}>
+                      <Text style={styles.exactAmountLabel}>Amount (Exact)</Text>
+                      <Text style={styles.exactAmountValue}>₱{formatCurrency(totals.total)}</Text>
+                      <Text style={styles.exactAmountNote}>No change for {paymentMethod === 'CARD' ? 'card' : 'e-wallet'} payments</Text>
+                    </View>
+
+                    {/* Reference Number */}
+                    <TextInput
+                      label="Reference Number / Notes"
+                      value={referenceNumber}
+                      onChangeText={setReferenceNumber}
+                      mode="outlined"
+                      style={styles.referenceInput}
+                      dense
+                      placeholder={paymentMethod === 'CARD' ? 'Card approval code or last 4 digits' : 'GCash/Maya reference number'}
+                    />
                   </View>
                 )}
 
@@ -509,7 +775,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
   },
@@ -523,15 +789,15 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingTop: 8,
     maxHeight: 500,
   },
   totalDisplay: {
     alignItems: 'center',
-    paddingBottom: 16,
+    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
-    marginBottom: 16,
+    marginBottom: 8,
   },
   totalLabel: {
     fontSize: 14,
@@ -547,14 +813,41 @@ const styles = StyleSheet.create({
     color: '#4CAF50',
     marginTop: 4,
   },
-  section: {
-    marginBottom: 20,
+  compactDiscountRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 6,
   },
-  sectionTitle: {
-    fontSize: 14,
+  compactDiscountButton: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  compactDiscountButtonActive: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#4CAF50',
+  },
+  compactDiscountText: {
+    fontSize: 13,
     fontWeight: '600',
     color: '#616161',
-    marginBottom: 8,
+  },
+  compactDiscountTextActive: {
+    color: '#2E7D32',
+  },
+  section: {
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#616161',
+    marginBottom: 6,
   },
   paymentMethods: {
     flexDirection: 'row',
@@ -564,8 +857,8 @@ const styles = StyleSheet.create({
   paymentMethodButton: {
     flex: 1,
     minWidth: 60,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
     backgroundColor: '#F5F5F5',
     borderRadius: 8,
     borderWidth: 2,
@@ -573,8 +866,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   paymentMethodIcon: {
-    fontSize: 24,
-    marginBottom: 4,
+    fontSize: 22,
+    marginBottom: 2,
   },
   paymentMethodLabel: {
     fontSize: 11,
@@ -584,8 +877,8 @@ const styles = StyleSheet.create({
   },
   quickAmounts: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 10,
   },
   quickAmountButton: {
     flex: 1,
@@ -604,10 +897,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'baseline',
-    paddingVertical: 16,
+    paddingVertical: 10,
     backgroundColor: '#F5F5F5',
-    borderRadius: 12,
-    marginBottom: 16,
+    borderRadius: 10,
+    marginBottom: 10,
   },
   amountPrefix: {
     fontSize: 24,
@@ -624,10 +917,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    padding: 10,
     backgroundColor: '#E8F5E9',
-    borderRadius: 12,
-    marginTop: 16,
+    borderRadius: 10,
+    marginTop: 10,
   },
   changeLabel: {
     fontSize: 16,
@@ -816,13 +1109,86 @@ const styles = StyleSheet.create({
     padding: 24,
     color: '#9E9E9E',
   },
-  footer: {
+  // CHECK Payment styles
+  checkInput: {
+    marginBottom: 10,
+    backgroundColor: '#FFFFFF',
+  },
+  checkSummary: {
+    backgroundColor: '#F5F5F5',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  checkSummaryRow: {
     flexDirection: 'row',
-    padding: 16,
-    paddingBottom: 32,
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  checkSummaryLabel: {
+    fontSize: 14,
+    color: '#616161',
+  },
+  checkSummaryValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+  },
+  checkChangeRow: {
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
-    gap: 12,
+  },
+  checkChangeLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2E7D32',
+  },
+  checkChangeValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+  },
+  checkWarning: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#F44336',
+    fontStyle: 'italic',
+  },
+  // CARD/ONLINE Payment styles
+  exactAmountDisplay: {
+    backgroundColor: '#E3F2FD',
+    padding: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  exactAmountLabel: {
+    fontSize: 14,
+    color: '#1976D2',
+    marginBottom: 4,
+  },
+  exactAmountValue: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#1565C0',
+  },
+  exactAmountNote: {
+    fontSize: 12,
+    color: '#64B5F6',
+    marginTop: 4,
+  },
+  referenceInput: {
+    backgroundColor: '#FFFFFF',
+  },
+  footer: {
+    flexDirection: 'row',
+    padding: 12,
+    paddingBottom: 48,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    gap: 10,
   },
   cancelButton: {
     flex: 1,

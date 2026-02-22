@@ -26,13 +26,16 @@ import {
   Chip,
   DataTable,
   Appbar,
+  SegmentedButtons,
 } from 'react-native-paper';
 import { CameraView, Camera } from 'expo-camera';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
+import { toLocalDateString } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type PhysicalInventoryScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -89,11 +92,13 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
   const [physicalQuantity, setPhysicalQuantity] = useState('');
   const [countNotes, setCountNotes] = useState('');
   const [currentSession, setCurrentSession] = useState<CountSession | null>(null);
-  const [viewMode, setViewMode] = useState<'all' | 'pending' | 'discrepancies' | 'none'>('none');
+  const [viewMode, setViewMode] = useState<'all' | 'pending' | 'discrepancies' | 'none'>('all');
+  const [tabView, setTabView] = useState<'count' | 'summary'>('count');
   const [scannerVisible, setScannerVisible] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     initializeCount();
@@ -218,7 +223,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
       // Create session for UI - starts empty, products added via search
       const session: CountSession = {
         id: sessionId,
-        date: new Date().toISOString().split('T')[0],
+        date: toLocalDateString(new Date()),
         status: 'in_progress',
         total_items: 0,
         counted_items: 0,
@@ -603,114 +608,70 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
   const filteredItems = getFilteredItems();
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={styles.mainContainer}>
-        {/* Header with Progress */}
-        <Card style={styles.headerCard}>
-          <Card.Content>
-            <Title style={styles.headerTitle}>Physical Inventory Count - v4.2 COPY REPORT STYLE</Title>
-            <Paragraph style={styles.headerSubtitle}>
-              Count physical inventory and identify discrepancies with system quantities.
-            </Paragraph>
+        {/* Search Section */}
+        <View style={styles.searchSection}>
+          <TextInput
+            label="Search Products / Scan Barcode"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            mode="outlined"
+            style={styles.searchInput}
+            placeholder="Type product name, code, or scan barcode..."
+            autoCapitalize="none"
+            autoCorrect={false}
+            blurOnSubmit={false}
+            onSubmitEditing={(event) => {
+              // Handle barcode scanner input (usually ends with Enter/Return)
+              const scannedValue = event.nativeEvent.text.trim();
+              if (scannedValue) {
+                setSearchQuery(scannedValue);
+                // Auto-focus and select the first matching product if only one result
+                setTimeout(() => {
+                  const matches = getFilteredItems();
+                  if (matches.length === 1) {
+                    handleCountProduct(matches[0]);
+                  }
+                }, 100);
+              }
+            }}
+            right={
+              searchQuery.trim() ? (
+                <TextInput.Icon
+                  icon="close"
+                  onPress={() => setSearchQuery('')}
+                />
+              ) : (
+                <TextInput.Icon
+                  icon="barcode-scan"
+                  onPress={handleScannerPress}
+                />
+              )
+            }
+          />
+        </View>
 
-            <View style={styles.progressSection}>
-              <View style={styles.progressInfo}>
-                <Paragraph>Progress: {progressData.counted} of {progressData.total} products</Paragraph>
-                <Paragraph style={styles.discrepancyValue}>
-                  Discrepancy Value: ₱{discrepancySummary.totalValue.toFixed(2)}
-                </Paragraph>
-              </View>
-              <ProgressBar
-                progress={progressData.progress}
-                style={styles.progressBar}
-                color={theme.colors.primary}
-              />
-            </View>
-
-            <View style={styles.filterChips}>
-              <Chip
-                selected={viewMode === 'discrepancies'}
-                onPress={() => setViewMode('discrepancies')}
-                style={styles.filterChip}
-                icon="alert-circle"
-              >
-                Corrected Items ({discrepancySummary.total})
-              </Chip>
-            </View>
-          </Card.Content>
-        </Card>
+        {/* Tabs */}
+        <SegmentedButtons
+          value={tabView}
+          onValueChange={(value) => setTabView(value as 'count' | 'summary')}
+          buttons={[
+            { value: 'count', label: '📋 Count', style: { flex: 1 } },
+            { value: 'summary', label: '📊 Summary', style: { flex: 1 } },
+          ]}
+          style={styles.tabButtons}
+        />
 
         <ScrollView style={styles.bodyContainer} contentContainerStyle={styles.bodyScrollContent}>
-          {/* Search Section */}
-          <View style={styles.searchSection}>
-            <TextInput
-              label="Search Products / Scan Barcode"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              mode="outlined"
-              style={styles.searchInput}
-              placeholder="Type product name, code, or scan barcode..."
-              autoCapitalize="none"
-              autoCorrect={false}
-              blurOnSubmit={false}
-              onSubmitEditing={(event) => {
-                // Handle barcode scanner input (usually ends with Enter/Return)
-                const scannedValue = event.nativeEvent.text.trim();
-                if (scannedValue) {
-                  console.log('Barcode scanned:', scannedValue);
-                  setSearchQuery(scannedValue);
-                  // Auto-focus and select the first matching product if only one result
-                  setTimeout(() => {
-                    const matches = getFilteredItems();
-                    if (matches.length === 1) {
-                      console.log('Single match found, auto-selecting for count:', matches[0].product_name);
-                      handleCountProduct(matches[0]);
-                    }
-                  }, 100);
-                }
-              }}
-              right={
-                searchQuery.trim() ? (
-                  <TextInput.Icon
-                    icon="close"
-                    onPress={() => setSearchQuery('')}
-                  />
-                ) : (
-                  <TextInput.Icon
-                    icon="barcode-scan"
-                    onPress={handleScannerPress}
-                  />
-                )
-              }
-            />
-            {!searchQuery.trim() ? (
-              <Paragraph style={styles.searchGuidance}>
-                💡 Type at least 3 characters to search for products
-              </Paragraph>
-            ) : searchQuery.trim().length < 3 ? (
-              <Paragraph style={styles.searchGuidance}>
-                ⌨️ Type {3 - searchQuery.trim().length} more character(s) to search...
-              </Paragraph>
-            ) : (
-              <Paragraph style={styles.searchIndicator}>
-                🔍 Found {products.length} product(s) for "{searchQuery}" - Tap to add to count
-              </Paragraph>
-            )}
-            {/* Debug info */}
-            <Text style={styles.debugText}>
-              Debug: v4.0 RESPONSIVE - {new Date().toLocaleTimeString()} - Products: {products.length}, Items: {countItems.length}, Filtered: {filteredItems.length}, ViewMode: {viewMode}
-            </Text>
-            {searchQuery.trim() && filteredItems.length === 1 && (
-              <Text style={styles.barcodeHint}>
-                💡 Single match found! Tap the product or it will auto-open after barcode scan.
-              </Text>
-            )}
-          </View>
 
+          {/* COUNT TAB */}
+          {tabView === 'count' && (
+            <>
           {/* Search Results - Show when searching */}
           {searchQuery.trim().length >= 3 && (
             <View style={[styles.productSection, Platform.OS === 'web' && { minHeight: 250 }]}>
-              <Title style={styles.sectionTitle}>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
                 🔍 Search Results ({products.length}) - Tap to Add to Count
               </Title>
               <ScrollView
@@ -756,7 +717,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
           {/* Count Items - Show when not searching */}
           {!searchQuery.trim() && (
             <View style={styles.productSection}>
-              <Title style={styles.sectionTitle}>
+              <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
                 📊 Products to Count ({filteredItems.length})
               </Title>
               <View style={styles.productListContainer}>
@@ -837,59 +798,76 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
               </View>
             </View>
           )}
+            </>
+          )}
+
+          {/* SUMMARY TAB */}
+          {tabView === 'summary' && (
+            <View style={styles.summaryTabContent}>
+              {/* Summary Details */}
+              <Card style={styles.summaryCard}>
+                <Card.Content>
+                  <Title style={styles.summaryTitle}>Count Summary</Title>
+
+                  <View style={styles.summaryStatsGrid}>
+                    <View style={styles.summaryStatBox}>
+                      <Title style={styles.summaryStatValue}>{progressData.counted}</Title>
+                      <Paragraph style={styles.summaryStatLabel}>Done</Paragraph>
+                    </View>
+                    <View style={styles.summaryStatBox}>
+                      <Title style={[styles.summaryStatValue, { color: '#FF9800' }]}>{discrepancySummary.overages}</Title>
+                      <Paragraph style={styles.summaryStatLabel}>Over</Paragraph>
+                    </View>
+                    <View style={styles.summaryStatBox}>
+                      <Title style={[styles.summaryStatValue, { color: '#F44336' }]}>{discrepancySummary.shortages}</Title>
+                      <Paragraph style={styles.summaryStatLabel}>Short</Paragraph>
+                    </View>
+                  </View>
+
+                  <Divider style={styles.summaryDivider} />
+
+                  <View style={styles.summaryValueRow}>
+                    <Paragraph style={styles.summaryValueLabel}>Total Discrepancy Value:</Paragraph>
+                    <Title style={[
+                      styles.summaryValueAmount,
+                      { color: discrepancySummary.totalValue >= 0 ? '#4CAF50' : '#F44336' }
+                    ]}>
+                      ₱{discrepancySummary.totalValue.toFixed(2)}
+                    </Title>
+                  </View>
+                </Card.Content>
+              </Card>
+            </View>
+          )}
 
         </ScrollView>
 
-        {/* Summary Section - Enhanced Visibility */}
-        <View style={styles.summarySection}>
-          <View style={styles.summaryRow}>
-            <View style={styles.miniStatItem}>
-              <Title style={styles.miniStatValue}>{progressData.counted}</Title>
-              <Paragraph style={styles.miniStatLabel}>Done</Paragraph>
-            </View>
-            <View style={styles.miniStatItem}>
-              <Title style={[styles.miniStatValue, { color: '#FF9800' }]}>{discrepancySummary.overages}</Title>
-              <Paragraph style={styles.miniStatLabel}>Over</Paragraph>
-            </View>
-            <View style={styles.miniStatItem}>
-              <Title style={[styles.miniStatValue, { color: '#F44336' }]}>{discrepancySummary.shortages}</Title>
-              <Paragraph style={styles.miniStatLabel}>Short</Paragraph>
-            </View>
-            <View style={styles.discrepancyValueMini}>
-              <Title style={[
-                styles.miniDiscrepancyValue,
-                { color: discrepancySummary.totalValue >= 0 ? '#4CAF50' : '#F44336' }
-              ]}>
-                ₱{discrepancySummary.totalValue.toFixed(2)}
-              </Title>
-            </View>
-          </View>
+        {/* Bottom Action Buttons - Always Visible */}
+        <View style={styles.bottomButtonsSection}>
+          <Button
+            mode="outlined"
+            onPress={() => setReportDialogVisible(true)}
+            style={styles.compactReportButton}
+            contentStyle={styles.compactButtonContent}
+            disabled={false}
+            labelStyle={styles.compactButtonLabel}
+            icon="file-document-outline"
+          >
+            Report
+          </Button>
 
-          {/* Responsive Button Section */}
-          <View style={styles.responsiveButtonContainer}>
-            <Button
-              mode="outlined"
-              onPress={() => setReportDialogVisible(true)}
-              style={styles.responsiveReportButton}
-              contentStyle={styles.responsiveButtonContent}
-              disabled={false}
-              labelStyle={styles.responsiveButtonLabel}
-            >
-              📊 Report
-            </Button>
-
-            <Button
-              mode="outlined"
-              onPress={handleCompleteCount}
-              style={[styles.responsiveCompleteButton, { backgroundColor: '#2196F3' }]}
-              contentStyle={styles.responsiveButtonContent}
-              loading={loading}
-              disabled={loading || currentSession?.status === 'completed'}
-              labelStyle={styles.responsiveCompleteLabel}
-            >
-              {currentSession?.status === 'completed' ? '✅ Completed' : '🏁 Complete Count'}
-            </Button>
-          </View>
+          <Button
+            mode="contained"
+            onPress={handleCompleteCount}
+            style={styles.compactCompleteButton}
+            contentStyle={styles.compactButtonContent}
+            loading={loading}
+            disabled={loading || currentSession?.status === 'completed'}
+            labelStyle={styles.compactButtonLabel}
+            icon={currentSession?.status === 'completed' ? 'check-circle' : 'flag-checkered'}
+          >
+            {currentSession?.status === 'completed' ? 'Completed' : 'Complete'}
+          </Button>
         </View>
       </View>
 
@@ -1042,7 +1020,7 @@ export default function PhysicalInventoryScreen({ navigation }: Props) {
           )}
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1052,7 +1030,9 @@ const styles = StyleSheet.create({
   },
   mainContainer: {
     flex: 1,
-    padding: 16,
+    paddingHorizontal: 12,
+    paddingTop: 2,
+    paddingBottom: 0,
   },
   headerCard: {
     marginBottom: 16,
@@ -1101,10 +1081,14 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   searchSection: {
-    marginBottom: 16,
+    marginBottom: 6,
   },
   searchInput: {
     backgroundColor: 'white',
+  },
+  tabButtons: {
+    marginHorizontal: 0,
+    marginBottom: 8,
   },
   searchIndicator: {
     marginTop: 8,
@@ -1499,5 +1483,79 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 20,
     fontSize: 16,
+  },
+  // Summary Tab Styles
+  summaryTabContent: {
+    padding: 8,
+  },
+  summaryCard: {
+    elevation: 2,
+    marginBottom: 8,
+  },
+  summaryTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  summaryStatsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 16,
+  },
+  summaryStatBox: {
+    alignItems: 'center',
+  },
+  summaryStatValue: {
+    fontSize: 28,
+    fontWeight: 'bold',
+  },
+  summaryStatLabel: {
+    fontSize: 12,
+    marginTop: 4,
+    opacity: 0.7,
+  },
+  summaryDivider: {
+    marginVertical: 16,
+  },
+  summaryValueRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  summaryValueLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  summaryValueAmount: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  // Bottom Buttons Styles
+  bottomButtonsSection: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 48,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    elevation: 4,
+  },
+  compactReportButton: {
+    flex: 1,
+    borderColor: '#2196F3',
+  },
+  compactCompleteButton: {
+    flex: 2,
+    backgroundColor: '#2196F3',
+  },
+  compactButtonContent: {
+    height: 44,
+  },
+  compactButtonLabel: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

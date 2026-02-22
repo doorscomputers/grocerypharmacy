@@ -21,11 +21,11 @@ import {
   IconButton,
   SegmentedButtons,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type InitialInventoryScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -59,6 +59,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
   const [setupComplete, setSetupComplete] = useState(false);
   const [activeTab, setActiveTab] = useState('search');
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   useEffect(() => {
     loadProducts();
@@ -462,7 +463,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
 
   if (setupComplete) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.completedContainer}>
           <Card style={styles.completedCard}>
             <Card.Content>
@@ -496,17 +497,17 @@ export default function InitialInventoryScreen({ navigation }: Props) {
             </Card.Content>
           </Card>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <ScrollView style={styles.mainContainer} contentContainerStyle={styles.scrollContent}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView style={styles.mainContainer} contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}>
         {/* Header with Progress */}
         <Card style={styles.headerCard}>
           <Card.Content>
-            <Title style={styles.headerTitle}>Initial Inventory Setup</Title>
+            <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>Initial Inventory Setup</Title>
             <View style={styles.versionContainer}>
               <Paragraph style={styles.versionText}>Version 2.2.0 - Production Ready</Paragraph>
               <Paragraph style={styles.buildText}>Build: {new Date().toISOString().split('T')[0]} - Removed test button, added confirmation dialog</Paragraph>
@@ -537,7 +538,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
             <Card style={styles.productCard}>
               <Card.Content style={styles.productCardContent}>
                 <View style={styles.productSectionHeader}>
-                  <Title style={styles.sectionTitle}>Inventory Setup</Title>
+                  <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Inventory Setup</Title>
                   <View style={styles.optimizedBadge}>
                     <Paragraph style={styles.optimizedText}>🚀 UX v2.1.8</Paragraph>
                   </View>
@@ -572,7 +573,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
           <View style={styles.summarySection}>
             <Card style={styles.summaryCard}>
               <Card.Content>
-                <Title style={styles.sectionTitle}>Setup Summary</Title>
+                <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Setup Summary</Title>
 
                 <View style={styles.summaryStats}>
                   <View style={styles.statItem}>
@@ -662,7 +663,7 @@ export default function InitialInventoryScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -891,7 +892,7 @@ const styles = StyleSheet.create({
   actionSection: {
     alignItems: 'center',
     paddingVertical: 16,
-    paddingBottom: 24, // Extra bottom padding for button area
+    paddingBottom: 48, // Extra bottom padding for phone nav bar clearance
   },
   actionText: {
     textAlign: 'center',

@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   Text,
+  Image,
 } from 'react-native';
 import {
   TextInput,
@@ -16,10 +17,10 @@ import {
   HelperText,
   useTheme,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { useAuth } from '../contexts/AuthContext';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type LoginScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -36,6 +37,7 @@ export default function LoginScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const { login } = useAuth();
 
   const handleLogin = async () => {
@@ -64,29 +66,27 @@ export default function LoginScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
         <View style={styles.content}>
-          <Card style={styles.card}>
-            <Card.Content>
-              <Title style={[styles.title, { color: theme.colors.primary }]}>
+          <Card style={[styles.card, { maxWidth: lo.modalMaxWidth, alignSelf: 'center', width: '100%' }]}>
+            <Card.Content style={{ padding: sp.md }}>
+              <View style={styles.logoContainer}>
+                <Image
+                  source={require('../assets/login-logo.png')}
+                  style={styles.logo}
+                  resizeMode="contain"
+                />
+              </View>
+              <Title style={[styles.title, { color: theme.colors.primary, fontSize: fs.h1 }]}>
                 IgoroTech POS
               </Title>
-              <Paragraph style={styles.subtitle}>
+              <Paragraph style={[styles.subtitle, { fontSize: fs.body }]}>
                 Professional Point of Sale System
               </Paragraph>
-
-              <View style={styles.versionContainer}>
-                <Paragraph style={styles.versionText}>
-                  Version 2.1.0 - Physical Count Tracking
-                </Paragraph>
-                <Paragraph style={styles.buildText}>
-                  Build: {new Date().toISOString().split('T')[0]} - User Attribution Update
-                </Paragraph>
-              </View>
 
               <TextInput
                 label="Username"
@@ -129,12 +129,6 @@ export default function LoginScreen({ navigation }: Props) {
                 </Text>
               </Pressable>
 
-              <View style={styles.demoInfo}>
-                <Paragraph style={styles.demoText}>
-                  Default: admin / 1122
-                </Paragraph>
-              </View>
-
               <View style={styles.copyrightContainer}>
                 <Paragraph style={styles.copyrightText}>
                   © {new Date().getFullYear()} IgoroTech POS. All rights reserved.
@@ -144,7 +138,7 @@ export default function LoginScreen({ navigation }: Props) {
           </Card>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -162,6 +156,14 @@ const styles = StyleSheet.create({
   },
   card: {
     elevation: 8,
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  logo: {
+    width: 150,
+    height: 150,
   },
   title: {
     textAlign: 'center',

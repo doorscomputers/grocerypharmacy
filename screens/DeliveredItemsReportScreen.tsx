@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Text } from 'react-native';
 import {
   Card,
   Title,
@@ -12,16 +12,17 @@ import {
   TextInput,
   IconButton,
   SegmentedButtons,
-  List,
   Menu,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'DeliveredItemsReport'>;
@@ -81,6 +82,7 @@ type ReportView = 'summary' | 'deliveries' | 'products' | 'suppliers';
 
 export default function DeliveredItemsReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [purchases, setPurchases] = useState<PurchaseOrder[]>([]);
   const [purchaseDetails, setPurchaseDetails] = useState<PurchaseDetail[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -94,7 +96,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(0);
@@ -102,7 +104,20 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -124,21 +139,8 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       const purchasesData = await dbService.getPurchaseOrders(500);
       setPurchases(purchasesData);
 
-      // Load purchase details for all purchases
-      const allDetails: PurchaseDetail[] = [];
-      for (const po of purchasesData) {
-        try {
-          const poWithDetails = await dbService.getPurchaseOrderById(po.id);
-          if (poWithDetails?.items) {
-            allDetails.push(...poWithDetails.items.map((item: any) => ({
-              ...item,
-              purchase_id: po.id
-            })));
-          }
-        } catch (e) {
-          // Skip if error
-        }
-      }
+      // Load ALL purchase details in a single batch query (not N+1)
+      const allDetails = await dbService.getAllPurchaseDetails();
       setPurchaseDetails(allDetails);
 
     } catch (error) {
@@ -356,124 +358,234 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
     }
   };
 
-  const buildPrintReport = (): ESCPOSBuilder => {
-    const builder = new ESCPOSBuilder();
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
     const now = new Date();
 
     // Header
     builder
-      .alignCenter()
+      .align('center')
       .bold(true)
-      .text('DELIVERED ITEMS REPORT')
+      .doubleSize()
+      .println('DELIVERED ITEMS')
+      .println('REPORT')
+      .normalSize()
       .bold(false)
-      .newline()
-      .text('--------------------------------')
-      .newline();
-
-    // Date/Time
-    builder
-      .alignLeft()
-      .text(`Date: ${now.toLocaleDateString('en-PH')}`)
-      .newline()
-      .text(`Time: ${now.toLocaleTimeString('en-PH')}`)
-      .newline()
-      .text(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')} - ${dateRange.endDate.toLocaleDateString('en-PH')}`)
-      .newline()
-      .text('--------------------------------')
-      .newline();
+      .feed()
+      .println(`Period: ${formatPrinterDate(dateRange.startDate)}`)
+      .println(`to ${formatPrinterDate(dateRange.endDate)}`)
+      .doubleSeparator();
 
     // Summary Section
     builder
+      .align('left')
       .bold(true)
-      .text('SUMMARY')
+      .println('SUMMARY')
       .bold(false)
-      .newline()
-      .text(`Total POs: ${summary.totalPOs}`)
-      .newline()
-      .text(`Fully Received: ${summary.fullyReceived}`)
-      .newline()
-      .text(`Partially Received: ${summary.partiallyReceived}`)
-      .newline()
-      .text(`Unique Suppliers: ${summary.uniqueSuppliers}`)
-      .newline()
-      .text(`Unique Products: ${summary.uniqueProducts}`)
-      .newline()
-      .text('--------------------------------')
-      .newline();
+      .separator()
+      .leftRight('Total POs:', summary.totalPOs.toString())
+      .leftRight('Fully Received:', summary.fullyReceived.toString())
+      .leftRight('Partial Received:', summary.partiallyReceived.toString())
+      .leftRight('Unique Suppliers:', summary.uniqueSuppliers.toString())
+      .leftRight('Unique Products:', summary.uniqueProducts.toString())
+      .separator();
 
     // Quantity Summary
     builder
-      .text(`Items Ordered: ${summary.totalOrdered.toLocaleString()}`)
-      .newline()
-      .text(`Items Received: ${summary.totalReceived.toLocaleString()}`)
-      .newline()
-      .text(`Pending Items: ${summary.totalPending.toLocaleString()}`)
-      .newline()
-      .text(`Fulfillment Rate: ${summary.fulfillmentRate.toFixed(1)}%`)
-      .newline()
-      .text('--------------------------------')
-      .newline();
+      .leftRight('Items Ordered:', summary.totalOrdered.toLocaleString())
+      .leftRight('Items Received:', summary.totalReceived.toLocaleString())
+      .leftRight('Pending Items:', summary.totalPending.toLocaleString())
+      .leftRight('Fulfillment Rate:', `${summary.fulfillmentRate.toFixed(1)}%`)
+      .doubleSeparator();
 
     // Value Summary
     builder
       .bold(true)
-      .text('TOTALS')
+      .leftRight('Received Value:', `P${summary.totalValue.toFixed(2)}`)
       .bold(false)
-      .newline()
-      .text(`Received Value: ${formatCurrency(summary.totalValue)}`)
-      .newline()
-      .text('--------------------------------')
-      .newline();
+      .separator();
 
     // Top Suppliers (first 10)
     if (supplierDeliveries.length > 0) {
       builder
         .bold(true)
-        .text('TOP SUPPLIERS')
+        .println('TOP SUPPLIERS')
         .bold(false)
-        .newline();
+        .separator();
 
       supplierDeliveries.slice(0, 10).forEach((supplier, index) => {
-        builder
-          .text(`${index + 1}. ${supplier.supplier_name.substring(0, 20)}`)
-          .newline()
-          .text(`   POs: ${supplier.po_count} | Items: ${supplier.total_received}`)
-          .newline()
-          .text(`   Value: ${formatCurrency(supplier.total_value)}`)
-          .newline();
+        const name = supplier.supplier_name.length > printerWidth - 5
+          ? supplier.supplier_name.substring(0, printerWidth - 7) + '..'
+          : supplier.supplier_name;
+        builder.println(`${index + 1}. ${name}`);
+        builder.leftRight(`  POs: ${supplier.po_count}`, `P${supplier.total_value.toFixed(2)}`);
       });
 
-      builder.text('--------------------------------').newline();
+      builder.separator();
     }
 
     // Top Products (first 10)
     if (productDeliveries.length > 0) {
       builder
         .bold(true)
-        .text('TOP PRODUCTS RECEIVED')
+        .println('TOP PRODUCTS')
         .bold(false)
-        .newline();
+        .separator();
 
       productDeliveries.slice(0, 10).forEach((product, index) => {
-        builder
-          .text(`${index + 1}. ${product.product_name.substring(0, 22)}`)
-          .newline()
-          .text(`   Qty: ${product.total_received} | ${formatCurrency(product.total_value)}`)
-          .newline();
+        const name = product.product_name.length > printerWidth - 5
+          ? product.product_name.substring(0, printerWidth - 7) + '..'
+          : product.product_name;
+        builder.println(`${index + 1}. ${name}`);
+        builder.leftRight(`  Qty: ${product.total_received}`, `P${product.total_value.toFixed(2)}`);
       });
 
-      builder.text('--------------------------------').newline();
+      builder.separator();
     }
 
     // Footer
     builder
-      .alignCenter()
-      .text('*** END OF REPORT ***')
-      .newline()
-      .newline()
-      .newline();
+      .feed()
+      .align('center')
+      .println('*** END OF REPORT ***')
+      .feed(2)
+      .cut();
 
     return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; font-size: 12px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .company-name { font-size: 18px; font-weight: bold; }
+          .company-info { font-size: 11px; color: #666; }
+          .report-title { font-size: 16px; font-weight: bold; margin: 15px 0; }
+          .date-time { font-size: 11px; color: #666; }
+          .section { margin: 15px 0; }
+          .section-title { font-size: 13px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 11px; }
+          th { background-color: #f5f5f5; font-weight: bold; }
+          .text-right { text-align: right; }
+          .text-center { text-align: center; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+          .summary-item { flex: 1; min-width: 100px; padding: 10px; background: #f9f9f9; border-radius: 5px; text-align: center; }
+          .summary-label { font-size: 10px; color: #666; }
+          .summary-value { font-size: 14px; font-weight: bold; }
+          .positive { color: #4CAF50; }
+          .negative { color: #F44336; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #666; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name}</div>
+          ${companySettings.address ? `<div class="company-info">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="company-info">TIN: ${companySettings.tin}</div>` : ''}
+          <div class="report-title">DELIVERED ITEMS REPORT</div>
+          <div class="date-time">Generated: ${dateStr} ${timeStr}</div>
+          <div class="date-time">Period: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Summary</div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Total POs</div>
+              <div class="summary-value">${summary.totalPOs}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Fully Received</div>
+              <div class="summary-value positive">${summary.fullyReceived}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Partial</div>
+              <div class="summary-value" style="color: #FF9800;">${summary.partiallyReceived}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Suppliers</div>
+              <div class="summary-value">${summary.uniqueSuppliers}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Products</div>
+              <div class="summary-value">${summary.uniqueProducts}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Received Value</div>
+              <div class="summary-value positive">${formatCurrency(summary.totalValue)}</div>
+            </div>
+          </div>
+          <table>
+            <tr><td>Items Ordered</td><td class="text-right">${summary.totalOrdered.toLocaleString()}</td></tr>
+            <tr><td>Items Received</td><td class="text-right">${summary.totalReceived.toLocaleString()}</td></tr>
+            <tr><td>Pending Items</td><td class="text-right ${summary.totalPending > 0 ? 'negative' : ''}">${summary.totalPending.toLocaleString()}</td></tr>
+            <tr><td>Fulfillment Rate</td><td class="text-right">${summary.fulfillmentRate.toFixed(1)}%</td></tr>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Top Suppliers by Value</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Supplier</th>
+                <th class="text-right">POs</th>
+                <th class="text-right">Items</th>
+                <th class="text-right">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${supplierDeliveries.slice(0, 15).map(supplier => `
+                <tr>
+                  <td>${supplier.supplier_name}</td>
+                  <td class="text-right">${supplier.po_count}</td>
+                  <td class="text-right">${supplier.total_received}</td>
+                  <td class="text-right">${formatCurrency(supplier.total_value)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Top Products Received</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th class="text-right">Qty</th>
+                <th class="text-right">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${productDeliveries.slice(0, 15).map(product => `
+                <tr>
+                  <td>${product.product_name}</td>
+                  <td class="text-right">${product.total_received}</td>
+                  <td class="text-right">${formatCurrency(product.total_value)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="footer">
+          Report generated on ${now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
+        </div>
+      </body>
+      </html>
+    `;
+    return html;
   };
 
   // Pagination for deliveries table
@@ -489,28 +601,28 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       {/* Summary Cards */}
       <Card style={styles.summaryCard}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Delivery Summary</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Delivery Summary</Title>
           <View style={styles.summaryGrid}>
             <View style={[styles.summaryItem, { backgroundColor: '#E3F2FD' }]}>
-              <Paragraph style={styles.summaryLabel}>Total POs</Paragraph>
+              <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Total POs</Paragraph>
               <Title style={[styles.summaryValue, { color: '#1976D2' }]}>
                 {summary.totalPOs}
               </Title>
             </View>
             <View style={[styles.summaryItem, { backgroundColor: '#E8F5E9' }]}>
-              <Paragraph style={styles.summaryLabel}>Fully Received</Paragraph>
+              <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Fully Received</Paragraph>
               <Title style={[styles.summaryValue, { color: '#388E3C' }]}>
                 {summary.fullyReceived}
               </Title>
             </View>
             <View style={[styles.summaryItem, { backgroundColor: '#FFF3E0' }]}>
-              <Paragraph style={styles.summaryLabel}>Partial</Paragraph>
+              <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Partial</Paragraph>
               <Title style={[styles.summaryValue, { color: '#F57C00' }]}>
                 {summary.partiallyReceived}
               </Title>
             </View>
             <View style={[styles.summaryItem, { backgroundColor: '#E1F5FE' }]}>
-              <Paragraph style={styles.summaryLabel}>Suppliers</Paragraph>
+              <Paragraph style={[styles.summaryLabel, { fontSize: fs.caption }]}>Suppliers</Paragraph>
               <Title style={[styles.summaryValue, { color: '#0288D1' }]}>
                 {summary.uniqueSuppliers}
               </Title>
@@ -568,7 +680,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       {/* Top Suppliers */}
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Top Suppliers by Value</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Top Suppliers by Value</Title>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 2 }}>Supplier</DataTable.Title>
@@ -596,7 +708,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
       {/* Top Products */}
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Top Products Received</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Top Products Received</Title>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 2 }}>Product</DataTable.Title>
@@ -624,7 +736,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
   const renderDeliveriesView = () => (
     <Card style={styles.card}>
       <Card.Content>
-        <Title style={styles.sectionTitle}>
+        <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
           Delivery Details ({filteredPurchases.length} POs)
         </Title>
 
@@ -709,7 +821,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
   const renderProductsView = () => (
     <Card style={styles.card}>
       <Card.Content>
-        <Title style={styles.sectionTitle}>
+        <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
           Products Received ({productDeliveries.length} items)
         </Title>
 
@@ -783,7 +895,7 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
   const renderSuppliersView = () => (
     <Card style={styles.card}>
       <Card.Content>
-        <Title style={styles.sectionTitle}>
+        <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>
           Deliveries by Supplier ({supplierDeliveries.length} suppliers)
         </Title>
 
@@ -842,26 +954,19 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Delivered Items Report"
+        reportFileName="DeliveredItemsReport"
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Delivered Items Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Items received from suppliers
-              </Paragraph>
-            </View>
-            <Button mode="contained" icon="printer" onPress={() => setPrintDialogVisible(true)} compact>Print</Button>
-          </View>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -994,6 +1099,18 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
               <Paragraph style={styles.emptyText}>Loading delivery data...</Paragraph>
             </Card.Content>
           </Card>
+        ) : filteredPurchases.length === 0 ? (
+          <Card style={styles.card}>
+            <Card.Content style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <Title style={{ color: '#757575', marginBottom: 8 }}>No Delivered Items Found</Title>
+              <Paragraph style={{ textAlign: 'center', color: '#9E9E9E', marginBottom: 4 }}>
+                No purchase orders with received items in the selected date range.
+              </Paragraph>
+              <Paragraph style={{ textAlign: 'center', color: '#9E9E9E' }}>
+                Try changing the date range or check if items have been received in Purchase Orders.
+              </Paragraph>
+            </Card.Content>
+          </Card>
         ) : (
           <>
             {activeView === 'summary' && renderSummaryView()}
@@ -1010,60 +1127,21 @@ export default function DeliveredItemsReportScreen({ navigation }: Props) {
           </Paragraph>
         </View>
 
-        <PrintOptionsDialog
-          visible={printDialogVisible}
-          onDismiss={() => setPrintDialogVisible(false)}
-          title="Print Delivered Items Report"
-          onPrint={buildPrintReport}
-        />
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 12,

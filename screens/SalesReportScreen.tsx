@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Platform, TextInput as RNTextInput } from 'react-native';
+import { View, StyleSheet, ScrollView, TextInput as RNTextInput } from 'react-native';
 import {
   Card,
   Title,
@@ -14,13 +14,16 @@ import {
   SegmentedButtons,
   List,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange, DatePreset } from '../components/DateRangeFilter';
-import PrintOptionsDialog from '../components/PrintOptionsDialog';
+import ReportActionsBar from '../components/ReportActionsBar';
 import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPesoCurrency } from '../utils/ReceiptPdfService';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'SalesReport'>;
@@ -84,6 +87,7 @@ type ReportView = 'summary' | 'products' | 'categories' | 'transactions';
 
 export default function SalesReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [transactionItems, setTransactionItems] = useState<TransactionItem[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -96,7 +100,7 @@ export default function SalesReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
-  const [printDialogVisible, setPrintDialogVisible] = useState(false);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   // Pagination for transactions table
   const [currentPage, setCurrentPage] = useState(0);
@@ -104,7 +108,20 @@ export default function SalesReportScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -336,6 +353,25 @@ export default function SalesReportScreen({ navigation }: Props) {
     });
   };
 
+  // ASCII-safe helpers for thermal printer output (₱ causes Chinese chars on ESC/POS printers)
+  const printCurrency = (amount: number) => `P${(amount || 0).toFixed(2)}`;
+  const printDate = (d: Date | string) => {
+    const date = typeof d === 'string' ? new Date(d) : d;
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const y = date.getFullYear();
+    return `${m}/${day}/${y}`;
+  };
+  const printDateTime = (d: Date | string) => {
+    const date = typeof d === 'string' ? new Date(d) : d;
+    const h = date.getHours();
+    const min = String(date.getMinutes()).padStart(2, '0');
+    const sec = String(date.getSeconds()).padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${printDate(date)} ${h12}:${min}:${sec} ${ampm}`;
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'COMPLETED': return '#4CAF50';
@@ -370,57 +406,133 @@ export default function SalesReportScreen({ navigation }: Props) {
     const builder = new ESCPOSBuilder(printerWidth);
     const now = new Date();
 
+    // Get title based on active view
+    const viewTitles: Record<ReportView, string> = {
+      summary: 'SALES SUMMARY',
+      products: 'SALES BY PRODUCT',
+      categories: 'SALES BY CATEGORY',
+      transactions: 'TRANSACTION DETAILS',
+    };
+
     // Header
     builder
       .align('center')
       .bold(true)
       .doubleSize()
-      .println('SALES REPORT')
+      .println(viewTitles[activeView])
       .normalSize()
       .bold(false)
       .feed()
-      .println(now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' }))
-      .println(now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' }))
+      .println(formatPrinterDateTime(now))
       .feed()
-      .println(`Period: ${dateRange.startDate.toLocaleDateString('en-PH')}`)
-      .println(`to ${dateRange.endDate.toLocaleDateString('en-PH')}`)
+      .println(`Period: ${formatPrinterDate(dateRange.startDate)}`)
+      .println(`to ${formatPrinterDate(dateRange.endDate)}`)
       .doubleSeparator();
 
-    // Summary
-    builder
-      .align('left')
-      .bold(true)
-      .println('SALES SUMMARY')
-      .bold(false)
-      .separator()
-      .leftRight('Transactions:', salesSummary.transactionCount.toString())
-      .leftRight('Gross Sales:', `P${salesSummary.grossSales.toFixed(2)}`)
-      .leftRight('Discounts:', `P${salesSummary.totalDiscount.toFixed(2)}`)
-      .leftRight('Net Sales:', `P${salesSummary.netSales.toFixed(2)}`)
-      .separator()
-      .leftRight('VATable Sales:', `P${salesSummary.vatableSales.toFixed(2)}`)
-      .leftRight('VAT (12%):', `P${salesSummary.totalTax.toFixed(2)}`)
-      .leftRight('Avg Transaction:', `P${salesSummary.averageTransaction.toFixed(2)}`)
-      .separator();
+    // Print content based on active view
+    if (activeView === 'summary') {
+      // Summary view
+      builder
+        .align('left')
+        .bold(true)
+        .println('SALES SUMMARY')
+        .bold(false)
+        .separator()
+        .leftRight('Transactions:', salesSummary.transactionCount.toString())
+        .leftRight('Gross Sales:', `P${salesSummary.grossSales.toFixed(2)}`)
+        .leftRight('Discounts:', `P${salesSummary.totalDiscount.toFixed(2)}`)
+        .leftRight('Net Sales:', `P${salesSummary.netSales.toFixed(2)}`)
+        .separator()
+        .leftRight('VATable Sales:', `P${salesSummary.vatableSales.toFixed(2)}`)
+        .leftRight('VAT (12%):', `P${salesSummary.totalTax.toFixed(2)}`)
+        .leftRight('Avg Transaction:', `P${salesSummary.averageTransaction.toFixed(2)}`)
+        .separator()
+        .leftRight('Void Count:', salesSummary.voidCount.toString())
+        .leftRight('Void Amount:', `P${salesSummary.voidAmount.toFixed(2)}`)
+        .leftRight('Refund Count:', salesSummary.refundCount.toString())
+        .leftRight('Refund Amount:', `P${salesSummary.refundAmount.toFixed(2)}`)
+        .doubleSeparator()
+        .bold(true)
+        .println('BY PAYMENT METHOD')
+        .bold(false)
+        .separator();
 
-    // Voids & Refunds
-    builder
-      .leftRight('Void Count:', salesSummary.voidCount.toString())
-      .leftRight('Void Amount:', `P${salesSummary.voidAmount.toFixed(2)}`)
-      .leftRight('Refund Count:', salesSummary.refundCount.toString())
-      .leftRight('Refund Amount:', `P${salesSummary.refundAmount.toFixed(2)}`)
-      .doubleSeparator();
+      Object.entries(salesSummary.byPaymentMethod).forEach(([method, data]) => {
+        builder.leftRight(method, `${data.count} - P${data.total.toFixed(2)}`);
+      });
 
-    // By Payment Method
-    builder
-      .bold(true)
-      .println('BY PAYMENT METHOD')
-      .bold(false)
-      .separator();
+    } else if (activeView === 'products') {
+      // Products view
+      builder
+        .align('left')
+        .bold(true)
+        .println(`PRODUCTS (${salesByProduct.length} items)`)
+        .bold(false)
+        .separator();
 
-    Object.entries(salesSummary.byPaymentMethod).forEach(([method, data]) => {
-      builder.leftRight(method, `${data.count} - P${data.total.toFixed(2)}`);
-    });
+      // Print each product: name on full line, qty and sales on 2nd line
+      salesByProduct.slice(0, 50).forEach((p) => {
+        const name = (p.product_name || '').substring(0, printerWidth);
+        builder
+          .bold(true)
+          .println(name)
+          .bold(false);
+        builder.leftRight(`  Qty: ${p.quantity_sold}`, printCurrency(p.total_sales));
+      });
+
+      builder.separator();
+
+      // Total row
+      const totalQty = salesByProduct.reduce((sum, p) => sum + p.quantity_sold, 0);
+      const totalSales = salesByProduct.reduce((sum, p) => sum + p.total_sales, 0);
+      builder.bold(true);
+      builder.leftRight(`TOTAL  Qty:${totalQty}`, printCurrency(totalSales));
+      builder.bold(false);
+
+    } else if (activeView === 'categories') {
+      // Categories view
+      builder
+        .align('left')
+        .bold(true)
+        .println(`CATEGORIES (${salesByCategory.length})`)
+        .bold(false)
+        .separator();
+
+      salesByCategory.forEach((c) => {
+        builder.leftRight(c.category_name, `P${c.total_sales.toFixed(2)}`);
+        builder.println(`  ${c.quantity_sold} items, ${c.product_count} products`);
+      });
+
+      builder.separator();
+      const totalCatSales = salesByCategory.reduce((sum, c) => sum + c.total_sales, 0);
+      builder.bold(true);
+      builder.leftRight('TOTAL', `P${totalCatSales.toFixed(2)}`);
+      builder.bold(false);
+
+    } else if (activeView === 'transactions') {
+      // Transactions view
+      builder
+        .align('left')
+        .bold(true)
+        .println(`TRANSACTIONS (${filteredTransactions.length})`)
+        .bold(false)
+        .separator();
+
+      // Print each transaction (limit to 30 for thermal)
+      filteredTransactions.slice(0, 30).forEach((txn) => {
+        builder.leftRight(txn.invoice_number, printCurrency(txn.total_amount));
+        builder.println(`  ${formatPrinterDateTime(txn.transaction_date || txn.created_at)}`);
+        builder.println(`  ${txn.payment_method} - ${txn.status}`);
+      });
+
+      builder.separator();
+      const totalTxnSales = filteredTransactions
+        .filter(t => t.status === 'COMPLETED')
+        .reduce((sum, t) => sum + t.total_amount, 0);
+      builder.bold(true);
+      builder.leftRight('TOTAL (Completed)', `P${totalTxnSales.toFixed(2)}`);
+      builder.bold(false);
+    }
 
     builder
       .feed()
@@ -431,6 +543,231 @@ export default function SalesReportScreen({ navigation }: Props) {
       .cut();
 
     return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+
+    // Get title based on active view
+    const viewTitles: Record<ReportView, string> = {
+      summary: 'SALES SUMMARY REPORT',
+      products: 'SALES BY PRODUCT REPORT',
+      categories: 'SALES BY CATEGORY REPORT',
+      transactions: 'TRANSACTION DETAILS REPORT',
+    };
+
+    const baseStyles = `
+      body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+      .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+      .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+      .header-text { font-size: 11px; color: #666; }
+      .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #1976D2; }
+      .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+      .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+      .summary-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+      .summary-item { flex: 1; min-width: 120px; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; }
+      .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+      .summary-value { font-size: 16px; font-weight: bold; }
+      table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+      th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+      td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+      .footer-row { background-color: #e8f5e9 !important; }
+      .footer-row td { font-weight: bold; }
+      .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+      .vat-row { display: flex; justify-content: space-between; padding: 4px 0; }
+      .void-section { display: flex; gap: 16px; margin: 12px 0; }
+      .void-item { flex: 1; background: #ffebee; padding: 12px; border-radius: 8px; text-align: center; }
+      .void-item.refund { background: #fff8e1; }
+      .text-right { text-align: right; }
+      .txn-card { background: #f9f9f9; border-left: 3px solid #4CAF50; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
+      .txn-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+      .txn-invoice { font-weight: bold; }
+      .txn-amount { color: #2E7D32; font-weight: bold; }
+      .txn-details { font-size: 11px; color: #666; }
+    `;
+
+    const headerHtml = `
+      <div class="header">
+        <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+        ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+        ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+      </div>
+      <div class="report-title">${viewTitles[activeView]}</div>
+      <div class="date-range">Period: ${startDateStr} to ${endDateStr}</div>
+    `;
+
+    const footerHtml = `
+      <div class="footer">
+        <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+        <p>IgoroTech POS - ${viewTitles[activeView]}</p>
+      </div>
+    `;
+
+    let contentHtml = '';
+
+    if (activeView === 'summary') {
+      // Summary view content
+      const paymentMethodRows = Object.entries(salesSummary.byPaymentMethod).map(([method, data]) => [
+        getPaymentMethodLabel(method),
+        data.count.toString(),
+        formatCurrency(data.total),
+        salesSummary.grossSales > 0 ? `${((data.total / salesSummary.grossSales) * 100).toFixed(1)}%` : '0%',
+      ]);
+
+      contentHtml = `
+        <div class="section-title">Sales Summary</div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Transactions</div>
+            <div class="summary-value" style="color: #1976D2;">${salesSummary.transactionCount}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Gross Sales</div>
+            <div class="summary-value" style="color: #388E3C;">${formatCurrency(salesSummary.grossSales)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Discounts</div>
+            <div class="summary-value" style="color: #F57C00;">${formatCurrency(salesSummary.totalDiscount)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Net Sales</div>
+            <div class="summary-value" style="color: #0288D1;">${formatCurrency(salesSummary.netSales)}</div>
+          </div>
+        </div>
+
+        <div class="vat-row"><span>VATable Sales:</span><span>${formatCurrency(salesSummary.vatableSales)}</span></div>
+        <div class="vat-row"><span>VAT (12%):</span><span>${formatCurrency(salesSummary.totalTax)}</span></div>
+        <div class="vat-row"><span>Average Transaction:</span><span>${formatCurrency(salesSummary.averageTransaction)}</span></div>
+
+        <div class="void-section">
+          <div class="void-item">
+            <div class="summary-label">Void (${salesSummary.voidCount})</div>
+            <div class="summary-value" style="color: #C62828;">${formatCurrency(salesSummary.voidAmount)}</div>
+          </div>
+          <div class="void-item refund">
+            <div class="summary-label">Refund (${salesSummary.refundCount})</div>
+            <div class="summary-value" style="color: #F57F17;">${formatCurrency(salesSummary.refundAmount)}</div>
+          </div>
+        </div>
+
+        <div class="section-title">By Payment Method</div>
+        <table>
+          <thead>
+            <tr><th>Method</th><th>Count</th><th>Amount</th><th>%</th></tr>
+          </thead>
+          <tbody>
+            ${paymentMethodRows.map(row => `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td><td>${row[3]}</td></tr>`).join('')}
+            <tr class="footer-row">
+              <td>TOTAL</td><td>${salesSummary.transactionCount}</td><td>${formatCurrency(salesSummary.grossSales)}</td><td>100%</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    } else if (activeView === 'products') {
+      // Products view content
+      const totalQty = salesByProduct.reduce((sum, p) => sum + p.quantity_sold, 0);
+      const totalSales = salesByProduct.reduce((sum, p) => sum + p.total_sales, 0);
+
+      contentHtml = `
+        <div class="section-title">Sales by Product (${salesByProduct.length} items)</div>
+        <table>
+          <thead>
+            <tr><th>Code</th><th>Product</th><th class="text-right">Qty</th><th class="text-right">Sales</th></tr>
+          </thead>
+          <tbody>
+            ${salesByProduct.map(p => `
+              <tr>
+                <td>${p.product_code}</td>
+                <td>${p.product_name}</td>
+                <td class="text-right">${p.quantity_sold}</td>
+                <td class="text-right">${formatCurrency(p.total_sales)}</td>
+              </tr>
+            `).join('')}
+            <tr class="footer-row">
+              <td colspan="2">TOTAL</td>
+              <td class="text-right">${totalQty}</td>
+              <td class="text-right">${formatCurrency(totalSales)}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    } else if (activeView === 'categories') {
+      // Categories view content
+      const totalQty = salesByCategory.reduce((sum, c) => sum + c.quantity_sold, 0);
+      const totalProducts = salesByCategory.reduce((sum, c) => sum + c.product_count, 0);
+      const totalSales = salesByCategory.reduce((sum, c) => sum + c.total_sales, 0);
+
+      contentHtml = `
+        <div class="section-title">Sales by Category (${salesByCategory.length} categories)</div>
+        <table>
+          <thead>
+            <tr><th>Category</th><th class="text-right">Products</th><th class="text-right">Qty</th><th class="text-right">Sales</th></tr>
+          </thead>
+          <tbody>
+            ${salesByCategory.map(c => `
+              <tr>
+                <td>${c.category_name}</td>
+                <td class="text-right">${c.product_count}</td>
+                <td class="text-right">${c.quantity_sold}</td>
+                <td class="text-right">${formatCurrency(c.total_sales)}</td>
+              </tr>
+            `).join('')}
+            <tr class="footer-row">
+              <td>TOTAL</td>
+              <td class="text-right">${totalProducts}</td>
+              <td class="text-right">${totalQty}</td>
+              <td class="text-right">${formatCurrency(totalSales)}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    } else if (activeView === 'transactions') {
+      // Transactions view content
+      const completedTxns = filteredTransactions.filter(t => t.status === 'COMPLETED');
+      const totalSales = completedTxns.reduce((sum, t) => sum + t.total_amount, 0);
+
+      contentHtml = `
+        <div class="section-title">Transaction Details (${filteredTransactions.length} transactions)</div>
+        ${filteredTransactions.map(txn => `
+          <div class="txn-card">
+            <div class="txn-header">
+              <span class="txn-invoice">${txn.invoice_number}</span>
+              <span class="txn-amount">${formatCurrency(txn.total_amount)}</span>
+            </div>
+            <div class="txn-details">
+              ${formatDateTime(txn.transaction_date || txn.created_at)} | ${txn.payment_method} | ${txn.status}
+              ${txn.customer_name ? ` | ${txn.customer_name}` : ''}
+            </div>
+          </div>
+        `).join('')}
+        <div class="summary-grid" style="margin-top: 16px;">
+          <div class="summary-item">
+            <div class="summary-label">Total Transactions</div>
+            <div class="summary-value">${filteredTransactions.length}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Completed Sales</div>
+            <div class="summary-value" style="color: #388E3C;">${formatCurrency(totalSales)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>${baseStyles}</style>
+      </head>
+      <body>
+        ${headerHtml}
+        ${contentHtml}
+        ${footerHtml}
+      </body>
+      </html>
+    `;
   };
 
   // Pagination
@@ -446,7 +783,7 @@ export default function SalesReportScreen({ navigation }: Props) {
       {/* Summary Cards */}
       <Card style={styles.summaryCard}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>Sales Summary</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Sales Summary</Title>
           <View style={styles.summaryGrid}>
             <View style={[styles.summaryItem, { backgroundColor: '#E3F2FD' }]}>
               <Paragraph style={styles.summaryLabel}>Transactions</Paragraph>
@@ -515,7 +852,8 @@ export default function SalesReportScreen({ navigation }: Props) {
       {/* By Payment Method */}
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>By Payment Method</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>By Payment Method</Title>
+          <ScrollView horizontal showsHorizontalScrollIndicator>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 2 }}>Method</DataTable.Title>
@@ -560,13 +898,15 @@ export default function SalesReportScreen({ navigation }: Props) {
               </DataTable.Cell>
             </DataTable.Row>
           </DataTable>
+          </ScrollView>
         </Card.Content>
       </Card>
 
       {/* By Payment Status */}
       <Card style={styles.card}>
         <Card.Content>
-          <Title style={styles.sectionTitle}>By Payment Status</Title>
+          <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>By Payment Status</Title>
+          <ScrollView horizontal showsHorizontalScrollIndicator>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 2 }}>Status</DataTable.Title>
@@ -593,6 +933,7 @@ export default function SalesReportScreen({ navigation }: Props) {
               </DataTable.Row>
             ))}
           </DataTable>
+          </ScrollView>
         </Card.Content>
       </Card>
     </>
@@ -608,6 +949,7 @@ export default function SalesReportScreen({ navigation }: Props) {
         {salesByProduct.length === 0 ? (
           <Paragraph style={styles.emptyText}>No product sales found</Paragraph>
         ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 0.8 }}>Code</DataTable.Title>
@@ -650,6 +992,7 @@ export default function SalesReportScreen({ navigation }: Props) {
               </DataTable.Cell>
             </DataTable.Row>
           </DataTable>
+          </ScrollView>
         )}
 
         {salesByProduct.length > 50 && (
@@ -756,14 +1099,14 @@ export default function SalesReportScreen({ navigation }: Props) {
                     <Chip
                       compact
                       textStyle={{ fontSize: 10, color: '#fff' }}
-                      style={{ backgroundColor: getPaymentMethodColor(txn.payment_method), height: 22 }}
+                      style={{ backgroundColor: getPaymentMethodColor(txn.payment_method) }}
                     >
                       {getPaymentMethodLabel(txn.payment_method)}
                     </Chip>
                     <Chip
                       compact
                       textStyle={{ fontSize: 10, color: '#fff' }}
-                      style={{ backgroundColor: getStatusColor(txn.status), height: 22 }}
+                      style={{ backgroundColor: getStatusColor(txn.status) }}
                     >
                       {txn.status}
                     </Chip>
@@ -797,33 +1140,21 @@ export default function SalesReportScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Sales Report"
+        reportFileName={`SalesReport_${dateRange.startDate.toISOString().split('T')[0]}_to_${dateRange.endDate.toISOString().split('T')[0]}`}
+        emailBody={`Please find attached the Sales Report.\n\nPeriod: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}\nTransactions: ${salesSummary.transactionCount}\nGross Sales: ${formatCurrency(salesSummary.grossSales)}\nNet Sales: ${formatCurrency(salesSummary.netSales)}\n\n---\nGenerated by IgoroTech POS`}
+        disabled={loading || filteredTransactions.length === 0}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitles}>
-              <Title style={styles.pageTitle}>Sales Report</Title>
-              <Paragraph style={styles.pageSubtitle}>
-                Comprehensive sales analysis and transactions
-              </Paragraph>
-            </View>
-            <Button
-              mode="contained"
-              icon="printer"
-              onPress={() => setPrintDialogVisible(true)}
-              compact
-            >
-              Print
-            </Button>
-          </View>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -916,65 +1247,26 @@ export default function SalesReportScreen({ navigation }: Props) {
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
             Report generated on {new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}
           </Paragraph>
         </View>
       </ScrollView>
 
-      <PrintOptionsDialog
-        visible={printDialogVisible}
-        onDismiss={() => setPrintDialogVisible(false)}
-        title="Print Sales Report"
-        onPrint={buildPrintReport}
-      />
-    </SafeAreaView>
+          </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  headerTitles: {
-    flex: 1,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 12,
@@ -1097,7 +1389,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#F9F9F9',
     borderRadius: 8,
     padding: 12,
-    marginBottom: 8,
+    paddingBottom: 14,
+    marginBottom: 10,
     borderLeftWidth: 3,
     borderLeftColor: '#4CAF50',
   },
@@ -1133,6 +1426,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 4,
   },
   txnCustomer: {
     fontSize: 12,

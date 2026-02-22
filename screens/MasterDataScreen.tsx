@@ -1,9 +1,9 @@
 import React from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
 import { Card, Title, Paragraph, useTheme } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'MasterData'>;
@@ -11,6 +11,7 @@ type Props = {
 
 export default function MasterDataScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   const menuItems = [
     { title: 'Products', subtitle: 'Manage product catalog', screen: 'Products', color: '#6200EE' },
@@ -24,23 +25,23 @@ export default function MasterDataScreen({ navigation }: Props) {
   ];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Title style={styles.pageTitle}>Master Data Management</Title>
-        <Paragraph style={styles.pageSubtitle}>Select a category to manage</Paragraph>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}>
+        <Title style={[styles.pageTitle, { fontSize: fs.h2 }]}>Master Data Management</Title>
+        <Paragraph style={[styles.pageSubtitle, { fontSize: fs.bodySmall }]}>Select a category to manage</Paragraph>
 
         <View style={styles.grid}>
           {menuItems.map((item, index) => (
             <Card
               key={index}
-              style={styles.card}
+              style={[styles.card, { marginBottom: sp.md }]}
               onPress={() => navigation.navigate(item.screen as any)}
             >
-              <Card.Content style={styles.cardContent}>
-                <Title style={[styles.cardTitle, { color: item.color }]}>
+              <Card.Content style={[styles.cardContent, { padding: sp.md }]}>
+                <Title style={[styles.cardTitle, { color: item.color, fontSize: fs.cardTitle }]}>
                   {item.title}
                 </Title>
-                <Paragraph style={styles.cardSubtitle}>
+                <Paragraph style={[styles.cardSubtitle, { fontSize: fs.bodySmall }]}>
                   {item.subtitle}
                 </Paragraph>
               </Card.Content>
@@ -48,7 +49,7 @@ export default function MasterDataScreen({ navigation }: Props) {
           ))}
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -58,6 +59,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    flexGrow: 1,
   },
   pageTitle: {
     fontSize: 24,

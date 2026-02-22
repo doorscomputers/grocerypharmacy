@@ -20,12 +20,13 @@ import {
   Searchbar,
   ActivityIndicator,
 } from 'react-native-paper';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Brand } from '../database/schema';
 import { StableTextInput } from '../components/StableTextInput';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type BrandsScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Brands'>;
 
@@ -50,6 +51,7 @@ export default function BrandsScreen({ navigation }: Props) {
   const [showInactive, setShowInactive] = useState(false);
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const { sp, fs, lo } = useResponsiveTheme();
 
   // Check for unsaved changes
   const hasUnsavedChanges = useCallback(() => {
@@ -238,11 +240,11 @@ export default function BrandsScreen({ navigation }: Props) {
       <Card.Content>
         <View style={styles.cardHeader}>
           <View style={styles.cardInfo}>
-            <Title style={[styles.cardTitle, !item.is_active && styles.inactiveText]}>
+            <Title style={[styles.cardTitle, { fontSize: fs.h3 }, !item.is_active && styles.inactiveText]}>
               {item.name}
             </Title>
             {item.description && (
-              <Paragraph style={styles.description}>{item.description}</Paragraph>
+              <Paragraph style={[styles.description, { fontSize: fs.body }]}>{item.description}</Paragraph>
             )}
             <View style={styles.chipContainer}>
               <Chip
@@ -280,8 +282,8 @@ export default function BrandsScreen({ navigation }: Props) {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.content}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.content, { paddingHorizontal: lo.screenPadding }]}>
         <View style={styles.header}>
           <Searchbar
             placeholder="Search brands..."
@@ -402,7 +404,7 @@ export default function BrandsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </SafeAreaView>
+    </View>
   );
 }
 

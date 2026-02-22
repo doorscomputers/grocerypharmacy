@@ -14,7 +14,7 @@ import {
   IconButton,
   Menu,
 } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
@@ -26,7 +26,10 @@ import {
   generateEJournalPdf,
   shareEJournalPdf,
   emailEJournalPdf,
+  buildEJournalHtml,
 } from '../utils/ReceiptPdfService';
+import { toLocalDateString, formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'EJournalReport'>;
@@ -62,9 +65,6 @@ const ENTRY_TYPE_LABELS: Record<string, string> = {
   RETURN: 'Sales Return',
   PURCHASE_RETURN: 'Purchase Return',
   PAYMENT: 'Payment',
-  Z_READING: 'Z-Reading',
-  X_READING: 'X-Reading',
-  SYSTEM: 'System',
 };
 
 const ENTRY_TYPE_COLORS: Record<string, string> = {
@@ -74,13 +74,11 @@ const ENTRY_TYPE_COLORS: Record<string, string> = {
   RETURN: '#FF5722',
   PURCHASE_RETURN: '#E91E63',
   PAYMENT: '#2196F3',
-  Z_READING: '#9C27B0',
-  X_READING: '#673AB7',
-  SYSTEM: '#607D8B',
 };
 
 export default function EJournalReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [entries, setEntries] = useState<EJournalEntry[]>([]);
   const [summary, setSummary] = useState<EJournalSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,8 +133,8 @@ export default function EJournalReportScreen({ navigation }: Props) {
       setLoading(true);
       const dbService = getDatabase();
 
-      const startDateStr = dateRange.startDate.toISOString().split('T')[0];
-      const endDateStr = dateRange.endDate.toISOString().split('T')[0];
+      const startDateStr = toLocalDateString(dateRange.startDate);
+      const endDateStr = toLocalDateString(dateRange.endDate);
 
       // Load entries
       const result = await dbService.getEJournalEntries({
@@ -152,7 +150,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
       setSummary(summaryData);
     } catch (error) {
       console.error('Error loading eJournal data:', error);
-      Alert.alert('Error', 'Failed to load eJournal data');
+      Alert.alert('Error', 'Failed to load eSales Journal data');
     } finally {
       setLoading(false);
     }
@@ -203,8 +201,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
     if (companySettings.tin) output += center(`TIN: ${companySettings.tin}`) + '\n';
     if (companySettings.minNumber) output += center(`MIN: ${companySettings.minNumber}`) + '\n';
     output += line('=') + '\n';
-    output += center('ELECTRONIC JOURNAL') + '\n';
-    output += center('(BIR AUDIT TRAIL)') + '\n';
+    output += center('eSALES JOURNAL') + '\n';
     output += line('=') + '\n';
     output += `Date Range: ${startDateStr} - ${endDateStr}\n`;
     output += `Generated: ${new Date().toLocaleString('en-PH')}\n`;
@@ -258,8 +255,6 @@ export default function EJournalReportScreen({ navigation }: Props) {
   const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
     const builder = new ESCPOSBuilder(printerWidth);
     const now = new Date();
-    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
-    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
 
     // Header
     builder
@@ -276,15 +271,14 @@ export default function EJournalReportScreen({ navigation }: Props) {
       .doubleSeparator()
       .bold(true)
       .doubleSize()
-      .println('E-JOURNAL')
+      .println('eSALES JOURNAL')
       .normalSize()
-      .println('(BIR AUDIT TRAIL)')
       .bold(false)
       .doubleSeparator()
       .align('left')
-      .leftRight('Period:', `${startDateStr}`)
-      .leftRight('To:', `${endDateStr}`)
-      .leftRight('Generated:', now.toLocaleString('en-PH', { timeZone: 'Asia/Manila' }))
+      .leftRight('Period:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
+      .leftRight('Generated:', formatPrinterDateTime(now))
       .separator();
 
     // Summary Section
@@ -365,8 +359,8 @@ export default function EJournalReportScreen({ navigation }: Props) {
   const handleExportPdf = async () => {
     try {
       setExporting(true);
-      const startDateStr = dateRange.startDate.toISOString().split('T')[0];
-      const endDateStr = dateRange.endDate.toISOString().split('T')[0];
+      const startDateStr = toLocalDateString(dateRange.startDate);
+      const endDateStr = toLocalDateString(dateRange.endDate);
 
       await shareEJournalPdf({
         companyName: companySettings.name,
@@ -380,7 +374,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
       });
     } catch (error) {
       console.error('Export error:', error);
-      Alert.alert('Export Error', 'Failed to export eJournal PDF');
+      Alert.alert('Export Error', 'Failed to export eSales Journal PDF');
     } finally {
       setExporting(false);
     }
@@ -389,8 +383,8 @@ export default function EJournalReportScreen({ navigation }: Props) {
   const handleEmail = async () => {
     try {
       setExporting(true);
-      const startDateStr = dateRange.startDate.toISOString().split('T')[0];
-      const endDateStr = dateRange.endDate.toISOString().split('T')[0];
+      const startDateStr = toLocalDateString(dateRange.startDate);
+      const endDateStr = toLocalDateString(dateRange.endDate);
 
       await emailEJournalPdf({
         companyName: companySettings.name,
@@ -404,7 +398,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
       });
     } catch (error) {
       console.error('Email error:', error);
-      Alert.alert('Email Error', 'Failed to send eJournal via email');
+      Alert.alert('Email Error', 'Failed to send eSales Journal via email');
     } finally {
       setExporting(false);
     }
@@ -451,11 +445,11 @@ export default function EJournalReportScreen({ navigation }: Props) {
     return (
       <Card style={styles.summaryCard}>
         <Card.Content>
-          <Title style={styles.summaryTitle}>Summary</Title>
+          <Title style={[styles.summaryTitle, { fontSize: fs.h3 }]}>Summary</Title>
           <View style={styles.summaryGrid}>
             <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>Total Entries</Text>
-              <Text style={styles.summaryValue}>{summary.totalEntries}</Text>
+              <Text style={[styles.summaryLabel, { fontSize: fs.bodySmall }]}>Total Entries</Text>
+              <Text style={[styles.summaryValue, { fontSize: fs.h3 }]}>{summary.totalEntries}</Text>
             </View>
             <View style={styles.summaryItem}>
               <Text style={styles.summaryLabel}>Sales</Text>
@@ -493,11 +487,10 @@ export default function EJournalReportScreen({ navigation }: Props) {
     { value: 'VOID', label: 'Voids' },
     { value: 'RETURN', label: 'Returns' },
     { value: 'PAYMENT', label: 'Payments' },
-    { value: 'SYSTEM', label: 'System' },
   ];
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <View style={styles.container}>
       {/* Header with Actions */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
@@ -506,7 +499,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
             size={24}
             onPress={() => navigation.goBack()}
           />
-          <Title style={styles.headerTitle}>eJournal Report</Title>
+          <Title style={[styles.headerTitle, { fontSize: fs.h2 }]}>eSales Journal</Title>
         </View>
         <View style={styles.headerActions}>
           <Menu
@@ -620,7 +613,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Loading eJournal...</Text>
+          <Text style={styles.loadingText}>Loading eSales Journal...</Text>
         </View>
       ) : (
         <FlatList
@@ -633,17 +626,31 @@ export default function EJournalReportScreen({ navigation }: Props) {
               <Text style={styles.emptyText}>No entries found for the selected date range</Text>
             </View>
           }
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { padding: lo.screenPadding }]}
         />
       )}
 
       <PrintOptionsDialog
         visible={printDialogVisible}
         onDismiss={() => setPrintDialogVisible(false)}
-        title="Print eJournal Report"
+        title="Print eSales Journal"
         onPrint={buildPrintReport}
+        onBuildPdfHtml={() => {
+          const startDateStr = toLocalDateString(dateRange.startDate);
+          const endDateStr = toLocalDateString(dateRange.endDate);
+          return buildEJournalHtml({
+            companyName: companySettings.name,
+            companyAddress: companySettings.address,
+            companyTin: companySettings.tin,
+            minNumber: companySettings.minNumber,
+            startDate: startDateStr,
+            endDate: endDateStr,
+            entries,
+            summary: summary!,
+          });
+        }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -683,10 +690,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterChip: {
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#BDBDBD',
   },
   filterChipSelected: {
     backgroundColor: '#1976D2',
+    borderColor: '#1976D2',
   },
   filterChipTextSelected: {
     color: '#FFFFFF',

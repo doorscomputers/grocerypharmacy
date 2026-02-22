@@ -9,6 +9,7 @@ import {
   Pressable,
 } from 'react-native';
 import { IconButton } from 'react-native-paper';
+import { useResponsiveTheme } from '../../utils/responsive';
 
 export interface POSMenuAction {
   id: string;
@@ -23,11 +24,11 @@ interface POSHamburgerMenuProps {
   visible: boolean;
   onClose: () => void;
   onReprint: () => void;
+  onReprintHistory: () => void;
   onXReading: () => void;
   onZReading: () => void;
   onCashFund: () => void;
   onPettyCash: () => void;
-  onCashCount: () => void;
   onRefund: () => void;
   onExchange: () => void;
   onVoid: () => void;
@@ -39,17 +40,18 @@ export default function POSHamburgerMenu({
   visible,
   onClose,
   onReprint,
+  onReprintHistory,
   onXReading,
   onZReading,
   onCashFund,
   onPettyCash,
-  onCashCount,
   onRefund,
   onExchange,
   onVoid,
   onQuickAddCustomer,
   hasLastTransaction = false,
 }: POSHamburgerMenuProps) {
+  const { sp, fs, lo } = useResponsiveTheme();
   const menuSections = [
     {
       title: 'Receipt',
@@ -60,6 +62,13 @@ export default function POSHamburgerMenu({
           icon: '🖨️',
           onPress: onReprint,
           disabled: !hasLastTransaction,
+        },
+        {
+          id: 'reprint-history',
+          label: 'Reprint Receipt',
+          icon: '📄',
+          onPress: onReprintHistory,
+          disabled: false,
         },
       ],
     },
@@ -85,13 +94,6 @@ export default function POSHamburgerMenu({
     {
       title: 'Cash Management',
       items: [
-        {
-          id: 'cash-count',
-          label: 'Cash Count',
-          icon: '🧮',
-          onPress: onCashCount,
-          disabled: false,
-        },
         {
           id: 'cash-fund',
           label: 'Add Cash Fund',
@@ -169,7 +171,7 @@ export default function POSHamburgerMenu({
         <Pressable style={styles.menuContainer} onPress={(e) => e.stopPropagation()}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>☰ POS Menu</Text>
+            <Text style={[styles.headerTitle, { fontSize: fs.h3 }]}>☰ POS Menu</Text>
             <IconButton icon="close" size={24} onPress={onClose} />
           </View>
 
@@ -186,7 +188,7 @@ export default function POSHamburgerMenu({
                     activeOpacity={0.7}
                   >
                     <Text style={styles.menuItemIcon}>{item.icon}</Text>
-                    <Text style={styles.menuItemLabel}>
+                    <Text style={[styles.menuItemLabel, { fontSize: fs.body }]}>
                       {item.label}
                     </Text>
                   </TouchableOpacity>

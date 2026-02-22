@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Button, useTheme } from 'react-native-paper';
 import POSCartItem from './POSCartItem';
+import { useResponsiveTheme } from '../../utils/responsive';
 import { CartItem, CartTotals, DiscountState } from '../../hooks/usePOSCart';
 
 // Enable LayoutAnimation on Android
@@ -55,6 +56,7 @@ function POSCartPanel({
   loading = false,
 }: POSCartPanelProps) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [isExpanded, setIsExpanded] = useState(true);
   const [showDiscounts, setShowDiscounts] = useState(false);
 
@@ -80,11 +82,11 @@ function POSCartPanel({
       >
         <View style={styles.headerLeft}>
           <Text style={styles.headerIcon}>{isExpanded ? '▼' : '▲'}</Text>
-          <Text style={styles.headerTitle}>
+          <Text style={[styles.headerTitle, { fontSize: fs.body }]}>
             Cart ({totals.itemCount || 0} {(totals.itemCount || 0) === 1 ? 'item' : 'items'})
           </Text>
         </View>
-        <Text style={styles.headerTotal}>₱{formatCurrency(totals.total || 0)}</Text>
+        <Text style={[styles.headerTotal, { fontSize: fs.h3 }]}>₱{formatCurrency(totals.total || 0)}</Text>
       </TouchableOpacity>
 
       {/* Expandable Content */}
@@ -245,8 +247,8 @@ function POSCartPanel({
                   </>
                 ) : null}
                 <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
-                  <Text style={styles.grandTotalLabel}>Grand Total</Text>
-                  <Text style={styles.grandTotalValue}>₱{formatCurrency(totals.total || 0)}</Text>
+                  <Text style={[styles.grandTotalLabel, { fontSize: fs.h3 }]}>Grand Total</Text>
+                  <Text style={[styles.grandTotalValue, { fontSize: fs.h2 }]}>₱{formatCurrency(totals.total || 0)}</Text>
                 </View>
               </View>
             </>
@@ -261,7 +263,7 @@ function POSCartPanel({
               loading={loading}
               style={styles.checkoutButton}
               contentStyle={styles.checkoutButtonContent}
-              labelStyle={styles.checkoutButtonLabel}
+              labelStyle={[styles.checkoutButtonLabel, { fontSize: fs.button }]}
             >
               {isEmpty ? 'Add Items to Cart' : `Checkout - ₱${formatCurrency(totals.total || 0)}`}
             </Button>
@@ -469,7 +471,7 @@ const styles = StyleSheet.create({
   checkoutSection: {
     paddingHorizontal: 12,
     paddingTop: 8,
-    paddingBottom: 4,
+    paddingBottom: 48,
   },
   checkoutButton: {
     borderRadius: 12,

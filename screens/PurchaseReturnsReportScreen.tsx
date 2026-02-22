@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView } from 'react-native';
 import {
   Card,
   Title,
@@ -12,6 +12,10 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange } from '../components/DateRangeFilter';
+import ReportActionsBar from '../components/ReportActionsBar';
+import { ESCPOSBuilder } from '../utils/escpos';
+import { formatPrinterDate, formatPrinterDateTime } from '../utils/dateTime';
+import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'PurchaseReturnsReport'>;
@@ -35,6 +39,7 @@ interface PurchaseReturn {
 
 export default function PurchaseReturnsReportScreen({ navigation }: Props) {
   const theme = useTheme();
+  const { sp, fs, lo } = useResponsiveTheme();
   const [returns, setReturns] = useState<PurchaseReturn[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,10 +49,24 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
   });
   const [selectedSettlementMethod, setSelectedSettlementMethod] = useState<string | null>(null);
   const [selectedSupplier, setSelectedSupplier] = useState<number | null>(null);
+  const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
 
   useEffect(() => {
     loadData();
+    loadCompanySettings();
   }, []);
+
+  const loadCompanySettings = async () => {
+    try {
+      const dbService = getDatabase();
+      const name = await dbService.getSetting('company_name') || 'IgoroTech POS';
+      const address = await dbService.getSetting('company_address') || '';
+      const tin = await dbService.getSetting('company_tin') || '';
+      setCompanySettings({ name, address, tin });
+    } catch (error) {
+      console.error('Error loading company settings:', error);
+    }
+  };
 
   const handleDateChange = useCallback((startDate: Date | null, endDate: Date | null) => {
     if (startDate && endDate) {
@@ -135,21 +154,257 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
     return `₱${(amount || 0).toFixed(2)}`;
   };
 
+  const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
+    const builder = new ESCPOSBuilder(printerWidth);
+
+    builder
+      .align('center')
+      .bold(true)
+      .doubleSize()
+      .println('PURCHASE RETURNS')
+      .println('REPORT')
+      .normalSize()
+      .bold(false)
+      .feed()
+      .doubleSeparator()
+      .align('left');
+
+    // Date range
+    builder
+      .leftRight('From:', formatPrinterDate(dateRange.startDate))
+      .leftRight('To:', formatPrinterDate(dateRange.endDate))
+      .separator();
+
+    // Summary
+    builder
+      .bold(true)
+      .println('SUMMARY')
+      .bold(false)
+      .leftRight('Total Returns:', totals.count.toString())
+      .leftRight('Total Value:', formatCurrency(totals.totalAmount))
+      .leftRight('Cash Refunds:', formatCurrency(totals.cashSettlements))
+      .leftRight('Credit (AP):', formatCurrency(totals.creditSettlements))
+      .leftRight('Replacements:', formatCurrency(totals.replacementSettlements))
+      .doubleSeparator();
+
+    // By method
+    builder
+      .bold(true)
+      .println('BY SETTLEMENT METHOD')
+      .bold(false)
+      .separator();
+
+    const cashCount = filteredReturns.filter(r => r.settlement_method === 'CASH').length;
+    const creditCount = filteredReturns.filter(r => r.settlement_method === 'CREDIT').length;
+    const replacementCount = filteredReturns.filter(r => r.settlement_method === 'REPLACEMENT').length;
+
+    builder
+      .leftRight(`Cash (${cashCount})`, formatCurrency(totals.cashSettlements))
+      .leftRight(`Credit AP (${creditCount})`, formatCurrency(totals.creditSettlements))
+      .leftRight(`Replacement (${replacementCount})`, formatCurrency(totals.replacementSettlements))
+      .separator();
+
+    // Returns list
+    if (filteredReturns.length > 0) {
+      builder
+        .bold(true)
+        .println('RETURNS DETAILS')
+        .bold(false)
+        .separator();
+
+      filteredReturns.slice(0, 20).forEach(ret => {
+        builder
+          .println(ret.return_number)
+          .leftRight('  Supplier:', (ret.supplier_name || '').substring(0, 15))
+          .leftRight('  Date:', formatDate(ret.return_date))
+          .leftRight('  Amount:', formatCurrency(ret.total_amount));
+      });
+
+      if (filteredReturns.length > 20) {
+        builder.println(`... and ${filteredReturns.length - 20} more`);
+      }
+    }
+
+    builder
+      .feed()
+      .separator()
+      .align('center')
+      .println('Report Generated:')
+      .println(formatPrinterDateTime(new Date()))
+      .feed(2)
+      .cut();
+
+    return builder;
+  };
+
+  const buildPdfHtml = (): string => {
+    const startDateStr = dateRange.startDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+    const endDateStr = dateRange.endDate.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
+
+    // Group by supplier
+    const supplierTotals = suppliers.map(supplier => {
+      const supplierReturns = filteredReturns.filter(r => r.supplier_id === supplier.id);
+      return {
+        name: supplier.name,
+        count: supplierReturns.length,
+        total: supplierReturns.reduce((sum, r) => sum + (r.total_amount || 0), 0),
+      };
+    }).filter(s => s.count > 0);
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
+          .header { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+          .company-name { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+          .header-text { font-size: 11px; color: #666; }
+          .report-title { font-size: 20px; font-weight: bold; text-align: center; margin: 16px 0; color: #795548; }
+          .date-range { text-align: center; font-size: 12px; color: #666; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 4px; }
+          .section-title { font-size: 14px; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 16px 0 12px 0; }
+          .summary-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+          .summary-item { flex: 1; min-width: 120px; background: #f5f5f5; border-radius: 8px; padding: 12px; text-align: center; }
+          .summary-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+          .summary-value { font-size: 18px; font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+          th { background-color: #f5f5f5; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+          td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+          .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="company-name">${companySettings.name || 'IgoroTech POS'}</div>
+          ${companySettings.address ? `<div class="header-text">${companySettings.address}</div>` : ''}
+          ${companySettings.tin ? `<div class="header-text">TIN: ${companySettings.tin}</div>` : ''}
+        </div>
+
+        <div class="report-title">PURCHASE RETURNS REPORT</div>
+        <div class="date-range">Period: ${startDateStr} to ${endDateStr}</div>
+
+        <div class="section-title">Summary</div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Total Returns</div>
+            <div class="summary-value" style="color: #795548;">${totals.count}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Total Value</div>
+            <div class="summary-value" style="color: #795548;">${formatCurrency(totals.totalAmount)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Cash Refunds</div>
+            <div class="summary-value" style="color: #4CAF50;">${formatCurrency(totals.cashSettlements)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">AP Reduction</div>
+            <div class="summary-value" style="color: #2196F3;">${formatCurrency(totals.creditSettlements)}</div>
+          </div>
+        </div>
+
+        <div class="section-title">By Settlement Method</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Count</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cash Refund</td>
+              <td>${filteredReturns.filter(r => r.settlement_method === 'CASH').length}</td>
+              <td style="color: #4CAF50;">${formatCurrency(totals.cashSettlements)}</td>
+            </tr>
+            <tr>
+              <td>Credit (AP Reduction)</td>
+              <td>${filteredReturns.filter(r => r.settlement_method === 'CREDIT').length}</td>
+              <td style="color: #2196F3;">${formatCurrency(totals.creditSettlements)}</td>
+            </tr>
+            <tr>
+              <td>Replacement</td>
+              <td>${filteredReturns.filter(r => r.settlement_method === 'REPLACEMENT').length}</td>
+              <td style="color: #FF9800;">${formatCurrency(totals.replacementSettlements)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        ${supplierTotals.length > 0 ? `
+          <div class="section-title">By Supplier</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Supplier</th>
+                <th>Returns</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${supplierTotals.map(s => `
+                <tr>
+                  <td>${s.name}</td>
+                  <td>${s.count}</td>
+                  <td>${formatCurrency(s.total)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+
+        ${filteredReturns.length > 0 ? `
+          <div class="section-title">Returns Details (${filteredReturns.length})</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Return #</th>
+                <th>Supplier</th>
+                <th>Date</th>
+                <th>Amount</th>
+                <th>Method</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredReturns.map(ret => `
+                <tr>
+                  <td>${ret.return_number}</td>
+                  <td>${ret.supplier_name || '-'}</td>
+                  <td>${formatDate(ret.return_date)}</td>
+                  <td>${formatCurrency(ret.total_amount)}</td>
+                  <td>${ret.settlement_method}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<p style="text-align: center; color: #999;">No purchase returns found</p>'}
+
+        <div class="footer">
+          <p>Generated: ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</p>
+          <p>IgoroTech POS - Purchase Returns Report</p>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ReportActionsBar
+        onBuildPrintData={buildPrintReport}
+        onBuildPdfHtml={buildPdfHtml}
+        reportTitle="Purchase Returns Report"
+        reportFileName={`PurchaseReturns_${dateRange.startDate.toISOString().split('T')[0]}_to_${dateRange.endDate.toISOString().split('T')[0]}`}
+        emailBody={`Please find attached the Purchase Returns Report.\n\nPeriod: ${dateRange.startDate.toLocaleDateString('en-PH')} to ${dateRange.endDate.toLocaleDateString('en-PH')}\nTotal Returns: ${totals.count}\nTotal Value: ${formatCurrency(totals.totalAmount)}\n\n---\nGenerated by IgoroTech POS`}
+        disabled={loading}
+      />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: lo.screenPadding }]}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled={true}
       >
-        <View style={styles.header}>
-          <Title style={styles.pageTitle}>Purchase Returns Report</Title>
-          <Paragraph style={styles.pageSubtitle}>
-            Returns to suppliers
-          </Paragraph>
-        </View>
-
         {/* Date Filter */}
         <Card style={styles.filterCard}>
           <Card.Content>
@@ -163,7 +418,7 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
         {/* Other Filters */}
         <Card style={styles.filterCard}>
           <Card.Content>
-            <Paragraph style={styles.filterLabel}>Settlement Method:</Paragraph>
+            <Paragraph style={[styles.filterLabel, { fontSize: fs.bodySmall }]}>Settlement Method:</Paragraph>
             <View style={styles.chipContainer}>
               <Chip
                 selected={selectedSettlementMethod === null}
@@ -223,10 +478,10 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
         {/* Summary */}
         <Card style={styles.summaryCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>Summary</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>Summary</Title>
             <View style={styles.summaryGrid}>
               <View style={styles.summaryItem}>
-                <Paragraph style={styles.summaryLabel}>Total Returns</Paragraph>
+                <Paragraph style={[styles.summaryLabel, { fontSize: fs.bodySmall }]}>Total Returns</Paragraph>
                 <Title style={[styles.summaryValue, { color: '#795548' }]}>{totals.count}</Title>
               </View>
               <View style={styles.summaryItem}>
@@ -248,7 +503,7 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
         {/* By Settlement Method */}
         <Card style={styles.tableCard}>
           <Card.Content>
-            <Title style={styles.sectionTitle}>By Settlement Method</Title>
+            <Title style={[styles.sectionTitle, { fontSize: fs.h3 }]}>By Settlement Method</Title>
             <DataTable>
               <DataTable.Header>
                 <DataTable.Title style={{ flex: 2 }}>Method</DataTable.Title>
@@ -373,7 +628,7 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
         </Card>
 
         <View style={styles.footer}>
-          <Paragraph style={styles.footerText}>
+          <Paragraph style={[styles.footerText, { fontSize: fs.caption }]}>
             Report generated on {new Date().toLocaleString('en-PH')}
           </Paragraph>
         </View>
@@ -385,38 +640,13 @@ export default function PurchaseReturnsReportScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100vh',
-        maxHeight: '100vh',
-        overflow: 'hidden',
-      },
-    }),
   },
   scrollView: {
     flex: 1,
-    ...Platform.select({
-      web: {
-        height: '100%',
-        overflowY: 'auto',
-      },
-    }),
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    flexGrow: 1,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
   },
   filterCard: {
     marginBottom: 16,

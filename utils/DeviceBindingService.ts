@@ -24,6 +24,14 @@ export interface ValidationResult {
   deviceBinding?: DeviceBinding;
 }
 
+export interface TrialStatus {
+  isTrialActive: boolean;
+  isTrialExpired: boolean;
+  isFullLicense: boolean;
+  daysRemaining: number;
+  licenseType: 'trial' | 'full' | 'none';
+}
+
 /**
  * DeviceBindingService - Singleton service for device licensing
  */
@@ -142,28 +150,32 @@ class DeviceBindingServiceClass {
       // Get device info
       const deviceInfo = await getDeviceInfo();
 
-      // Check if device is already activated
+      // Check if device already has a binding (trial or full)
       const existingBinding = await this.getDeviceBinding(deviceInfo.deviceId);
+      const normalizedKey = licenseKey.replace(/[-\s]/g, '').toUpperCase();
+
       if (existingBinding) {
-        // Update last verified timestamp
+        // Upgrade existing binding to full license
         await this.db.runAsync(
-          'UPDATE device_binding SET last_verified_at = CURRENT_TIMESTAMP WHERE device_id = ?',
-          [deviceInfo.deviceId]
+          `UPDATE device_binding
+           SET license_key = ?, license_type = 'full', activated_at = CURRENT_TIMESTAMP, last_verified_at = CURRENT_TIMESTAMP
+           WHERE device_id = ?`,
+          [normalizedKey, deviceInfo.deviceId]
         );
 
+        const updatedBinding = await this.getDeviceBinding(deviceInfo.deviceId);
         return {
           success: true,
-          message: 'Device already activated',
-          deviceBinding: existingBinding,
+          message: 'Device upgraded to full license!',
+          deviceBinding: updatedBinding || undefined,
         };
       }
 
-      // Create new device binding
-      const normalizedKey = licenseKey.replace(/[-\s]/g, '').toUpperCase();
+      // Create new device binding with full license
       await this.db.runAsync(
         `INSERT INTO device_binding
-         (device_id, license_key, device_name, device_brand, device_model, os_name, os_version, app_version, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         (device_id, license_key, device_name, device_brand, device_model, os_name, os_version, app_version, is_active, license_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'full')`,
         [
           deviceInfo.deviceId,
           normalizedKey,
@@ -195,6 +207,8 @@ class DeviceBindingServiceClass {
 
   /**
    * Verify device on app startup
+   * Returns valid if: full license OR trial is still active
+   * Returns invalid if: no binding OR trial expired OR deactivated
    */
   async verifyDevice(): Promise<ValidationResult> {
     if (Platform.OS === 'web') {
@@ -215,10 +229,19 @@ class DeviceBindingServiceClass {
       const deviceId = await getDeviceFingerprint();
       const binding = await this.getDeviceBinding(deviceId);
 
+      // No binding - start trial automatically
       if (!binding) {
+        const trialResult = await this.startTrial();
+        if (trialResult.success) {
+          return {
+            isValid: true,
+            message: 'Trial started! You have 30 days to try the app.',
+            deviceBinding: trialResult.deviceBinding,
+          };
+        }
         return {
           isValid: false,
-          message: 'Device not activated. Please enter your license key.',
+          message: 'Failed to start trial. Please contact support.',
         };
       }
 
@@ -229,7 +252,32 @@ class DeviceBindingServiceClass {
         };
       }
 
-      // Update last verified timestamp
+      // Check trial status
+      const trialStatus = await this.getTrialStatus();
+
+      // Full license - always valid
+      if (trialStatus.isFullLicense) {
+        await this.db.runAsync(
+          'UPDATE device_binding SET last_verified_at = CURRENT_TIMESTAMP WHERE device_id = ?',
+          [deviceId]
+        );
+        return {
+          isValid: true,
+          message: 'Device verified successfully',
+          deviceBinding: binding,
+        };
+      }
+
+      // Trial expired - require license
+      if (trialStatus.isTrialExpired) {
+        return {
+          isValid: false,
+          message: 'Your 30-day trial has expired. Please enter a license key to continue.',
+          deviceBinding: binding,
+        };
+      }
+
+      // Trial still active
       await this.db.runAsync(
         'UPDATE device_binding SET last_verified_at = CURRENT_TIMESTAMP WHERE device_id = ?',
         [deviceId]
@@ -237,7 +285,7 @@ class DeviceBindingServiceClass {
 
       return {
         isValid: true,
-        message: 'Device verified successfully',
+        message: `Trial active - ${trialStatus.daysRemaining} days remaining`,
         deviceBinding: binding,
       };
     } catch (error) {
@@ -277,6 +325,225 @@ class DeviceBindingServiceClass {
       return 'WEB-PLATFORM';
     }
     return await getDeviceFingerprint();
+  }
+
+  // ===== TRIAL VERSION METHODS =====
+
+  /**
+   * Start a trial for the current device (auto-starts on first launch)
+   */
+  async startTrial(): Promise<ActivationResult> {
+    if (Platform.OS === 'web') {
+      return {
+        success: true,
+        message: 'Web platform - trial not required',
+      };
+    }
+
+    if (!this.db) {
+      return {
+        success: false,
+        message: 'Database not initialized',
+      };
+    }
+
+    try {
+      const deviceInfo = await getDeviceInfo();
+
+      // Check if device already has a binding
+      const existingBinding = await this.getDeviceBinding(deviceInfo.deviceId);
+      if (existingBinding) {
+        return {
+          success: true,
+          message: existingBinding.license_type === 'full' ? 'Device already licensed' : 'Trial already active',
+          deviceBinding: existingBinding,
+        };
+      }
+
+      // Create new trial binding
+      await this.db.runAsync(
+        `INSERT INTO device_binding
+         (device_id, license_key, device_name, device_brand, device_model, os_name, os_version, app_version, is_active, license_type, trial_start_date, trial_days)
+         VALUES (?, '', ?, ?, ?, ?, ?, ?, 1, 'trial', CURRENT_TIMESTAMP, 30)`,
+        [
+          deviceInfo.deviceId,
+          deviceInfo.deviceName,
+          deviceInfo.brand,
+          deviceInfo.modelName,
+          deviceInfo.osName,
+          deviceInfo.osVersion,
+          deviceInfo.appVersion,
+        ]
+      );
+
+      const newBinding = await this.getDeviceBinding(deviceInfo.deviceId);
+
+      return {
+        success: true,
+        message: 'Trial started! You have 30 days to try the app.',
+        deviceBinding: newBinding || undefined,
+      };
+    } catch (error) {
+      console.error('Error starting trial:', error);
+      return {
+        success: false,
+        message: `Failed to start trial: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
+
+  /**
+   * Get trial status for the current device
+   */
+  async getTrialStatus(): Promise<TrialStatus> {
+    if (Platform.OS === 'web') {
+      return {
+        isTrialActive: false,
+        isTrialExpired: false,
+        isFullLicense: true,
+        daysRemaining: 0,
+        licenseType: 'full',
+      };
+    }
+
+    try {
+      const deviceId = await getDeviceFingerprint();
+      const binding = await this.getDeviceBinding(deviceId);
+
+      if (!binding) {
+        return {
+          isTrialActive: false,
+          isTrialExpired: false,
+          isFullLicense: false,
+          daysRemaining: 0,
+          licenseType: 'none',
+        };
+      }
+
+      // Full license - no trial concerns
+      if (binding.license_type === 'full') {
+        return {
+          isTrialActive: false,
+          isTrialExpired: false,
+          isFullLicense: true,
+          daysRemaining: 0,
+          licenseType: 'full',
+        };
+      }
+
+      // Calculate trial days remaining
+      const trialStartDate = new Date(binding.trial_start_date || binding.created_at);
+      const trialDays = binding.trial_days || 30;
+      const now = new Date();
+      const diffTime = now.getTime() - trialStartDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      const daysRemaining = Math.max(0, trialDays - diffDays);
+      const isExpired = daysRemaining <= 0;
+
+      return {
+        isTrialActive: !isExpired,
+        isTrialExpired: isExpired,
+        isFullLicense: false,
+        daysRemaining,
+        licenseType: 'trial',
+      };
+    } catch (error) {
+      console.error('Error getting trial status:', error);
+      return {
+        isTrialActive: false,
+        isTrialExpired: true,
+        isFullLicense: false,
+        daysRemaining: 0,
+        licenseType: 'none',
+      };
+    }
+  }
+
+  /**
+   * Get days remaining in trial
+   */
+  async getTrialDaysRemaining(): Promise<number> {
+    const status = await this.getTrialStatus();
+    return status.daysRemaining;
+  }
+
+  /**
+   * Check if trial is still active
+   */
+  async isTrialActive(): Promise<boolean> {
+    const status = await this.getTrialStatus();
+    return status.isTrialActive;
+  }
+
+  /**
+   * Check if trial has expired
+   */
+  async isTrialExpired(): Promise<boolean> {
+    const status = await this.getTrialStatus();
+    return status.isTrialExpired;
+  }
+
+  /**
+   * Check if device has a full license
+   */
+  async isFullLicense(): Promise<boolean> {
+    const status = await this.getTrialStatus();
+    return status.isFullLicense;
+  }
+
+  /**
+   * Upgrade from trial to full license
+   */
+  async upgradeToPremium(licenseKey: string): Promise<ActivationResult> {
+    if (Platform.OS === 'web') {
+      return {
+        success: true,
+        message: 'Web platform - upgrade not required',
+      };
+    }
+
+    if (!this.db) {
+      return {
+        success: false,
+        message: 'Database not initialized',
+      };
+    }
+
+    try {
+      // Validate the license key
+      const isValid = await this.validateLicenseKey(licenseKey);
+      if (!isValid) {
+        return {
+          success: false,
+          message: 'Invalid license key. Please check and try again.',
+        };
+      }
+
+      const deviceId = await getDeviceFingerprint();
+      const normalizedKey = licenseKey.replace(/[-\s]/g, '').toUpperCase();
+
+      // Update existing trial to full license
+      await this.db.runAsync(
+        `UPDATE device_binding
+         SET license_key = ?, license_type = 'full', activated_at = CURRENT_TIMESTAMP, last_verified_at = CURRENT_TIMESTAMP
+         WHERE device_id = ?`,
+        [normalizedKey, deviceId]
+      );
+
+      const updatedBinding = await this.getDeviceBinding(deviceId);
+
+      return {
+        success: true,
+        message: 'Congratulations! Your app is now fully licensed.',
+        deviceBinding: updatedBinding || undefined,
+      };
+    } catch (error) {
+      console.error('Error upgrading to premium:', error);
+      return {
+        success: false,
+        message: `Upgrade failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
   }
 
   /**
