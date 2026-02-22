@@ -37,9 +37,11 @@ interface DateRange {
   label: string;
 }
 
+const toLocalDateStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 const getDateRange = (preset: string): DateRange => {
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = toLocalDateStr(now);
 
   switch (preset) {
     case 'today':
@@ -47,33 +49,33 @@ const getDateRange = (preset: string): DateRange => {
     case 'yesterday': {
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
-      const yDate = yesterday.toISOString().split('T')[0];
+      const yDate = toLocalDateStr(yesterday);
       return { startDate: yDate, endDate: yDate, label: 'Yesterday' };
     }
     case 'this_week': {
       const startOfWeek = new Date(now);
       startOfWeek.setDate(now.getDate() - now.getDay());
-      return { startDate: startOfWeek.toISOString().split('T')[0], endDate: today, label: 'This Week' };
+      return { startDate: toLocalDateStr(startOfWeek), endDate: today, label: 'This Week' };
     }
     case 'last_week': {
       const lastWeekEnd = new Date(now);
       lastWeekEnd.setDate(now.getDate() - now.getDay() - 1);
       const lastWeekStart = new Date(lastWeekEnd);
       lastWeekStart.setDate(lastWeekEnd.getDate() - 6);
-      return { startDate: lastWeekStart.toISOString().split('T')[0], endDate: lastWeekEnd.toISOString().split('T')[0], label: 'Last Week' };
+      return { startDate: toLocalDateStr(lastWeekStart), endDate: toLocalDateStr(lastWeekEnd), label: 'Last Week' };
     }
     case 'this_month': {
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { startDate: startOfMonth.toISOString().split('T')[0], endDate: today, label: 'This Month' };
+      return { startDate: toLocalDateStr(startOfMonth), endDate: today, label: 'This Month' };
     }
     case 'last_month': {
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
       const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      return { startDate: lastMonthStart.toISOString().split('T')[0], endDate: lastMonthEnd.toISOString().split('T')[0], label: 'Last Month' };
+      return { startDate: toLocalDateStr(lastMonthStart), endDate: toLocalDateStr(lastMonthEnd), label: 'Last Month' };
     }
     case 'this_year': {
       const startOfYear = new Date(now.getFullYear(), 0, 1);
-      return { startDate: startOfYear.toISOString().split('T')[0], endDate: today, label: 'This Year' };
+      return { startDate: toLocalDateStr(startOfYear), endDate: today, label: 'This Year' };
     }
     case 'all_time':
     default:

@@ -1356,9 +1356,6 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
             />
           </View>
 
-          {/* Date Range Filter */}
-          <DateRangeFilter onDateChange={handleDateChange} />
-
           {/* Tab Selector */}
           <SegmentedButtons
             value={activeTab}
@@ -1372,6 +1369,11 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
             ]}
             style={styles.segmentedButtons}
           />
+
+          {/* Date Range Filter - hidden for SOA (unpaid invoices aren't date-filtered) */}
+          <View style={activeTab === 'soa' ? { display: 'none' } : undefined}>
+            <DateRangeFilter onDateChange={handleDateChange} />
+          </View>
 
           {/* Report Actions */}
           <ReportActionsBar

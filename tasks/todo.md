@@ -1,19 +1,28 @@
-# Fix Exchange Screen - Process Exchange Button Cut Off
+# Fix Date Filter on Customer Account Statement
 
-## TODO
-- [x] Step 1: Import `useSafeAreaInsets` and apply bottom inset padding to footer in ExchangeScreen
-- [x] Step 2: Apply same fix to RefundScreen which has the identical layout pattern
+## Task 1: Fix UTC timezone bug in date filtering
+- [x] `CustomerAccountStatementScreen.tsx` — `loadDateRangeData()` SQL filter params
+- [x] `ReportsScreen.tsx` — `generateInventoryHistoryReport()` SQL filter params
+- [x] `TopCustomersReportScreen.tsx` — date filter SQL string building
+- [x] `SupplierAccountStatementScreen.tsx` — `getDateRange()` helper used for all date presets
+
+## Task 2: Move DateRangeFilter below tabs, hidden for SOA
+- [x] Remove DateRangeFilter from above tabs (old position)
+- [x] Place it below the tab selector, hidden for SOA tab via `display: 'none'`
+- [x] SOA tab shows all unpaid invoices (no date filtering) — filter is hidden
+- [x] Purchases, Payments, Returns, Summary tabs — filter is visible and filters data
+- [x] Using `display: 'none'` instead of conditional render to keep the component mounted (preserves selected preset state across tab switches)
 
 ## Review
 
-### Root Cause
-Both screens use `SafeAreaView` from React Native core, which on **Android does NOT handle bottom safe area** (system navigation bar / gesture bar). The footer with action buttons sits behind the Android nav bar, making buttons half-visible and untappable. This is especially bad in landscape mode where vertical space is already limited.
+### Task 1: UTC Bug
+Replaced `toISOString().split('T')[0]` (UTC) with local-time formatting using `getFullYear()/getMonth()/getDate()` in 4 files. This produces correct YYYY-MM-DD strings in Philippine local time.
+
+### Task 2: Date Filter Placement
+Moved the DateRangeFilter from above all tabs to below the tab selector. It's now hidden when on the SOA tab (which shows all unpaid invoices regardless of date) and visible for Purchases/Payments/Returns/Summary tabs. The component stays mounted via `display: 'none'` to preserve the user's selected date preset when switching between tabs.
 
 ### Files Modified
-- **`screens/ExchangeScreen.tsx`** — Added `useSafeAreaInsets` + applied `paddingBottom: Math.max(insets.bottom, 16)` to footer
-- **`screens/RefundScreen.tsx`** — Same fix (identical layout pattern had same bug)
-
-### Changes Made
-1. Imported `useSafeAreaInsets` from `react-native-safe-area-context` (already in project dependencies)
-2. Added `const insets = useSafeAreaInsets()` hook call
-3. Applied `paddingBottom: Math.max(insets.bottom, 16)` as inline style on the footer View — this ensures the footer clears the system navigation bar while keeping a minimum 16px padding on devices without bottom insets
+- **`screens/CustomerAccountStatementScreen.tsx`** — Moved DateRangeFilter below tabs, hidden for SOA
+- **`screens/ReportsScreen.tsx`** — UTC date fix
+- **`screens/TopCustomersReportScreen.tsx`** — UTC date fix
+- **`screens/SupplierAccountStatementScreen.tsx`** — UTC date fix

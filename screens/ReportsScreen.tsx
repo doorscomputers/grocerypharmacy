@@ -313,8 +313,10 @@ export default function ReportsScreen({ navigation }: Props) {
   const generateInventoryHistoryReport = async () => {
     setLoading(true);
     try {
-      const startDateStr = selectedDateRange.startDate.toISOString().split('T')[0];
-      const endDateStr = selectedDateRange.endDate.toISOString().split('T')[0];
+      const sd = selectedDateRange.startDate;
+      const ed = selectedDateRange.endDate;
+      const startDateStr = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, '0')}-${String(sd.getDate()).padStart(2, '0')}`;
+      const endDateStr = `${ed.getFullYear()}-${String(ed.getMonth() + 1).padStart(2, '0')}-${String(ed.getDate()).padStart(2, '0')}`;
       await loadInventoryHistory(startDateStr, endDateStr);
       setReportType('inventory');
       setCurrentReport({

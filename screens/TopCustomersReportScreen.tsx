@@ -82,15 +82,16 @@ export default function TopCustomersReportScreen({ navigation }: Props) {
       // Calculate date filter
       let dateFilter = '';
       const now = new Date();
+      const toLocalDateStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       if (dateRange === 'week') {
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        dateFilter = `AND t.transaction_date >= '${weekAgo.toISOString().split('T')[0]}'`;
+        dateFilter = `AND t.transaction_date >= '${toLocalDateStr(weekAgo)}'`;
       } else if (dateRange === 'month') {
         const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
-        dateFilter = `AND t.transaction_date >= '${monthAgo.toISOString().split('T')[0]}'`;
+        dateFilter = `AND t.transaction_date >= '${toLocalDateStr(monthAgo)}'`;
       } else if (dateRange === 'year') {
         const yearStart = new Date(now.getFullYear(), 0, 1);
-        dateFilter = `AND t.transaction_date >= '${yearStart.toISOString().split('T')[0]}'`;
+        dateFilter = `AND t.transaction_date >= '${toLocalDateStr(yearStart)}'`;
       }
 
       const query = `
