@@ -8,6 +8,7 @@ import {
   DataTable,
   Chip,
   ActivityIndicator,
+  Button,
   IconButton,
   Modal,
   Portal,
@@ -657,7 +658,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 1.2 }}>Date</DataTable.Title>
         <DataTable.Title numeric style={{ flex: 1 }}>Amount</DataTable.Title>
         <DataTable.Title style={{ flex: 1.5 }}>Reason</DataTable.Title>
-        <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
+        <DataTable.Title style={{ flex: 0.8 }}></DataTable.Title>
       </DataTable.Header>
 
       {filteredVoids.map((item) => (
@@ -668,8 +669,8 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
             <Paragraph style={{ color: '#D32F2F', fontWeight: '600' }}>{formatCurrency(item.total_amount)}</Paragraph>
           </DataTable.Cell>
           <DataTable.Cell style={{ flex: 1.5 }}>{(item.void_reason || '-').substring(0, 15)}</DataTable.Cell>
-          <DataTable.Cell style={{ flex: 0.5 }}>
-            <IconButton icon="eye" size={18} onPress={() => handleViewDetails(item, 'VOID')} />
+          <DataTable.Cell style={{ flex: 0.8 }}>
+            <Button mode="text" compact icon="eye" onPress={() => handleViewDetails(item, 'VOID')} labelStyle={styles.detailsBtnLabel}>Details</Button>
           </DataTable.Cell>
         </DataTable.Row>
       ))}
@@ -683,7 +684,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 1.2 }}>Date</DataTable.Title>
         <DataTable.Title numeric style={{ flex: 1 }}>Amount</DataTable.Title>
         <DataTable.Title style={{ flex: 1 }}>Method</DataTable.Title>
-        <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
+        <DataTable.Title style={{ flex: 0.8 }}></DataTable.Title>
       </DataTable.Header>
 
       {filteredRefunds.map((item) => (
@@ -698,8 +699,8 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
               {getRefundMethodLabel(item.refund_method)}
             </Chip>
           </DataTable.Cell>
-          <DataTable.Cell style={{ flex: 0.5 }}>
-            <IconButton icon="eye" size={18} onPress={() => handleViewDetails(item, 'REFUND')} />
+          <DataTable.Cell style={{ flex: 0.8 }}>
+            <Button mode="text" compact icon="eye" onPress={() => handleViewDetails(item, 'REFUND')} labelStyle={styles.detailsBtnLabel}>Details</Button>
           </DataTable.Cell>
         </DataTable.Row>
       ))}
@@ -713,7 +714,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 1.2 }}>Date</DataTable.Title>
         <DataTable.Title numeric style={{ flex: 1 }}>Value</DataTable.Title>
         <DataTable.Title numeric style={{ flex: 0.8 }}>Items</DataTable.Title>
-        <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
+        <DataTable.Title style={{ flex: 0.8 }}></DataTable.Title>
       </DataTable.Header>
 
       {filteredExchanges.map((item) => (
@@ -724,8 +725,8 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
             <Paragraph style={{ color: '#2196F3', fontWeight: '600' }}>{formatCurrency(item.total_amount)}</Paragraph>
           </DataTable.Cell>
           <DataTable.Cell numeric style={{ flex: 0.8 }}>{item.item_count}</DataTable.Cell>
-          <DataTable.Cell style={{ flex: 0.5 }}>
-            <IconButton icon="eye" size={18} onPress={() => handleViewDetails(item, 'EXCHANGE')} />
+          <DataTable.Cell style={{ flex: 0.8 }}>
+            <Button mode="text" compact icon="eye" onPress={() => handleViewDetails(item, 'EXCHANGE')} labelStyle={styles.detailsBtnLabel}>Details</Button>
           </DataTable.Cell>
         </DataTable.Row>
       ))}
@@ -1049,6 +1050,10 @@ const styles = StyleSheet.create({
   searchInput: {
     marginBottom: 16,
     backgroundColor: '#fff',
+  },
+  detailsBtnLabel: {
+    fontSize: 11,
+    marginHorizontal: 2,
   },
   summaryRow: {
     flexDirection: 'row',
