@@ -2170,12 +2170,13 @@ export class DatabaseService {
 
       await db.withTransactionAsync(async () => {
         // Create purchase order
+        const phDateTime = getPhilippineDateTimeString();
         const purchaseResult = await db.runAsync(
           `INSERT INTO purchases (
             purchase_number, supplier_id, purchase_date, expected_delivery_date,
             reference_number, subtotal, tax_amount, discount_amount, total_amount,
-            balance_amount, payment_terms, notes, created_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            balance_amount, payment_terms, notes, created_by, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             purchaseNumber,
             purchaseData.supplier_id,
@@ -2189,7 +2190,8 @@ export class DatabaseService {
             total, // Initial balance equals total
             purchaseData.payment_terms || '30 days',
             purchaseData.notes || null,
-            purchaseData.created_by
+            purchaseData.created_by,
+            phDateTime
           ]
         );
 
@@ -2531,15 +2533,15 @@ export class DatabaseService {
 
         const newStatus = (pendingItems?.count || 0) > 0 ? 'PARTIALLY_RECEIVED' : 'RECEIVED';
 
-        // Update purchase status
+        // Update purchase status with Philippine time
+        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
-          'UPDATE purchases SET status = ?, received_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-          [newStatus, receivedBy, purchaseId]
+          'UPDATE purchases SET status = ?, received_by = ?, updated_at = ? WHERE id = ?',
+          [newStatus, receivedBy, phDateTime, purchaseId]
         );
 
         // Add eJournal entry with Philippine time
         if (purchase) {
-          const phDateTime = getPhilippineDateTimeString();
           await db.runAsync(
             `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
              VALUES (?, ?, ?, ?, ?, ?)`,
@@ -2604,16 +2606,17 @@ export class DatabaseService {
         paymentId = paymentResult.lastInsertRowId as number;
 
         // Update accounts payable if payment is for a specific purchase
+        const phDateTimePayment = getPhilippineDateTimeString();
         if (paymentData.purchase_id) {
           await db.runAsync(
-            'UPDATE accounts_payable SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = ?',
-            [paymentData.amount, paymentData.amount, paymentData.purchase_id]
+            'UPDATE accounts_payable SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?, updated_at = ? WHERE purchase_id = ?',
+            [paymentData.amount, paymentData.amount, phDateTimePayment, paymentData.purchase_id]
           );
 
           // Update purchase paid amount
           await db.runAsync(
-            'UPDATE purchases SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [paymentData.amount, paymentData.amount, paymentData.purchase_id]
+            'UPDATE purchases SET paid_amount = paid_amount + ?, balance_amount = balance_amount - ?, updated_at = ? WHERE id = ?',
+            [paymentData.amount, paymentData.amount, phDateTimePayment, paymentData.purchase_id]
           );
 
           // Check if fully paid
@@ -3321,15 +3324,18 @@ export class DatabaseService {
 
     try {
       const sessionId = await getNextDamageSessionId(db);
+      const phDateTime = getPhilippineDateTimeString();
 
       const result = await db.runAsync(
-        `INSERT INTO damaged_items_sessions (session_id, session_name, notes, started_by)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO damaged_items_sessions (session_id, session_name, notes, started_by, started_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         [
           sessionId,
           sessionData.session_name,
           sessionData.notes || null,
-          sessionData.started_by
+          sessionData.started_by,
+          phDateTime,
+          phDateTime
         ]
       );
 
@@ -3445,12 +3451,13 @@ export class DatabaseService {
 
       await db.withTransactionAsync(async () => {
         // Insert damage detail
+        const phDateTime = getPhilippineDateTimeString();
         const damageResult = await db.runAsync(
           `INSERT INTO damaged_items_details (
             session_id, product_id, product_code, product_name, current_stock,
             damaged_quantity, unit_cost, total_value, damage_reason,
-            damage_description, recorded_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            damage_description, recorded_by, recorded_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             damageData.session_id,
             damageData.product_id,
@@ -3462,7 +3469,9 @@ export class DatabaseService {
             totalValue,
             damageData.damage_reason,
             damageData.damage_description || null,
-            damageData.recorded_by
+            damageData.recorded_by,
+            phDateTime,
+            phDateTime
           ]
         );
 
@@ -3534,11 +3543,12 @@ export class DatabaseService {
     const db = this.getDatabase();
 
     try {
+      const phDateTime = getPhilippineDateTimeString();
       await db.runAsync(
         `UPDATE damaged_items_sessions
-         SET status = 'COMPLETED', completed_by = ?, completed_at = CURRENT_TIMESTAMP
+         SET status = 'COMPLETED', completed_by = ?, completed_at = ?
          WHERE session_id = ?`,
-        [completedBy, sessionId]
+        [completedBy, phDateTime, sessionId]
       );
 
       // Add eJournal entry with Philippine time
@@ -6228,8 +6238,8 @@ export class DatabaseService {
       `INSERT INTO sales_returns (
         return_number, original_transaction_id, original_invoice_number,
         customer_id, customer_name, return_date, total_amount, refund_method,
-        reason, notes, processed_by, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
+        reason, notes, processed_by, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
       [
         returnNumber,
         returnData.original_transaction_id || null,
@@ -6241,7 +6251,8 @@ export class DatabaseService {
         returnData.refund_method,
         returnData.items.map(i => i.reason).join('; '),
         returnData.notes || null,
-        returnData.created_by
+        returnData.created_by,
+        phDateTime
       ]
     );
 
@@ -6396,22 +6407,25 @@ export class DatabaseService {
       (sum, item) => sum + (item.quantity * item.unit_cost), 0
     );
 
-    // Create return record
+    // Create return record with Philippine date/time
+    const phDateTime = getPhilippineDateTimeString();
     const result = await db.runAsync(
       `INSERT INTO purchase_returns (
         return_number, original_purchase_id, supplier_id, supplier_name,
-        return_date, total_amount, refund_method, reason, notes, processed_by, status
-      ) VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'COMPLETED')`,
+        return_date, total_amount, refund_method, reason, notes, processed_by, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
       [
         returnNumber,
         returnData.original_purchase_id || null,
         returnData.supplier_id,
         returnData.supplier_name,
+        phDateTime,
         totalAmount,
         returnData.refund_method,
         returnData.items.map(i => i.reason).join('; '),
         returnData.notes || null,
-        returnData.created_by
+        returnData.created_by,
+        phDateTime
       ]
     );
 
@@ -6449,9 +6463,9 @@ export class DatabaseService {
          SET paid_amount = paid_amount + ?,
              balance_amount = CASE WHEN balance_amount - ? < 0 THEN 0 ELSE balance_amount - ? END,
              status = CASE WHEN balance_amount - ? <= 0 THEN 'PAID' ELSE 'PARTIALLY_PAID' END,
-             updated_at = datetime('now')
+             updated_at = ?
          WHERE id = (SELECT id FROM accounts_payable WHERE supplier_id = ? AND balance_amount > 0 ORDER BY created_at ASC LIMIT 1)`,
-        [totalAmount, totalAmount, totalAmount, totalAmount, returnData.supplier_id]
+        [totalAmount, totalAmount, totalAmount, totalAmount, phDateTime, returnData.supplier_id]
       );
     }
 

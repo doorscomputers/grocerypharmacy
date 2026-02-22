@@ -31,6 +31,7 @@ import {
   POSPaymentModal,
   POSSearchDropdown,
   POSProductBrowser,
+  POSProductBrowserContent,
   POSDiscountModal,
   POSQuantityModal,
   POSHamburgerMenu,
@@ -45,7 +46,7 @@ import {
   POSReprintModal,
 } from '../components/pos';
 import POSSeniorDiscountModal from '../components/pos/POSSeniorDiscountModal';
-import { useResponsiveTheme } from '../utils/responsive';
+import { useResponsiveTheme, useLandscapeLayout } from '../utils/responsive';
 import { CartItem } from '../hooks/usePOSCart';
 import ReceiptPreview, { ReceiptData } from '../components/ReceiptPreview';
 import BluetoothPrinterService from '../utils/BluetoothPrinterService';
@@ -68,6 +69,7 @@ export default function SalesScreen({ navigation, route }: Props) {
   const { user } = useAuth();
   const theme = useTheme();
   const { sp, fs, lo, isPhone } = useResponsiveTheme();
+  const { canSplit, leftPanelWidth, rightPanelWidth } = useLandscapeLayout({ leftRatio: 0.55 });
   const printerService = BluetoothPrinterService.getInstance();
 
   // Responsive style overrides (scales with screen size)
@@ -692,183 +694,324 @@ export default function SalesScreen({ navigation, route }: Props) {
 
   return (
     <View style={[styles.container, { backgroundColor: '#F5F5F5' }]}>
-      {/* ===== SEARCH BAR SECTION ===== */}
-      <View style={[styles.searchSection, rs.searchSection]}>
-        {/* Price Type Selector */}
-        <View style={styles.priceTypeRow}>
-          <Text style={[styles.priceTypeLabel, rs.priceTypeLabel]}>Price Type:</Text>
-          <View style={styles.priceTypeButtons}>
-            <TouchableOpacity
-              style={[
-                styles.priceTypeButton,
-                rs.priceTypeButton,
-                priceType === 'retail' && styles.priceTypeButtonActive
-              ]}
-              onPress={() => setPriceType('retail')}
-            >
-              <Text style={[
-                styles.priceTypeButtonText,
-                rs.priceTypeButtonText,
-                priceType === 'retail' && styles.priceTypeButtonTextActive
-              ]}>Retail</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.priceTypeButton,
-                rs.priceTypeButton,
-                priceType === 'wholesale' && styles.priceTypeButtonActive
-              ]}
-              onPress={() => setPriceType('wholesale')}
-            >
-              <Text style={[
-                styles.priceTypeButtonText,
-                rs.priceTypeButtonText,
-                priceType === 'wholesale' && styles.priceTypeButtonTextActive
-              ]}>Wholesale</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-        <View style={styles.searchRow}>
-          {/* Search Input */}
-          <View style={styles.searchInputWrapper}>
-            <TextInput
-              ref={searchInputRef}
-              placeholder="Scan barcode or search..."
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              onSubmitEditing={handleSearchSubmit}
-              mode="outlined"
-              style={styles.searchInput}
-              dense
-              left={<TextInput.Icon icon="magnify" />}
-              right={searchQuery ? (
-                <TextInput.Icon
-                  icon="close"
-                  onPress={() => {
-                    setSearchQuery('');
-                    setShowSearchDropdown(false);
-                  }}
-                />
-              ) : null}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="search"
-            />
-
-            {/* Search Dropdown */}
-            <POSSearchDropdown
-              products={filteredProducts.slice(0, 10)}
-              visible={showSearchDropdown}
+      {canSplit ? (
+        /* ===== LANDSCAPE TWO-COLUMN LAYOUT ===== */
+        <View style={styles.landscapeRow}>
+          {/* LEFT PANEL: Product Browser */}
+          <View style={[styles.landscapeLeftPanel, { width: leftPanelWidth }]}>
+            <POSProductBrowserContent
+              products={products}
+              categories={categories}
               onSelect={handleSelectFromDropdown}
-              searchQuery={searchQuery}
+              getCartQuantity={getItemQuantity}
+              containerWidth={leftPanelWidth}
             />
           </View>
 
-          {/* Barcode Button */}
-          <TouchableOpacity
-            style={[styles.actionButton, rs.actionButton]}
-            onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleBarcodeScan })}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📷</Text>
-          </TouchableOpacity>
-
-          {/* Browse Products Button */}
-          <TouchableOpacity
-            style={[styles.actionButton, styles.browseButton, rs.actionButton]}
-            onPress={() => setBrowseVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📦</Text>
-          </TouchableOpacity>
-
-          {/* Hamburger Menu Button */}
-          <TouchableOpacity
-            style={[styles.actionButton, styles.menuButton, rs.actionButton]}
-            onPress={() => setHamburgerMenuVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>☰</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* ===== CART SECTION (80% of screen) ===== */}
-      <View style={styles.cartSection}>
-        <View style={[styles.cartHeader, rs.cartHeader]}>
-          <Text style={[styles.cartTitle, rs.cartTitle]}>🛒 Cart</Text>
-          <Text style={[styles.cartCount, rs.cartCount]}>
-            {cart.length} item{cart.length !== 1 ? 's' : ''}
-          </Text>
-          {cart.length > 0 && (
-            <TouchableOpacity onPress={clearCart} style={styles.clearButton}>
-              <Text style={[styles.clearButtonText, rs.clearButtonText]}>Clear All</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Cart Items List */}
-        <FlatList
-          ref={cartListRef}
-          data={cart}
-          keyExtractor={item => item.id.toString()}
-          renderItem={renderCartItem}
-          style={styles.cartList}
-          contentContainerStyle={[styles.cartListContent, rs.cartListContent]}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={[styles.emptyCart, rs.emptyCartPadding]}>
-              <Text style={[styles.emptyCartIcon, rs.emptyCartIcon]}>🛒</Text>
-              <Text style={[styles.emptyCartTitle, rs.emptyCartTitle]}>Cart is empty</Text>
-              <Text style={[styles.emptyCartSubtitle, rs.emptyCartSubtitle]}>
-                Scan a barcode or search for products
-              </Text>
+          {/* RIGHT PANEL: Search + Cart + Checkout */}
+          <View style={[styles.landscapeRightPanel, { width: rightPanelWidth }]}>
+            {/* Search Bar */}
+            <View style={[styles.searchSection, rs.searchSection]}>
+              <View style={styles.priceTypeRow}>
+                <Text style={[styles.priceTypeLabel, rs.priceTypeLabel]}>Price Type:</Text>
+                <View style={styles.priceTypeButtons}>
+                  <TouchableOpacity
+                    style={[styles.priceTypeButton, rs.priceTypeButton, priceType === 'retail' && styles.priceTypeButtonActive]}
+                    onPress={() => setPriceType('retail')}
+                  >
+                    <Text style={[styles.priceTypeButtonText, rs.priceTypeButtonText, priceType === 'retail' && styles.priceTypeButtonTextActive]}>Retail</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.priceTypeButton, rs.priceTypeButton, priceType === 'wholesale' && styles.priceTypeButtonActive]}
+                    onPress={() => setPriceType('wholesale')}
+                  >
+                    <Text style={[styles.priceTypeButtonText, rs.priceTypeButtonText, priceType === 'wholesale' && styles.priceTypeButtonTextActive]}>Wholesale</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={styles.searchRow}>
+                <View style={styles.searchInputWrapper}>
+                  <TextInput
+                    ref={searchInputRef}
+                    placeholder="Scan barcode or search..."
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    onSubmitEditing={handleSearchSubmit}
+                    mode="outlined"
+                    style={styles.searchInput}
+                    dense
+                    left={<TextInput.Icon icon="magnify" />}
+                    right={searchQuery ? (
+                      <TextInput.Icon icon="close" onPress={() => { setSearchQuery(''); setShowSearchDropdown(false); }} />
+                    ) : null}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                  <POSSearchDropdown
+                    products={filteredProducts.slice(0, 10)}
+                    visible={showSearchDropdown}
+                    onSelect={handleSelectFromDropdown}
+                    searchQuery={searchQuery}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[styles.actionButton, rs.actionButton]}
+                  onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleBarcodeScan })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📷</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.menuButton, rs.actionButton]}
+                  onPress={() => setHamburgerMenuVisible(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>☰</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          }
-        />
-      </View>
 
-      {/* ===== TOTALS & CHECKOUT SECTION ===== */}
-      <View style={[styles.checkoutSection, rs.checkoutSection]}>
-        {/* Totals */}
-        <View style={styles.totalsContainer}>
-          {(totals.discountAmount || 0) > 0 && (
-            <>
-              <View style={styles.totalRow}>
-                <Text style={[styles.totalLabel, rs.totalLabel]}>Sub-Total</Text>
-                <Text style={[styles.totalValue, rs.totalValue]}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-              </View>
-              <View style={styles.totalRow}>
-                <Text style={[styles.totalLabel, rs.totalLabel]}>Discount</Text>
-                <Text style={[styles.totalValue, rs.totalValue, { color: '#F44336' }]}>
-                  -₱{(totals.discountAmount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {/* Cart */}
+            <View style={styles.cartSection}>
+              <View style={[styles.cartHeader, rs.cartHeader]}>
+                <Text style={[styles.cartTitle, rs.cartTitle]}>🛒 Cart</Text>
+                <Text style={[styles.cartCount, rs.cartCount]}>
+                  {cart.length} item{cart.length !== 1 ? 's' : ''}
                 </Text>
+                {cart.length > 0 && (
+                  <TouchableOpacity onPress={clearCart} style={styles.clearButton}>
+                    <Text style={[styles.clearButtonText, rs.clearButtonText]}>Clear All</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-            </>
-          )}
-          <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
-            <Text style={[styles.grandTotalLabel, rs.grandTotalLabel]}>TOTAL</Text>
-            <Text style={[styles.grandTotalValue, rs.grandTotalValue]}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+              <FlatList
+                ref={cartListRef}
+                data={cart}
+                keyExtractor={item => item.id.toString()}
+                renderItem={renderCartItem}
+                style={styles.cartList}
+                contentContainerStyle={[styles.cartListContent, rs.cartListContent]}
+                showsVerticalScrollIndicator={false}
+                ListEmptyComponent={
+                  <View style={[styles.emptyCart, rs.emptyCartPadding]}>
+                    <Text style={[styles.emptyCartIcon, rs.emptyCartIcon]}>🛒</Text>
+                    <Text style={[styles.emptyCartTitle, rs.emptyCartTitle]}>Cart is empty</Text>
+                    <Text style={[styles.emptyCartSubtitle, rs.emptyCartSubtitle]}>
+                      Tap a product on the left to add
+                    </Text>
+                  </View>
+                }
+              />
+            </View>
+
+            {/* Totals + Checkout */}
+            <View style={[styles.checkoutSection, rs.checkoutSection]}>
+              <View style={styles.totalsContainer}>
+                {(totals.discountAmount || 0) > 0 && (
+                  <>
+                    <View style={styles.totalRow}>
+                      <Text style={[styles.totalLabel, rs.totalLabel]}>Sub-Total</Text>
+                      <Text style={[styles.totalValue, rs.totalValue]}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                    </View>
+                    <View style={styles.totalRow}>
+                      <Text style={[styles.totalLabel, rs.totalLabel]}>Discount</Text>
+                      <Text style={[styles.totalValue, rs.totalValue, { color: '#F44336' }]}>
+                        -₱{(totals.discountAmount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </Text>
+                    </View>
+                  </>
+                )}
+                <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
+                  <Text style={[styles.grandTotalLabel, rs.grandTotalLabel]}>TOTAL</Text>
+                  <Text style={[styles.grandTotalValue, rs.grandTotalValue]}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={[
+                  styles.checkoutButton,
+                  rs.checkoutButton,
+                  { marginTop: sp.xs },
+                  cart.length === 0 && styles.checkoutButtonDisabled,
+                ]}
+                onPress={handleCheckout}
+                disabled={cart.length === 0 || isProcessing}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.checkoutButtonText, rs.checkoutButtonText]}>
+                  💳 CHECKOUT ₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
+      ) : (
+        /* ===== PORTRAIT SINGLE-COLUMN LAYOUT (unchanged) ===== */
+        <>
+          {/* Search Bar */}
+          <View style={[styles.searchSection, rs.searchSection]}>
+            <View style={styles.priceTypeRow}>
+              <Text style={[styles.priceTypeLabel, rs.priceTypeLabel]}>Price Type:</Text>
+              <View style={styles.priceTypeButtons}>
+                <TouchableOpacity
+                  style={[
+                    styles.priceTypeButton,
+                    rs.priceTypeButton,
+                    priceType === 'retail' && styles.priceTypeButtonActive
+                  ]}
+                  onPress={() => setPriceType('retail')}
+                >
+                  <Text style={[
+                    styles.priceTypeButtonText,
+                    rs.priceTypeButtonText,
+                    priceType === 'retail' && styles.priceTypeButtonTextActive
+                  ]}>Retail</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.priceTypeButton,
+                    rs.priceTypeButton,
+                    priceType === 'wholesale' && styles.priceTypeButtonActive
+                  ]}
+                  onPress={() => setPriceType('wholesale')}
+                >
+                  <Text style={[
+                    styles.priceTypeButtonText,
+                    rs.priceTypeButtonText,
+                    priceType === 'wholesale' && styles.priceTypeButtonTextActive
+                  ]}>Wholesale</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.searchRow}>
+              <View style={styles.searchInputWrapper}>
+                <TextInput
+                  ref={searchInputRef}
+                  placeholder="Scan barcode or search..."
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  onSubmitEditing={handleSearchSubmit}
+                  mode="outlined"
+                  style={styles.searchInput}
+                  dense
+                  left={<TextInput.Icon icon="magnify" />}
+                  right={searchQuery ? (
+                    <TextInput.Icon
+                      icon="close"
+                      onPress={() => {
+                        setSearchQuery('');
+                        setShowSearchDropdown(false);
+                      }}
+                    />
+                  ) : null}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                />
+                <POSSearchDropdown
+                  products={filteredProducts.slice(0, 10)}
+                  visible={showSearchDropdown}
+                  onSelect={handleSelectFromDropdown}
+                  searchQuery={searchQuery}
+                />
+              </View>
+              <TouchableOpacity
+                style={[styles.actionButton, rs.actionButton]}
+                onPress={() => navigation.navigate('BarcodeScanner', { onScan: handleBarcodeScan })}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📷</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.browseButton, rs.actionButton]}
+                onPress={() => setBrowseVisible(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>📦</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.menuButton, rs.actionButton]}
+                onPress={() => setHamburgerMenuVisible(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.actionButtonIcon, rs.actionButtonIcon]}>☰</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
-        {/* Checkout Button */}
-        <TouchableOpacity
-          style={[
-            styles.checkoutButton,
-            rs.checkoutButton,
-            { marginTop: sp.xs },
-            cart.length === 0 && styles.checkoutButtonDisabled,
-          ]}
-          onPress={handleCheckout}
-          disabled={cart.length === 0 || isProcessing}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.checkoutButtonText, rs.checkoutButtonText]}>
-            💳 CHECKOUT ₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </Text>
-        </TouchableOpacity>
-      </View>
+          {/* Cart */}
+          <View style={styles.cartSection}>
+            <View style={[styles.cartHeader, rs.cartHeader]}>
+              <Text style={[styles.cartTitle, rs.cartTitle]}>🛒 Cart</Text>
+              <Text style={[styles.cartCount, rs.cartCount]}>
+                {cart.length} item{cart.length !== 1 ? 's' : ''}
+              </Text>
+              {cart.length > 0 && (
+                <TouchableOpacity onPress={clearCart} style={styles.clearButton}>
+                  <Text style={[styles.clearButtonText, rs.clearButtonText]}>Clear All</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <FlatList
+              ref={cartListRef}
+              data={cart}
+              keyExtractor={item => item.id.toString()}
+              renderItem={renderCartItem}
+              style={styles.cartList}
+              contentContainerStyle={[styles.cartListContent, rs.cartListContent]}
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <View style={[styles.emptyCart, rs.emptyCartPadding]}>
+                  <Text style={[styles.emptyCartIcon, rs.emptyCartIcon]}>🛒</Text>
+                  <Text style={[styles.emptyCartTitle, rs.emptyCartTitle]}>Cart is empty</Text>
+                  <Text style={[styles.emptyCartSubtitle, rs.emptyCartSubtitle]}>
+                    Scan a barcode or search for products
+                  </Text>
+                </View>
+              }
+            />
+          </View>
+
+          {/* Totals + Checkout */}
+          <View style={[styles.checkoutSection, rs.checkoutSection]}>
+            <View style={styles.totalsContainer}>
+              {(totals.discountAmount || 0) > 0 && (
+                <>
+                  <View style={styles.totalRow}>
+                    <Text style={[styles.totalLabel, rs.totalLabel]}>Sub-Total</Text>
+                    <Text style={[styles.totalValue, rs.totalValue]}>₱{(totals.grossTotal || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                  </View>
+                  <View style={styles.totalRow}>
+                    <Text style={[styles.totalLabel, rs.totalLabel]}>Discount</Text>
+                    <Text style={[styles.totalValue, rs.totalValue, { color: '#F44336' }]}>
+                      -₱{(totals.discountAmount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </Text>
+                  </View>
+                </>
+              )}
+              <View style={[styles.totalRow, (totals.discountAmount || 0) > 0 && styles.grandTotalRow]}>
+                <Text style={[styles.grandTotalLabel, rs.grandTotalLabel]}>TOTAL</Text>
+                <Text style={[styles.grandTotalValue, rs.grandTotalValue]}>₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.checkoutButton,
+                rs.checkoutButton,
+                { marginTop: sp.xs },
+                cart.length === 0 && styles.checkoutButtonDisabled,
+              ]}
+              onPress={handleCheckout}
+              disabled={cart.length === 0 || isProcessing}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.checkoutButtonText, rs.checkoutButtonText]}>
+                💳 CHECKOUT ₱{(totals.total || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
 
       {/* ===== MODALS ===== */}
 
@@ -1145,6 +1288,20 @@ export default function SalesScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+  },
+
+  // Landscape two-column
+  landscapeRow: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  landscapeLeftPanel: {
+    flex: 0,
+    borderRightWidth: 1,
+    borderRightColor: '#E0E0E0',
+  },
+  landscapeRightPanel: {
     flex: 1,
   },
 

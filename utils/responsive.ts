@@ -23,6 +23,8 @@ export const BREAKPOINTS = {
 export const useResponsive = () => {
   const { width, height } = useWindowDimensions();
 
+  const isLandscape = width > height;
+
   return {
     width,
     height,
@@ -32,7 +34,8 @@ export const useResponsive = () => {
     isLargeTablet: width >= BREAKPOINTS.largeTablet,
     isPhone: width < BREAKPOINTS.smallTablet,
     isTablet: width >= BREAKPOINTS.smallTablet,
-    orientation: (width > height ? 'landscape' : 'portrait') as 'landscape' | 'portrait',
+    isLandscape,
+    orientation: (isLandscape ? 'landscape' : 'portrait') as 'landscape' | 'portrait',
   };
 };
 
@@ -185,6 +188,30 @@ export const useResponsiveTheme = () => {
       cardGutter: scale(layout.cardGutter, sf),
     };
 
-    return { sp, fs, lo, width, height, isPhone, isTablet };
+    const isLandscape = width > height;
+
+    return { sp, fs, lo, width, height, isPhone, isTablet, isLandscape };
   }, [width, height]);
+};
+
+/**
+ * Hook for landscape split-panel layouts.
+ * Returns whether a two-column split is appropriate and the panel widths.
+ */
+export const useLandscapeLayout = (options?: {
+  leftRatio?: number;
+  minWidthForSplit?: number;
+}) => {
+  const { width, height } = useWindowDimensions();
+
+  return useMemo(() => {
+    const leftRatio = options?.leftRatio ?? 0.55;
+    const minWidth = options?.minWidthForSplit ?? 600;
+    const isLandscape = width > height;
+    const canSplit = isLandscape && width >= minWidth;
+    const leftPanelWidth = canSplit ? Math.round(width * leftRatio) : width;
+    const rightPanelWidth = canSplit ? width - leftPanelWidth : width;
+
+    return { isLandscape, canSplit, leftPanelWidth, rightPanelWidth, width, height };
+  }, [width, height, options?.leftRatio, options?.minWidthForSplit]);
 };

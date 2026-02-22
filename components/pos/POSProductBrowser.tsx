@@ -6,14 +6,130 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
   TextInput,
+  useWindowDimensions,
 } from 'react-native';
 import { IconButton, useTheme } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Product, Category } from '../../database/schema';
 import POSProductCard from './POSProductCard';
 import POSCategoryChips from './POSCategoryChips';
+
+export interface POSProductBrowserContentProps {
+  products: Product[];
+  categories: Category[];
+  onSelect: (product: Product) => void;
+  getCartQuantity: (productId: number) => number;
+  containerWidth?: number;
+}
+
+/**
+ * Inner content of the product browser — search, category chips, product grid.
+ * Can be used inline (landscape SalesScreen) or inside the modal wrapper.
+ */
+export const POSProductBrowserContent = memo(function POSProductBrowserContent({
+  products,
+  categories,
+  onSelect,
+  getCartQuantity,
+  containerWidth,
+}: POSProductBrowserContentProps) {
+  const theme = useTheme();
+  const { width: screenWidth } = useWindowDimensions();
+  const effectiveWidth = containerWidth || screenWidth;
+  const numColumns = effectiveWidth > 600 ? 3 : 2;
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
+
+  const filteredProducts = useMemo(() => {
+    let filtered = products;
+    if (selectedCategory !== null) {
+      filtered = filtered.filter(p => p.category_id === selectedCategory);
+    }
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(p => {
+        const name = (p.name || '').toLowerCase();
+        const code = (p.code || '').toLowerCase();
+        return name.includes(query) || code.includes(query);
+      });
+    }
+    return filtered;
+  }, [products, selectedCategory, searchQuery]);
+
+  const handleSelect = useCallback((product: Product) => {
+    onSelect(product);
+  }, [onSelect]);
+
+  const renderProduct = useCallback(({ item }: { item: Product }) => (
+    <POSProductCard
+      product={item}
+      cartQuantity={getCartQuantity(item.id)}
+      onPress={handleSelect}
+      numColumns={numColumns}
+      containerWidth={effectiveWidth}
+    />
+  ), [getCartQuantity, handleSelect, numColumns, effectiveWidth]);
+
+  return (
+    <View style={styles.contentContainer}>
+      {/* Search */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search products..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity
+            style={styles.clearSearch}
+            onPress={() => setSearchQuery('')}
+          >
+            <Text style={styles.clearSearchText}>x</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Category Chips */}
+      <POSCategoryChips
+        categories={categories}
+        selectedCategory={selectedCategory}
+        onSelectCategory={setSelectedCategory}
+      />
+
+      {/* Product Grid */}
+      <FlatList
+        data={filteredProducts}
+        keyExtractor={item => item.id.toString()}
+        renderItem={renderProduct}
+        numColumns={numColumns}
+        key={`grid-${numColumns}`}
+        contentContainerStyle={styles.productGrid}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text style={styles.emptyIcon}>📦</Text>
+            <Text style={styles.emptyTitle}>No products found</Text>
+            <Text style={styles.emptySubtitle}>
+              {searchQuery ? 'Try a different search term' : 'No products in this category'}
+            </Text>
+          </View>
+        }
+      />
+
+      {/* Tap to select hint */}
+      <View style={[styles.hint, { backgroundColor: theme.colors.primary }]}>
+        <Text style={styles.hintText}>Tap a product to add to cart</Text>
+      </View>
+    </View>
+  );
+});
+
+// -------- Modal Wrapper (original POSProductBrowser) --------
 
 interface POSProductBrowserProps {
   visible: boolean;
@@ -24,9 +140,6 @@ interface POSProductBrowserProps {
   getCartQuantity: (productId: number) => number;
 }
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const NUM_COLUMNS = SCREEN_WIDTH > 600 ? 3 : 2;
-
 function POSProductBrowser({
   visible,
   products,
@@ -35,51 +148,14 @@ function POSProductBrowser({
   onClose,
   getCartQuantity,
 }: POSProductBrowserProps) {
-  const theme = useTheme();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-
-  // Filter products
-  const filteredProducts = useMemo(() => {
-    let filtered = products;
-
-    // Filter by category
-    if (selectedCategory !== null) {
-      filtered = filtered.filter(p => p.category_id === selectedCategory);
-    }
-
-    // Filter by search
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase().trim();
-      filtered = filtered.filter(p => {
-        const name = (p.name || '').toLowerCase();
-        const code = (p.code || '').toLowerCase();
-        return name.includes(query) || code.includes(query);
-      });
-    }
-
-    return filtered;
-  }, [products, selectedCategory, searchQuery]);
-
   const handleSelect = useCallback((product: Product) => {
     onSelect(product);
     onClose();
   }, [onSelect, onClose]);
 
   const handleClose = useCallback(() => {
-    setSearchQuery('');
-    setSelectedCategory(null);
     onClose();
   }, [onClose]);
-
-  const renderProduct = useCallback(({ item }: { item: Product }) => (
-    <POSProductCard
-      product={item}
-      cartQuantity={getCartQuantity(item.id)}
-      onPress={handleSelect}
-      numColumns={NUM_COLUMNS}
-    />
-  ), [getCartQuantity, handleSelect]);
 
   return (
     <Modal
@@ -98,61 +174,14 @@ function POSProductBrowser({
             />
             <Text style={styles.headerTitle}>Browse Products</Text>
           </View>
-          <Text style={styles.productCount}>
-            {filteredProducts.length} products
-          </Text>
         </View>
 
-        {/* Search */}
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search products..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity
-              style={styles.clearSearch}
-              onPress={() => setSearchQuery('')}
-            >
-              <Text style={styles.clearSearchText}>×</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Category Chips */}
-        <POSCategoryChips
+        <POSProductBrowserContent
+          products={products}
           categories={categories}
-          selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
+          onSelect={handleSelect}
+          getCartQuantity={getCartQuantity}
         />
-
-        {/* Product Grid */}
-        <FlatList
-          data={filteredProducts}
-          keyExtractor={item => item.id.toString()}
-          renderItem={renderProduct}
-          numColumns={NUM_COLUMNS}
-          contentContainerStyle={styles.productGrid}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Text style={styles.emptyIcon}>📦</Text>
-              <Text style={styles.emptyTitle}>No products found</Text>
-              <Text style={styles.emptySubtitle}>
-                {searchQuery ? 'Try a different search term' : 'No products in this category'}
-              </Text>
-            </View>
-          }
-        />
-
-        {/* Tap to select hint */}
-        <View style={[styles.hint, { backgroundColor: theme.colors.primary }]}>
-          <Text style={styles.hintText}>Tap a product to add to cart</Text>
-        </View>
       </SafeAreaView>
     </Modal>
   );
@@ -160,6 +189,10 @@ function POSProductBrowser({
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+    backgroundColor: '#F5F5F5',
+  },
+  contentContainer: {
     flex: 1,
     backgroundColor: '#F5F5F5',
   },
@@ -180,10 +213,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: '#212121',
-  },
-  productCount: {
-    fontSize: 14,
-    color: '#616161',
   },
   searchContainer: {
     flexDirection: 'row',

@@ -89,6 +89,7 @@ import UpcomingPDCReportScreen from './screens/UpcomingPDCReportScreen';
 import XReadingHistoryScreen from './screens/XReadingHistoryScreen';
 import ZReadingHistoryScreen from './screens/ZReadingHistoryScreen';
 import CurrentStockLevelsScreen from './screens/CurrentStockLevelsScreen';
+import TabletSalesScreen from './screens/TabletSalesScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -153,6 +154,7 @@ export type RootStackParamList = {
   XReadingHistory: undefined;
   ZReadingHistory: undefined;
   CurrentStockLevels: { lowStock?: boolean } | undefined;
+  TabletSales: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -430,6 +432,11 @@ function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialSt
               name="Sales"
               component={SalesScreen}
               options={{ title: 'Sales Terminal' }}
+            />
+            <Stack.Screen
+              name="TabletSales"
+              component={TabletSalesScreen}
+              options={{ headerShown: false }}
             />
             <Stack.Screen
               name="Products"

@@ -1,17 +1,17 @@
 /**
- * QuickActionRow - Horizontal scrollable quick action buttons
+ * QuickActionRow - Responsive grid of quick action buttons
  *
- * Used for secondary actions like Purchase, Receivables, etc.
- * Scrollable to accommodate many options without cluttering the screen
+ * Uses flex-wrap to automatically adapt column count to any screen width.
+ * No breakpoint branching needed — React Native's flex handles it.
  */
 
 import React, { useMemo } from 'react';
-import { View, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
-import { spacing, typography, borderRadius, shadows, layout } from '../../utils/theme';
-import { useResponsive, responsiveValue, useResponsiveTheme } from '../../utils/responsive';
+import { spacing, typography, borderRadius, shadows } from '../../utils/theme';
+import { useResponsive, useResponsiveTheme } from '../../utils/responsive';
 
 export interface QuickAction {
   id: string;
@@ -25,8 +25,8 @@ export interface QuickAction {
 interface QuickActionRowProps {
   actions: QuickAction[];
   title?: string;
-  maxVisible?: number; // Limit visible items, show "More" button for the rest
-  onShowMore?: () => void; // Callback when "More" button is pressed
+  maxVisible?: number;
+  onShowMore?: () => void;
 }
 
 export const QuickActionRow: React.FC<QuickActionRowProps> = ({
@@ -37,25 +37,20 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
 }) => {
   const { colors } = useAppTheme();
   const { width } = useResponsive();
-  const { fs } = useResponsiveTheme();
+  const { fs, lo } = useResponsiveTheme();
 
-  // Calculate responsive action button size
-  const actionSize = useMemo(() => responsiveValue(width, {
-    smallPhone: 60,
-    largePhone: 64,
-    smallTablet: 68,
-    largeTablet: 72,
-    default: 72,
-  }), [width]);
+  // Auto-calculate columns and button width from screen width
+  // React Native flex-wrap handles the rest
+  const BUTTON_MIN_WIDTH = 76;
+  const gap = spacing.sm;
+  const parentPadding = lo.screenPadding * 2; // DashboardScreen wraps us in paddingHorizontal
+  const gridPadding = spacing.xs * 2;
+  const available = width - parentPadding - gridPadding;
+  const columns = Math.min(8, Math.max(3, Math.floor((available + gap) / (BUTTON_MIN_WIDTH + gap))));
+  const buttonWidth = Math.floor((available - (columns - 1) * gap) / columns);
 
-  // Calculate responsive icon container size
-  const iconSize = useMemo(() => responsiveValue(width, {
-    smallPhone: 44,
-    largePhone: 46,
-    smallTablet: 48,
-    largeTablet: 48,
-    default: 48,
-  }), [width]);
+  // Icon scales with button
+  const iconSize = Math.min(48, Math.max(36, buttonWidth * 0.55));
 
   // Limit visible actions if maxVisible is set
   const visibleActions = maxVisible ? actions.slice(0, maxVisible) : actions;
@@ -74,11 +69,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
           )}
         </View>
       )}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
+      <View style={styles.gridContent}>
         {visibleActions.map((action) => (
           <TouchableOpacity
             key={action.id}
@@ -87,7 +78,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             style={[
               styles.actionButton,
               shadows.card,
-              { backgroundColor: colors.surface, width: actionSize }
+              { backgroundColor: colors.surface, width: buttonWidth }
             ]}
           >
             <View style={[
@@ -119,7 +110,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             </Text>
           </TouchableOpacity>
         ))}
-        {/* More button at the end */}
+        {/* More button */}
         {hasMore && onShowMore && (
           <TouchableOpacity
             onPress={onShowMore}
@@ -127,7 +118,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             style={[
               styles.actionButton,
               styles.moreButton,
-              { backgroundColor: colors.primary + '10', width: actionSize }
+              { backgroundColor: colors.primary + '10', width: buttonWidth }
             ]}
           >
             <View style={[
@@ -152,7 +143,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             </Text>
           </TouchableOpacity>
         )}
-      </ScrollView>
+      </View>
     </View>
   );
 };
@@ -183,7 +174,9 @@ const styles = StyleSheet.create({
     fontSize: typography.bodySmall.fontSize,
     fontWeight: '500',
   },
-  scrollContent: {
+  gridContent: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     paddingHorizontal: spacing.xs,
     gap: spacing.sm,
   },
@@ -193,13 +186,11 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   actionButton: {
-    // Width now set dynamically via inline styles
     alignItems: 'center',
     padding: spacing.sm,
     borderRadius: borderRadius.md,
   },
   iconContainer: {
-    // Width and height now set dynamically via inline styles
     borderRadius: borderRadius.md,
     justifyContent: 'center',
     alignItems: 'center',

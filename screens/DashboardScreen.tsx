@@ -31,7 +31,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAppTheme } from '../contexts/ThemeContext';
 import { PermissionService } from '../utils/permissions';
 import { spacing, typography, borderRadius, shadows, layout } from '../utils/theme';
-import { useResponsive, responsiveValue, useResponsiveTheme } from '../utils/responsive';
+import { useResponsive, responsiveValue, useResponsiveTheme, useLandscapeLayout } from '../utils/responsive';
 import { toLocalDateString } from '../utils/dateTime';
 
 // Dashboard Components
@@ -130,6 +130,7 @@ const getPresetLabel = (preset: DatePreset): string => {
 export default function DashboardScreen({ navigation }: Props) {
   const { width } = useResponsive();
   const { sp, fs, lo } = useResponsiveTheme();
+  const { canSplit } = useLandscapeLayout();
   const [stats, setStats] = useState({
     sales: 0,
     transactions: 0,
@@ -466,30 +467,81 @@ export default function DashboardScreen({ navigation }: Props) {
           <MaterialCommunityIcons name="chevron-down" size={20} color={colors.textSecondary} />
         </TouchableOpacity>
 
-        {/* Hero Sales Card */}
-        <View style={[styles.section, { paddingHorizontal: lo.screenPadding }]}>
-          <HeroSalesCard
-            totalSales={stats.sales}
-            transactionCount={stats.transactions}
-            dateLabel={`${getPresetLabel(datePreset)}'s Sales`}
-          />
-        </View>
-
-        {/* Primary Action Buttons */}
-        <View style={[styles.primaryActions, { gap: sp.lg, paddingHorizontal: lo.screenPadding }]}>
-          <PrimaryActionButton
-            label="New Sale"
-            icon="cart-plus"
-            variant="success"
-            onPress={() => navigation.navigate('Sales')}
-          />
-          <PrimaryActionButton
-            label="Dashboard"
-            icon="view-dashboard"
-            variant="primary"
-            onPress={() => navigation.navigate('DashboardView')}
-          />
-        </View>
+        {canSplit ? (
+          /* Landscape: Hero + Primary Actions side-by-side */
+          <View style={[styles.landscapeDashRow, { paddingHorizontal: lo.screenPadding, gap: sp.md }]}>
+            <View style={{ flex: 1 }}>
+              <HeroSalesCard
+                totalSales={stats.sales}
+                transactionCount={stats.transactions}
+                dateLabel={`${getPresetLabel(datePreset)}'s Sales`}
+              />
+            </View>
+            <View style={[styles.primaryActions, { flex: 1, gap: sp.sm, paddingHorizontal: 0, marginBottom: 0 }]}>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="New Sale"
+                  icon="cart-plus"
+                  variant="success"
+                  onPress={() => navigation.navigate('Sales')}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="Tablet POS"
+                  icon="monitor"
+                  variant="warning"
+                  onPress={() => navigation.navigate('TabletSales')}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="Dashboard"
+                  icon="view-dashboard"
+                  variant="primary"
+                  onPress={() => navigation.navigate('DashboardView')}
+                />
+              </View>
+            </View>
+          </View>
+        ) : (
+          /* Portrait: stacked layout (unchanged) */
+          <>
+            <View style={[styles.section, { paddingHorizontal: lo.screenPadding }]}>
+              <HeroSalesCard
+                totalSales={stats.sales}
+                transactionCount={stats.transactions}
+                dateLabel={`${getPresetLabel(datePreset)}'s Sales`}
+              />
+            </View>
+            <View style={[styles.primaryActions, { gap: sp.lg, paddingHorizontal: lo.screenPadding }]}>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="New Sale"
+                  icon="cart-plus"
+                  variant="success"
+                  onPress={() => navigation.navigate('Sales')}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="Tablet POS"
+                  icon="monitor"
+                  variant="warning"
+                  onPress={() => navigation.navigate('TabletSales')}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PrimaryActionButton
+                  label="Dashboard"
+                  icon="view-dashboard"
+                  variant="primary"
+                  onPress={() => navigation.navigate('DashboardView')}
+                />
+              </View>
+            </View>
+          </>
+        )}
 
         {/* Metrics Row */}
         <View style={[styles.metricsRow, { gap: sp.sm, paddingHorizontal: lo.screenPadding }]}>
@@ -660,6 +712,13 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: 100,
+  },
+
+  // Landscape dashboard row
+  landscapeDashRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginBottom: spacing.md,
   },
 
   // Top Bar

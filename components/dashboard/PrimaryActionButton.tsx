@@ -56,8 +56,9 @@ export const PrimaryActionButton: React.FC<PrimaryActionButtonProps> = ({
         shadows.button,
         {
           backgroundColor: getBackgroundColor(),
-          width: lo.primaryActionSize,
+          minWidth: lo.primaryActionSize,
           height: lo.primaryActionSize,
+          alignSelf: 'stretch' as const,
         },
         disabled && styles.disabled,
       ]}

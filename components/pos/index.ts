@@ -7,6 +7,7 @@ export { default as POSPaymentModal } from './POSPaymentModal';
 export { default as POSNumericKeypad } from './POSNumericKeypad';
 export { default as POSSearchDropdown } from './POSSearchDropdown';
 export { default as POSProductBrowser } from './POSProductBrowser';
+export { POSProductBrowserContent } from './POSProductBrowser';
 export { default as POSDiscountModal } from './POSDiscountModal';
 export { default as POSQuantityModal } from './POSQuantityModal';
 export { default as POSHamburgerMenu } from './POSHamburgerMenu';

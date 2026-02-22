@@ -9,9 +9,10 @@ interface POSProductCardProps {
   cartQuantity: number;
   onPress: (product: Product) => void;
   numColumns?: number;
+  containerWidth?: number;
 }
 
-function POSProductCard({ product, cartQuantity, onPress, numColumns }: POSProductCardProps) {
+function POSProductCard({ product, cartQuantity, onPress, numColumns, containerWidth }: POSProductCardProps) {
   const theme = useTheme();
   const { width: screenWidth } = useResponsive();
   const { sp, fs, lo } = useResponsiveTheme();
@@ -32,8 +33,9 @@ function POSProductCard({ product, cartQuantity, onPress, numColumns }: POSProdu
     default: 2,
   });
 
-  // Calculate card width based on screen width and columns
-  const cardWidth = (screenWidth - 32 - (columns - 1) * 8) / columns;
+  // Calculate card width based on container or screen width and columns
+  const effectiveWidth = containerWidth || screenWidth;
+  const cardWidth = (effectiveWidth - 32 - (columns - 1) * 8) / columns;
 
   return (
     <TouchableOpacity
