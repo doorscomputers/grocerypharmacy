@@ -188,7 +188,13 @@ export default function SalesReportScreen({ navigation, route }: Props) {
           t.total_amount?.toString(),
         ].filter(Boolean).map(f => f?.toLowerCase() || '');
 
-        return searchableFields.some(field => field.includes(query));
+        // Also check product names in transaction items
+        const hasMatchingProduct = transactionItems
+          .filter(item => item.transaction_id === t.id)
+          .some(item => item.product_name.toLowerCase().includes(query) ||
+                        item.product_code.toLowerCase().includes(query));
+
+        return searchableFields.some(field => field.includes(query)) || hasMatchingProduct;
       });
     }
 
@@ -196,7 +202,7 @@ export default function SalesReportScreen({ navigation, route }: Props) {
       new Date(b.transaction_date || b.created_at).getTime() -
       new Date(a.transaction_date || a.created_at).getTime()
     );
-  }, [transactions, dateRange, searchQuery, selectedPaymentMethod]);
+  }, [transactions, transactionItems, dateRange, searchQuery, selectedPaymentMethod]);
 
   // Calculate sales summary
   const salesSummary = useMemo(() => {
