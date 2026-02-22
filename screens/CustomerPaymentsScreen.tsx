@@ -95,6 +95,11 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
     loadCompanySettings();
   }, []);
 
+  // Auto-load filtered data when customer selection changes
+  useEffect(() => {
+    loadFilteredData();
+  }, [selectedCustomer]);
+
   const loadCompanySettings = async () => {
     try {
       const dbService = getDatabase();
@@ -1278,7 +1283,6 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
                       setSelectedCustomerName('');
                       setCustomerSearchText('');
                       setShowCustomerSuggestions(false);
-                      loadFilteredData();
                     }}
                     style={styles.suggestionItem}
                     labelStyle={styles.suggestionLabel}
@@ -1323,17 +1327,6 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
               </View>
             )}
           </View>
-          <Button
-            mode="outlined"
-            onPress={() => {
-              setShowCustomerSuggestions(false);
-              loadFilteredData();
-            }}
-            style={styles.filterButton}
-            compact
-          >
-            Apply
-          </Button>
         </View>
 
         {/* Tab Navigation */}
