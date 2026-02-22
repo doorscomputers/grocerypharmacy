@@ -4,11 +4,11 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
+  Modal,
+  TouchableOpacity,
 } from 'react-native';
 import {
-  Card,
-  Title,
-  Paragraph,
+  Text,
   Switch,
   List,
   Button,
@@ -16,14 +16,17 @@ import {
   useTheme,
   Divider,
   IconButton,
+  SegmentedButtons,
+  ActivityIndicator,
 } from 'react-native-paper';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { RoleGuard } from '../components/RoleGuard';
-import { PermissionService, Permission } from '../utils/permissions';
+import { PermissionService, Permission, PERMISSION_CATEGORIES } from '../utils/permissions';
 import { useResponsiveTheme } from '../utils/responsive';
 
 type PermissionManagementScreenNavigationProp = StackNavigationProp<
@@ -47,6 +50,9 @@ export default function PermissionManagementScreen({ navigation }: Props) {
   const [managerPermissions, setManagerPermissions] = useState<RolePermission[]>([]);
   const [cashierPermissions, setCashierPermissions] = useState<RolePermission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedRole, setSelectedRole] = useState<'MANAGER' | 'CASHIER'>('MANAGER');
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
   const { user, refreshPermissions } = useAuth();
@@ -102,30 +108,18 @@ export default function PermissionManagementScreen({ navigation }: Props) {
     }
   };
 
-  const handleResetRole = async (role: 'MANAGER' | 'CASHIER') => {
-    Alert.alert(
-      'Reset Permissions',
-      `Are you sure you want to reset all ${role.toLowerCase()} permissions to default?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const dbService = getDatabase();
-              await dbService.resetRolePermissions(role, user?.id || 1);
-              await loadPermissions();
-              await refreshPermissions();
-              Alert.alert('Success', `${role.toLowerCase()} permissions reset to default`);
-            } catch (error) {
-              console.error('Error resetting permissions:', error);
-              Alert.alert('Error', 'Failed to reset permissions');
-            }
-          }
-        }
-      ]
-    );
+  const confirmResetRole = async () => {
+    try {
+      setShowResetConfirm(false);
+      const dbService = getDatabase();
+      await dbService.resetRolePermissions(selectedRole, user?.id || 1);
+      await loadPermissions();
+      await refreshPermissions();
+      Alert.alert('Success', `${selectedRole.toLowerCase()} permissions reset to default`);
+    } catch (error) {
+      console.error('Error resetting permissions:', error);
+      Alert.alert('Error', 'Failed to reset permissions');
+    }
   };
 
   const getPermissionInfo = (permission: string) => {
@@ -137,117 +131,173 @@ export default function PermissionManagementScreen({ navigation }: Props) {
     };
   };
 
-  const renderRoleCard = (
-    role: 'MANAGER' | 'CASHIER',
-    permissions: RolePermission[]
-  ) => {
-    const enabledCount = permissions.filter(p => p.is_enabled).length;
-    const totalCount = permissions.length;
+  const permissions = selectedRole === 'MANAGER' ? managerPermissions : cashierPermissions;
+  const enabledCount = permissions.filter(p => p.is_enabled).length;
+  const totalCount = permissions.length;
 
-    return (
-      <Card style={styles.roleCard} key={role}>
-        <Card.Content>
-          <View style={styles.roleHeader}>
-            <View>
-              <Title style={styles.roleTitle}>
-                {role === 'MANAGER' ? '👔 Manager' : '💼 Cashier'}
-              </Title>
-              <Paragraph style={styles.roleSubtitle}>
-                {enabledCount} of {totalCount} permissions enabled
-              </Paragraph>
-            </View>
-            <View style={styles.roleActions}>
-              <Chip
-                mode="outlined"
-                style={[styles.statusChip, {
-                  backgroundColor: enabledCount > totalCount * 0.7 ? '#E8F5E8' : '#FFF3E0'
-                }]}
-              >
-                {enabledCount > totalCount * 0.7 ? 'Full Access' : 'Limited'}
-              </Chip>
-              <IconButton
-                icon="restore"
-                size={24}
-                onPress={() => handleResetRole(role)}
-                style={styles.resetButton}
-              />
-            </View>
-          </View>
+  const toggleCategory = (label: string) => {
+    setExpandedCategories(prev => ({ ...prev, [label]: !prev[label] }));
+  };
 
-          <Divider style={styles.divider} />
-
-          {permissions.map((perm) => {
-            const permInfo = getPermissionInfo(perm.permission);
-            return (
-              <View key={perm.permission} style={styles.permissionRow}>
-                <View style={styles.permissionInfo}>
-                  <Title style={styles.permissionTitle}>{permInfo.label}</Title>
-                  <Paragraph style={styles.permissionDescription}>
-                    {permInfo.description}
-                  </Paragraph>
-                </View>
-                <Switch
-                  value={perm.is_enabled}
-                  onValueChange={(value) =>
-                    handlePermissionToggle(role, perm.permission, perm.is_enabled)
-                  }
-                  color={theme.colors.primary}
-                />
-              </View>
-            );
-          })}
-        </Card.Content>
-      </Card>
-    );
+  const getCategoryPermissions = (categoryPerms: Permission[]) => {
+    return permissions.filter(p => categoryPerms.includes(p.permission as Permission));
   };
 
   return (
     <RoleGuard permission="MANAGE_PERMISSIONS">
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        {/* Fixed header area */}
         <View style={[styles.header, { paddingHorizontal: lo.screenPadding }]}>
-          <Title style={[styles.title, { fontSize: fs.h2 }]}>Permission Management</Title>
-          <Paragraph style={[styles.subtitle, { fontSize: fs.body }]}>
+          <Text style={[styles.title, { fontSize: fs.h2 }]}>Permission Management</Text>
+          <Text style={[styles.subtitle, { fontSize: fs.body }]}>
             Control what features each role can access
-          </Paragraph>
+          </Text>
         </View>
 
-        <ScrollView style={[styles.content, { padding: lo.screenPadding }]}>
-          <View style={styles.infoCard}>
-            <Card style={[styles.card, { backgroundColor: theme.colors.primaryContainer }]}>
-              <Card.Content>
-                <Title style={styles.infoTitle}>💡 How it works</Title>
-                <Paragraph style={styles.infoText}>
-                  • Toggle permissions on/off for Manager and Cashier roles{'\n'}
-                  • Admin role always has full access{'\n'}
-                  • Changes take effect immediately{'\n'}
-                  • Use "Reset" to restore default permissions
-                </Paragraph>
-              </Card.Content>
-            </Card>
-          </View>
+        {/* Segmented buttons - fixed */}
+        <View style={[styles.segmentContainer, { paddingHorizontal: lo.screenPadding }]}>
+          <SegmentedButtons
+            value={selectedRole}
+            onValueChange={(value) => setSelectedRole(value as 'MANAGER' | 'CASHIER')}
+            buttons={[
+              { value: 'MANAGER', label: 'Manager', icon: 'briefcase-outline' },
+              { value: 'CASHIER', label: 'Cashier', icon: 'cash-register' },
+            ]}
+          />
+        </View>
 
-          {loading ? (
-            <View style={styles.loadingContainer}>
-              <Paragraph>Loading permissions...</Paragraph>
-            </View>
-          ) : (
-            <View style={styles.rolesContainer}>
-              {renderRoleCard('MANAGER', managerPermissions)}
-              {renderRoleCard('CASHIER', cashierPermissions)}
-            </View>
-          )}
-
-          <View style={styles.footerActions}>
-            <Button
-              mode="contained"
-              onPress={() => navigation.goBack()}
-              style={styles.backButton}
+        {/* Role summary - fixed */}
+        <View style={[styles.roleSummary, { paddingHorizontal: lo.screenPadding }]}>
+          <View style={styles.summaryLeft}>
+            <Text style={styles.summaryText}>
+              {enabledCount} of {totalCount} enabled
+            </Text>
+            <Chip
+              mode="outlined"
+              compact
+              style={[styles.statusChip, {
+                backgroundColor: enabledCount > totalCount * 0.7 ? '#E8F5E8' : '#FFF3E0'
+              }]}
+              textStyle={styles.statusChipText}
             >
-              Done
-            </Button>
+              {enabledCount > totalCount * 0.7 ? 'Full Access' : 'Limited'}
+            </Chip>
           </View>
-        </ScrollView>
+          <Button
+            mode="outlined"
+            compact
+            icon="restore"
+            onPress={() => setShowResetConfirm(true)}
+            textColor={theme.colors.error}
+            style={styles.resetButton}
+          >
+            Reset
+          </Button>
+        </View>
+
+        <Divider />
+
+        {/* Scrollable accordion content */}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" />
+            <Text style={{ marginTop: 12 }}>Loading permissions...</Text>
+          </View>
+        ) : (
+          <ScrollView style={[styles.content, { paddingHorizontal: lo.screenPadding }]}>
+            <View style={styles.accordionCard}>
+              {PERMISSION_CATEGORIES.map((category) => {
+                const catPerms = getCategoryPermissions(category.permissions);
+                // Hide categories with no permissions for this role
+                if (catPerms.length === 0) return null;
+
+                const catEnabled = catPerms.filter(p => p.is_enabled).length;
+                const isExpanded = expandedCategories[category.label] || false;
+
+                return (
+                  <List.Accordion
+                    key={category.label}
+                    title={category.label}
+                    left={props => <List.Icon {...props} icon={category.icon} />}
+                    right={() => (
+                      <Chip compact style={styles.countChip} textStyle={styles.countChipText}>
+                        {catEnabled}/{catPerms.length}
+                      </Chip>
+                    )}
+                    expanded={isExpanded}
+                    onPress={() => toggleCategory(category.label)}
+                    style={styles.accordion}
+                    titleStyle={styles.accordionTitle}
+                  >
+                    {catPerms.map((perm) => {
+                      const permInfo = getPermissionInfo(perm.permission);
+                      return (
+                        <View key={perm.permission} style={styles.permissionRow}>
+                          <View style={styles.permissionInfo}>
+                            <Text style={styles.permissionLabel}>{permInfo.label}</Text>
+                            <Text style={styles.permissionDesc}>{permInfo.description}</Text>
+                          </View>
+                          <Switch
+                            value={perm.is_enabled}
+                            onValueChange={() =>
+                              handlePermissionToggle(selectedRole, perm.permission, perm.is_enabled)
+                            }
+                            color={theme.colors.primary}
+                          />
+                        </View>
+                      );
+                    })}
+                  </List.Accordion>
+                );
+              })}
+            </View>
+            <View style={{ height: 32 }} />
+          </ScrollView>
+        )}
       </View>
+
+      {/* Reset Confirmation Modal */}
+      <Modal
+        visible={showResetConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowResetConfirm(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowResetConfirm(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.modalContent}>
+            <View style={styles.modalIconRow}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={48} color="#d32f2f" />
+            </View>
+            <Text style={styles.modalTitle}>Reset Permissions?</Text>
+            <Text style={styles.modalMessage}>
+              This will reset all {selectedRole.toLowerCase()} permissions back to their default values. This action cannot be undone.
+            </Text>
+            <View style={styles.modalActions}>
+              <Button
+                mode="outlined"
+                onPress={() => setShowResetConfirm(false)}
+                style={styles.modalCancelBtn}
+              >
+                Cancel
+              </Button>
+              <Button
+                mode="contained"
+                onPress={confirmResetRole}
+                buttonColor="#d32f2f"
+                textColor="#fff"
+                icon="restore"
+                style={styles.modalResetBtn}
+              >
+                Reset to Default
+              </Button>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </RoleGuard>
   );
 }
@@ -257,7 +307,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingHorizontal: 16,
     paddingVertical: 8,
   },
   title: {
@@ -267,91 +316,134 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     opacity: 0.7,
-    marginTop: 4,
+    marginTop: 2,
   },
-  content: {
-    flex: 1,
-    padding: 16,
+  segmentContainer: {
+    paddingVertical: 8,
   },
-  infoCard: {
-    marginBottom: 16,
-  },
-  card: {
-    elevation: 2,
-  },
-  infoTitle: {
-    fontSize: 16,
-    marginBottom: 8,
-  },
-  infoText: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  rolesContainer: {
-    gap: 16,
-  },
-  roleCard: {
-    elevation: 4,
-    marginBottom: 16,
-  },
-  roleHeader: {
+  roleSummary: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
+    alignItems: 'center',
+    paddingVertical: 10,
   },
-  roleTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  roleSubtitle: {
-    fontSize: 14,
-    opacity: 0.7,
-  },
-  roleActions: {
+  summaryLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+  },
+  summaryText: {
+    fontSize: 14,
+    fontWeight: '500',
   },
   statusChip: {
     borderRadius: 16,
+    height: 36,
+    justifyContent: 'center',
+  },
+  statusChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
   },
   resetButton: {
-    margin: 0,
+    borderColor: '#d32f2f',
   },
-  divider: {
-    marginBottom: 16,
+  content: {
+    flex: 1,
+  },
+  accordionCard: {
+    marginTop: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  accordion: {
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  accordionTitle: {
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  countChip: {
+    backgroundColor: '#E3F2FD',
+    marginRight: 8,
+  },
+  countChipText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   permissionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingLeft: 56,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#f5f5f5',
+    backgroundColor: '#FAFAFA',
   },
   permissionInfo: {
     flex: 1,
-    marginRight: 16,
+    marginRight: 12,
   },
-  permissionTitle: {
-    fontSize: 16,
-    marginBottom: 4,
+  permissionLabel: {
+    fontSize: 14,
+    fontWeight: '500',
   },
-  permissionDescription: {
+  permissionDesc: {
     fontSize: 12,
-    opacity: 0.7,
+    opacity: 0.6,
+    marginTop: 2,
   },
   loadingContainer: {
+    flex: 1,
     alignItems: 'center',
-    paddingVertical: 32,
+    justifyContent: 'center',
   },
-  footerActions: {
-    paddingTop: 24,
-    paddingBottom: 48,
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
+    padding: 24,
   },
-  backButton: {
-    minWidth: 120,
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    elevation: 8,
+  },
+  modalIconRow: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8,
+    color: '#222',
+  },
+  modalMessage: {
+    fontSize: 14,
+    textAlign: 'center',
+    color: '#666',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  modalCancelBtn: {
+    flex: 1,
+  },
+  modalResetBtn: {
+    flex: 1,
   },
 });

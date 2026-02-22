@@ -18,7 +18,7 @@ import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../contexts/ThemeContext';
 import { spacing, typography, borderRadius, shadows } from '../../utils/theme';
-import { useResponsiveTheme } from '../../utils/responsive';
+import { useResponsive, useResponsiveTheme } from '../../utils/responsive';
 import { QuickAction } from './QuickActionRow';
 
 interface ActionSearchModalProps {
@@ -37,11 +37,14 @@ export const ActionSearchModal: React.FC<ActionSearchModalProps> = ({
   showAdminActions = false,
 }) => {
   const { colors } = useAppTheme();
+  const { width } = useResponsive();
   const { sp, fs, lo, isPhone } = useResponsiveTheme();
   const [searchQuery, setSearchQuery] = useState('');
 
   const numColumns = isPhone ? 3 : 4;
-  const itemWidth = (lo.modalMaxWidth - sp.lg * 2 - sp.sm * (numColumns - 1)) / numColumns;
+  const gridPadding = sp.md * 2;
+  const totalGap = sp.sm * (numColumns - 1);
+  const itemWidth = (width - gridPadding - totalGap) / numColumns;
 
   // Combine and filter actions based on search
   const filteredActions = useMemo(() => {

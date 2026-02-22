@@ -443,9 +443,10 @@ export default function DashboardScreen({ navigation }: Props) {
             </TouchableOpacity>
             <IconButton
               icon="logout"
-              iconColor={colors.error}
-              size={24}
+              iconColor="#fff"
+              size={28}
               onPress={handleLogout}
+              style={{ backgroundColor: colors.error, borderRadius: 10 }}
             />
           </View>
         </View>
