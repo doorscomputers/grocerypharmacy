@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   IconButton,
   Menu,
+  TextInput,
 } from 'react-native-paper';
 
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -86,6 +87,7 @@ export default function EJournalReportScreen({ navigation }: Props) {
   const [printing, setPrinting] = useState(false);
   const [printDialogVisible, setPrintDialogVisible] = useState(false);
   const [selectedType, setSelectedType] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
   const [menuVisible, setMenuVisible] = useState(false);
   const [dateRange, setDateRange] = useState(() => {
     const range = getDateRange('today');
@@ -404,6 +406,17 @@ export default function EJournalReportScreen({ navigation }: Props) {
     }
   };
 
+  // Filter entries by search query
+  const sQuery = searchQuery.trim().toLowerCase();
+  const filteredEntries = useMemo(() => {
+    if (!sQuery) return entries;
+    return entries.filter(e =>
+      e.description.toLowerCase().includes(sQuery) ||
+      e.reference_number.toLowerCase().includes(sQuery) ||
+      e.cashier_name.toLowerCase().includes(sQuery)
+    );
+  }, [entries, sQuery]);
+
   const renderEntry = ({ item }: { item: EJournalEntry }) => (
     <Card style={styles.entryCard} mode="outlined">
       <Card.Content style={styles.entryContent}>
@@ -572,6 +585,20 @@ export default function EJournalReportScreen({ navigation }: Props) {
         </View>
       </ScrollView>
 
+      {/* Product/Description Search */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          mode="outlined"
+          placeholder="Search by product, description, or reference..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          left={<TextInput.Icon icon="magnify" />}
+          right={searchQuery ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} /> : undefined}
+          style={styles.searchInput}
+          dense
+        />
+      </View>
+
       {/* Quick Action Buttons */}
       <View style={styles.actionButtons}>
         <Button
@@ -617,13 +644,26 @@ export default function EJournalReportScreen({ navigation }: Props) {
         </View>
       ) : (
         <FlatList
-          data={entries}
+          data={filteredEntries}
           renderItem={renderEntry}
           keyExtractor={(item) => item.id.toString()}
-          ListHeaderComponent={renderSummary}
+          ListHeaderComponent={
+            <>
+              {renderSummary()}
+              {sQuery && filteredEntries.length > 0 ? (
+                <View style={styles.searchResultHeader}>
+                  <Text style={styles.searchResultText}>
+                    {filteredEntries.length} result(s) matching "{searchQuery.trim()}"
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No entries found for the selected date range</Text>
+              <Text style={styles.emptyText}>
+                {sQuery ? `No entries found matching "${searchQuery.trim()}"` : 'No entries found for the selected date range'}
+              </Text>
             </View>
           }
           contentContainerStyle={[styles.listContent, { padding: lo.screenPadding }]}
@@ -700,6 +740,26 @@ const styles = StyleSheet.create({
   },
   filterChipTextSelected: {
     color: '#FFFFFF',
+  },
+  searchContainer: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#FFFFFF',
+  },
+  searchInput: {
+    backgroundColor: '#fff',
+  },
+  searchResultHeader: {
+    backgroundColor: '#E3F2FD',
+    padding: 8,
+    borderRadius: 6,
+    marginBottom: 8,
+  },
+  searchResultText: {
+    fontSize: 12,
+    color: '#1565C0',
+    fontWeight: '600',
+    textAlign: 'center',
   },
   actionButtons: {
     flexDirection: 'row',
