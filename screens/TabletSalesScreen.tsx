@@ -316,6 +316,7 @@ export default function TabletSalesScreen({ navigation }: Props) {
   const quickAmounts = [
     { label: 'Exact', value: totals.total },
     { label: '₱100', value: 100 },
+    { label: '₱200', value: 200 },
     { label: '₱500', value: 500 },
     { label: '₱1000', value: 1000 },
   ];
@@ -1293,18 +1294,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   leftPanel: {
-    flex: 6,
+    flex: 1,
     backgroundColor: '#FFF',
     borderRightWidth: 1,
     borderRightColor: '#E0E0E0',
   },
   rightPanel: {
-    flex: 4,
+    flex: 1,
     backgroundColor: '#FAFAFA',
   },
   rightPanelContent: {
-    padding: 12,
-    paddingBottom: 24,
+    padding: 10,
+    paddingBottom: 80,
   },
 
   // ===== CART =====
@@ -1407,8 +1408,8 @@ const styles = StyleSheet.create({
   sectionBox: {
     backgroundColor: '#FFF',
     borderRadius: 8,
-    padding: 12,
-    marginBottom: 10,
+    padding: 10,
+    marginBottom: 8,
     elevation: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -1416,10 +1417,10 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
   },
   sectionLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
     color: '#555',
-    marginBottom: 8,
+    marginBottom: 6,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
@@ -1432,11 +1433,11 @@ const styles = StyleSheet.create({
   // Discount Buttons
   discountButtons: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   discountBtn: {
     flex: 1,
-    paddingVertical: 8,
+    paddingVertical: 7,
     borderRadius: 6,
     backgroundColor: '#F0F0F0',
     alignItems: 'center',
@@ -1445,7 +1446,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1976D2',
   },
   discountBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#666',
   },
@@ -1512,20 +1513,21 @@ const styles = StyleSheet.create({
   // Payment Methods
   paymentMethodRow: {
     flexDirection: 'row',
-    gap: 6,
-    flexWrap: 'wrap',
+    gap: 4,
   },
   paymentMethodBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
     paddingVertical: 8,
     borderRadius: 6,
     backgroundColor: '#F0F0F0',
-    gap: 4,
+    gap: 3,
   },
   paymentMethodText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#666',
   },
@@ -1546,8 +1548,8 @@ const styles = StyleSheet.create({
     borderColor: '#DDD',
     borderRadius: 6,
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 16,
+    paddingVertical: 6,
+    fontSize: 15,
     fontWeight: '600',
     color: '#333',
     backgroundColor: '#FFF',
@@ -1594,8 +1596,8 @@ const styles = StyleSheet.create({
   totalsBox: {
     backgroundColor: '#FFF',
     borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
+    padding: 10,
+    marginBottom: 10,
     elevation: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -1638,7 +1640,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderRadius: 10,
     elevation: 3,
     shadowColor: '#000',
@@ -1648,7 +1650,7 @@ const styles = StyleSheet.create({
   },
   completeSaleBtnText: {
     color: '#FFF',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '800',
     letterSpacing: 0.5,
   },

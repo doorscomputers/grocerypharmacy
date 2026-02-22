@@ -1361,6 +1361,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     backgroundColor: '#FFFFFF',
+    fontSize: 13,
   },
   actionButton: {
     width: 48,

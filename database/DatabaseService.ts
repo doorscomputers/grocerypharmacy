@@ -2245,7 +2245,7 @@ export class DatabaseService {
         );
 
         // Add eJournal entry with Philippine time
-        const phDateTime = getPhilippineDateTimeString();
+        const phDateTimeEJ = getPhilippineDateTimeString();
         await db.runAsync(
           `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -2255,8 +2255,8 @@ export class DatabaseService {
             `Purchase order created - ${purchaseNumber}`,
             total,
             purchaseData.created_by,
-            phDateTime,
-            phDateTime
+            phDateTimeEJ,
+            phDateTimeEJ
           ]
         );
 
@@ -3493,7 +3493,6 @@ export class DatabaseService {
         await this.updateDamageSessionTotals(damageData.session_id);
 
         // Add eJournal entry with Philippine time
-        const phDateTime = getPhilippineDateTimeString();
         await db.runAsync(
           `INSERT INTO ejournal (entry_type, reference_number, description, amount, cashier_id, timestamp, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -3552,7 +3551,7 @@ export class DatabaseService {
       );
 
       // Add eJournal entry with Philippine time
-      const phDateTime = getPhilippineDateTimeString();
+      const phDateTimeEJ2 = getPhilippineDateTimeString();
       await db.runAsync(
         `INSERT INTO ejournal (entry_type, reference_number, description, cashier_id, timestamp, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -3561,7 +3560,7 @@ export class DatabaseService {
           sessionId,
           `Damage session completed - ${sessionId}`,
           completedBy,
-          phDateTime,
+          phDateTimeEJ2,
           phDateTime
         ]
       );

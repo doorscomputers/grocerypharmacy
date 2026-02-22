@@ -39,15 +39,14 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
   const { width } = useResponsive();
   const { fs, lo } = useResponsiveTheme();
 
-  // Auto-calculate columns and button width from screen width
-  // React Native flex-wrap handles the rest
-  const BUTTON_MIN_WIDTH = 76;
+  // Auto-calculate button width from screen width
   const gap = spacing.sm;
-  const parentPadding = lo.screenPadding * 2; // DashboardScreen wraps us in paddingHorizontal
+  const parentPadding = lo.screenPadding * 2;
   const gridPadding = spacing.xs * 2;
   const available = width - parentPadding - gridPadding;
-  const columns = Math.min(8, Math.max(3, Math.floor((available + gap) / (BUTTON_MIN_WIDTH + gap))));
-  const buttonWidth = Math.floor((available - (columns - 1) * gap) / columns);
+  // Count total buttons (visible + "More" if applicable)
+  const totalButtons = (maxVisible ? Math.min(actions.length, maxVisible) : actions.length) + (maxVisible && actions.length > maxVisible ? 1 : 0);
+  const buttonWidth = Math.floor((available - (totalButtons - 1) * gap) / totalButtons);
 
   // Icon scales with button
   const iconSize = Math.min(48, Math.max(36, buttonWidth * 0.55));
@@ -104,7 +103,7 @@ export const QuickActionRow: React.FC<QuickActionRowProps> = ({
             </View>
             <Text
               style={[styles.actionLabel, { color: colors.text, fontSize: fs.caption }]}
-              numberOfLines={2}
+              numberOfLines={1}
             >
               {action.label}
             </Text>
