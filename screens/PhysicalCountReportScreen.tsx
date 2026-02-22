@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -20,6 +20,7 @@ import {
   IconButton,
   Portal,
   Dialog,
+  TextInput,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
@@ -80,6 +81,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
     const range = getDateRange('this_month');
     return { startDate: range.startDate, endDate: range.endDate };
   });
+  const [searchQuery, setSearchQuery] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -295,6 +297,23 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
         return '#9E9E9E';
     }
   };
+
+  // Filter report data by product search query
+  const filteredReportData = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return reportData;
+
+    return reportData
+      .map(report => {
+        const matchingDetails = report.details.filter(d =>
+          d.product_name?.toLowerCase().includes(query) ||
+          d.product_code?.toLowerCase().includes(query)
+        );
+        if (matchingDetails.length === 0) return null;
+        return { ...report, details: matchingDetails };
+      })
+      .filter(Boolean) as GroupedReport[];
+  }, [reportData, searchQuery]);
 
   const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
     const builder = new ESCPOSBuilder(printerWidth);
@@ -687,6 +706,25 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
           />
         </Card.Content>
       </Card>
+
+      {/* Product Search */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          mode="outlined"
+          placeholder="Search by product name or code..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          left={<TextInput.Icon icon="magnify" />}
+          right={searchQuery ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} /> : undefined}
+          style={styles.searchInput}
+          dense
+        />
+        {searchQuery.trim() && (
+          <Text style={styles.searchResultText}>
+            {filteredReportData.length} session(s) with matching products
+          </Text>
+        )}
+      </View>
     </View>
   );
 
@@ -724,7 +762,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
         disabled={reportData.length === 0}
       />
       <FlatList
-        data={reportData}
+        data={filteredReportData}
         renderItem={renderSession}
         keyExtractor={(item) => item.session.session_id}
         ListHeaderComponent={renderHeader}
@@ -778,6 +816,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 8,
     elevation: 2,
+  },
+  searchContainer: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+  },
+  searchInput: {
+    marginBottom: 4,
+  },
+  searchResultText: {
+    fontSize: 12,
+    opacity: 0.7,
+    marginBottom: 4,
   },
   sessionCard: {
     marginHorizontal: 16,
