@@ -65,6 +65,10 @@ export default function POSExchangeModal({
   const [showCompleteDialog, setShowCompleteDialog] = useState(false);
   const [completeData, setCompleteData] = useState<TransactionCompleteData | null>(null);
   const [cashierName, setCashierName] = useState<string>('');
+  const [editingReturnQty, setEditingReturnQty] = useState<number | null>(null);
+  const [editingReturnQtyText, setEditingReturnQtyText] = useState('');
+  const [editingNewQty, setEditingNewQty] = useState<number | null>(null);
+  const [editingNewQtyText, setEditingNewQtyText] = useState('');
 
   // Load cashier name
   useEffect(() => {
@@ -477,7 +481,28 @@ export default function POSExchangeModal({
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => updateReturnQuantity(index, item.return_quantity - 1)}>
                           <Text style={styles.qtyBtnText}>-</Text>
                         </TouchableOpacity>
-                        <Text style={styles.qtyValue}>{item.return_quantity}/{item.quantity}</Text>
+                        {editingReturnQty === index ? (
+                          <TextInput
+                            style={styles.qtyInput}
+                            value={editingReturnQtyText}
+                            onChangeText={setEditingReturnQtyText}
+                            onBlur={() => {
+                              const val = parseInt(editingReturnQtyText) || 0;
+                              updateReturnQuantity(index, val);
+                              setEditingReturnQty(null);
+                            }}
+                            keyboardType="numeric"
+                            autoFocus
+                            selectTextOnFocus
+                          />
+                        ) : (
+                          <TouchableOpacity onPress={() => {
+                            setEditingReturnQty(index);
+                            setEditingReturnQtyText(String(item.return_quantity));
+                          }}>
+                            <Text style={styles.qtyValue}>{item.return_quantity}/{item.quantity}</Text>
+                          </TouchableOpacity>
+                        )}
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => updateReturnQuantity(index, item.return_quantity + 1)}>
                           <Text style={styles.qtyBtnText}>+</Text>
                         </TouchableOpacity>
@@ -531,7 +556,31 @@ export default function POSExchangeModal({
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => updateNewItemQty(item.id, -1)}>
                           <Text style={styles.qtyBtnText}>-</Text>
                         </TouchableOpacity>
-                        <Text style={styles.qtyValue}>{item.quantity}</Text>
+                        {editingNewQty === item.id ? (
+                          <TextInput
+                            style={styles.qtyInput}
+                            value={editingNewQtyText}
+                            onChangeText={setEditingNewQtyText}
+                            onBlur={() => {
+                              const val = parseInt(editingNewQtyText) || 1;
+                              const clamped = Math.max(1, val);
+                              setNewItems(newItems.map(i =>
+                                i.id === item.id ? { ...i, quantity: clamped } : i
+                              ));
+                              setEditingNewQty(null);
+                            }}
+                            keyboardType="numeric"
+                            autoFocus
+                            selectTextOnFocus
+                          />
+                        ) : (
+                          <TouchableOpacity onPress={() => {
+                            setEditingNewQty(item.id);
+                            setEditingNewQtyText(String(item.quantity));
+                          }}>
+                            <Text style={styles.qtyValue}>{item.quantity}</Text>
+                          </TouchableOpacity>
+                        )}
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => updateNewItemQty(item.id, 1)}>
                           <Text style={styles.qtyBtnText}>+</Text>
                         </TouchableOpacity>
@@ -639,6 +688,7 @@ const styles = StyleSheet.create({
   qtyBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center' },
   qtyBtnText: { fontSize: 16, fontWeight: '600', color: '#424242' },
   qtyValue: { fontSize: 14, fontWeight: '600', minWidth: 36, textAlign: 'center' },
+  qtyInput: { fontSize: 14, fontWeight: '600', minWidth: 36, textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#2196F3', paddingVertical: 2, color: '#212121' },
   subtotalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 10, marginTop: 8, borderTopWidth: 1, borderTopColor: '#E0E0E0' },
   subtotalLabel: { fontSize: 14, fontWeight: '600', color: '#424242' },
   subtotalValue: { fontSize: 14, fontWeight: '700', color: '#1565C0' },

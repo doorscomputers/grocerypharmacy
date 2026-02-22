@@ -123,6 +123,7 @@ export default function POSInvoiceListPicker({
   const [selectedPreset, setSelectedPreset] = useState(todayOnly ? 0 : 7);
   const [invoices, setInvoices] = useState<InvoiceTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [customerFilter, setCustomerFilter] = useState('');
 
   // Function to load invoices from database
   const loadInvoices = async () => {
@@ -167,6 +168,14 @@ export default function POSInvoiceListPicker({
   const handleSelectInvoice = (invoice: InvoiceTransaction) => {
     onSelectInvoice(invoice);
   };
+
+  // Filter invoices by customer name
+  const filteredInvoices = customerFilter.trim()
+    ? invoices.filter(inv => {
+        const name = (inv.customer_full_name || inv.customer_name || 'Walk-in Customer').toLowerCase();
+        return name.includes(customerFilter.trim().toLowerCase());
+      })
+    : invoices;
 
   // Render a single invoice item
   const renderInvoiceItem = (item: InvoiceTransaction) => {
@@ -324,10 +333,29 @@ export default function POSInvoiceListPicker({
             })}
           </View>
 
+          {/* Customer Name Filter */}
+          <View style={styles.customerFilterContainer}>
+            <View style={styles.customerFilterRow}>
+              <MaterialCommunityIcons name="account-search" size={18} color="#757575" />
+              <TextInput
+                style={styles.customerFilterInput}
+                value={customerFilter}
+                onChangeText={setCustomerFilter}
+                placeholder="Filter by customer name..."
+                placeholderTextColor="#9E9E9E"
+              />
+              {customerFilter.length > 0 && (
+                <TouchableOpacity onPress={() => setCustomerFilter('')} style={styles.customerFilterClear}>
+                  <MaterialCommunityIcons name="close-circle" size={18} color="#9E9E9E" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
           {/* Invoice List */}
           <View style={styles.listHeader}>
             <Text style={styles.listTitle}>
-              {invoices.length} Invoice{invoices.length !== 1 ? 's' : ''} Found
+              {filteredInvoices.length}{customerFilter.trim() ? ` of ${invoices.length}` : ''} Invoice{filteredInvoices.length !== 1 ? 's' : ''} Found
             </Text>
             {isLoading && <ActivityIndicator size="small" color={accentColor} />}
           </View>
@@ -338,14 +366,16 @@ export default function POSInvoiceListPicker({
             showsVerticalScrollIndicator={true}
             nestedScrollEnabled={true}
           >
-            {invoices.length === 0 && !isLoading ? (
+            {filteredInvoices.length === 0 && !isLoading ? (
               <View style={styles.emptyContainer}>
                 <MaterialCommunityIcons name="receipt" size={48} color="#BDBDBD" />
                 <Text style={styles.emptyText}>No invoices found</Text>
-                <Text style={styles.emptySubtext}>Try selecting a different date range</Text>
+                <Text style={styles.emptySubtext}>
+                  {customerFilter.trim() ? 'Try a different customer name' : 'Try selecting a different date range'}
+                </Text>
               </View>
             ) : (
-              invoices.map(item => renderInvoiceItem(item))
+              filteredInvoices.map(item => renderInvoiceItem(item))
             )}
           </ScrollView>
         </View>
@@ -452,6 +482,28 @@ const styles = StyleSheet.create({
   },
   presetChipTextActive: {
     fontWeight: '600',
+  },
+  customerFilterContainer: {
+    marginBottom: 12,
+  },
+  customerFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#FAFAFA',
+  },
+  customerFilterInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#212121',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
+  customerFilterClear: {
+    padding: 4,
   },
   listHeader: {
     flexDirection: 'row',

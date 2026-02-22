@@ -71,6 +71,8 @@ export default function POSRefundModal({
   const [showCompleteDialog, setShowCompleteDialog] = useState(false);
   const [completeData, setCompleteData] = useState<TransactionCompleteData | null>(null);
   const [cashierName, setCashierName] = useState<string>('');
+  const [editingQty, setEditingQty] = useState<number | null>(null);
+  const [editingQtyText, setEditingQtyText] = useState('');
 
   // Load cashier name
   useEffect(() => {
@@ -372,9 +374,30 @@ export default function POSRefundModal({
                         >
                           <Text style={styles.qtyBtnText}>-</Text>
                         </TouchableOpacity>
-                        <Text style={styles.qtyValue}>
-                          {item.refund_quantity}/{item.quantity}
-                        </Text>
+                        {editingQty === index ? (
+                          <TextInput
+                            style={styles.qtyInput}
+                            value={editingQtyText}
+                            onChangeText={setEditingQtyText}
+                            onBlur={() => {
+                              const val = parseInt(editingQtyText) || 0;
+                              updateRefundQuantity(index, val);
+                              setEditingQty(null);
+                            }}
+                            keyboardType="numeric"
+                            autoFocus
+                            selectTextOnFocus
+                          />
+                        ) : (
+                          <TouchableOpacity onPress={() => {
+                            setEditingQty(index);
+                            setEditingQtyText(String(item.refund_quantity));
+                          }}>
+                            <Text style={styles.qtyValue}>
+                              {item.refund_quantity}/{item.quantity}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
                         <TouchableOpacity
                           style={styles.qtyBtn}
                           onPress={() => updateRefundQuantity(index, item.refund_quantity + 1)}
@@ -638,6 +661,16 @@ const styles = StyleSheet.create({
     color: '#212121',
     minWidth: 40,
     textAlign: 'center',
+  },
+  qtyInput: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212121',
+    minWidth: 40,
+    textAlign: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#FF9800',
+    paddingVertical: 2,
   },
   methodOptions: {
     flexDirection: 'row',
