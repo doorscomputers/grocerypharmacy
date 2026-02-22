@@ -8,6 +8,7 @@ import {
   Platform,
   TouchableOpacity,
   Text,
+  Modal,
 } from 'react-native';
 import {
   Card,
@@ -18,8 +19,6 @@ import {
   Chip,
   DataTable,
   Searchbar,
-  Portal,
-  Dialog,
   Divider,
   IconButton,
   Menu,
@@ -540,7 +539,13 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
           <Paragraph style={styles.totalValue}>
             Value: ₱{item.total_value?.toFixed(2) || '0.00'}
           </Paragraph>
-          <Paragraph style={styles.tapHint}>Tap for full history</Paragraph>
+          <TouchableOpacity
+            style={styles.viewHistoryButton}
+            onPress={() => loadProductHistory(item.product_id, item.product_name, item.product_code)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.viewHistoryButtonText}>View History</Text>
+          </TouchableOpacity>
         </View>
       </Card.Content>
     </Card>
@@ -798,159 +803,170 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
 
       {renderTabContent()}
 
-      {/* Product History Dialog */}
-      <Portal>
-        <Dialog
-          visible={historyDialogVisible}
-          onDismiss={() => {
-            setHistoryDialogVisible(false);
-            setSelectedProduct(null);
-            setProductHistory([]);
-            setHistoryDatePreset('last_30_days');
-          }}
-          style={styles.historyDialog}
-        >
-          <Dialog.Title style={styles.historyTitle}>
-            Product Movement History
-          </Dialog.Title>
-          <Dialog.ScrollArea style={styles.historyScrollArea}>
-            <ScrollView>
-              {selectedProduct && (
-                <View style={styles.historyProductInfo}>
-                  <Title style={styles.historyProductName}>{selectedProduct.name}</Title>
-                  <Paragraph style={styles.historyProductCode}>{selectedProduct.code}</Paragraph>
-                </View>
-              )}
+      {/* Product History Full Screen Modal */}
+      <Modal
+        visible={historyDialogVisible}
+        animationType="slide"
+        onRequestClose={() => {
+          setHistoryDialogVisible(false);
+          setSelectedProduct(null);
+          setProductHistory([]);
+          setHistoryDatePreset('last_30_days');
+        }}
+      >
+        <View style={styles.historyFullScreen}>
+          {/* Header with Back Button */}
+          <View style={styles.historyHeader}>
+            <TouchableOpacity
+              style={styles.historyBackButton}
+              onPress={() => {
+                setHistoryDialogVisible(false);
+                setSelectedProduct(null);
+                setProductHistory([]);
+                setHistoryDatePreset('last_30_days');
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.historyBackArrow}>←</Text>
+              <Text style={styles.historyBackText}>Back</Text>
+            </TouchableOpacity>
+            <Title style={styles.historyHeaderTitle}>Movement History</Title>
+            <View style={{ width: 70 }} />
+          </View>
 
-              {/* Date Range Filter */}
-              <View style={styles.historyDateFilter}>
-                <Paragraph style={styles.historyFilterLabel}>Date Range:</Paragraph>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.historyDateChips}>
-                    {[
-                      { key: 'last_7_days', label: '7 Days' },
-                      { key: 'last_30_days', label: '30 Days' },
-                      { key: 'last_90_days', label: '90 Days' },
-                      { key: 'this_year', label: 'This Year' },
-                      { key: 'all_time', label: 'All Time' },
-                    ].map((preset) => (
+          {/* Product Info */}
+          {selectedProduct && (
+            <View style={styles.historyProductInfo}>
+              <Title style={styles.historyProductName}>{selectedProduct.name}</Title>
+              <Paragraph style={styles.historyProductCode}>{selectedProduct.code}</Paragraph>
+            </View>
+          )}
+
+          {/* Date Range Filter */}
+          <View style={styles.historyDateFilter}>
+            <Paragraph style={styles.historyFilterLabel}>Date Range:</Paragraph>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.historyDateChips}>
+                {[
+                  { key: 'last_7_days', label: '7 Days' },
+                  { key: 'last_30_days', label: '30 Days' },
+                  { key: 'last_90_days', label: '90 Days' },
+                  { key: 'this_year', label: 'This Year' },
+                  { key: 'all_time', label: 'All Time' },
+                ].map((preset) => (
+                  <Chip
+                    key={preset.key}
+                    selected={historyDatePreset === preset.key}
+                    onPress={() => handleHistoryDatePresetChange(preset.key)}
+                    style={[
+                      styles.historyPresetChip,
+                      historyDatePreset === preset.key && styles.historyPresetChipSelected
+                    ]}
+                    textStyle={{
+                      fontSize: 11,
+                      color: historyDatePreset === preset.key ? 'white' : '#333'
+                    }}
+                    compact
+                  >
+                    {preset.label}
+                  </Chip>
+                ))}
+              </View>
+            </ScrollView>
+          </View>
+
+          <Divider style={{ marginBottom: 8 }} />
+
+          <Paragraph style={styles.historyCount}>
+            {productHistory.length} movement{productHistory.length !== 1 ? 's' : ''} found
+          </Paragraph>
+
+          {/* Scrollable History List */}
+          {loadingHistory ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" />
+              <Paragraph style={{ marginTop: 8 }}>Loading history...</Paragraph>
+            </View>
+          ) : productHistory.length === 0 ? (
+            <View style={styles.loadingContainer}>
+              <Paragraph>No movement history found.</Paragraph>
+            </View>
+          ) : (
+            <FlatList
+              data={productHistory}
+              keyExtractor={(item, index) => (item.id || index).toString()}
+              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
+              showsVerticalScrollIndicator={false}
+              renderItem={({ item, index }) => (
+                <View style={styles.historyItem}>
+                  <View style={styles.historyItemHeader}>
+                    <View style={styles.historyItemDate}>
+                      <Paragraph style={styles.historyDate}>
+                        {new Date(item.created_at).toLocaleString('en-PH', {
+                          timeZone: 'Asia/Manila',
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </Paragraph>
+                    </View>
+                    <View style={styles.historyChips}>
                       <Chip
-                        key={preset.key}
-                        selected={historyDatePreset === preset.key}
-                        onPress={() => handleHistoryDatePresetChange(preset.key)}
-                        style={[
-                          styles.historyPresetChip,
-                          historyDatePreset === preset.key && styles.historyPresetChipSelected
-                        ]}
-                        textStyle={{
-                          fontSize: 11,
-                          color: historyDatePreset === preset.key ? 'white' : '#333'
-                        }}
+                        style={[styles.historyTypeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
+                        textStyle={styles.chipText}
                         compact
                       >
-                        {preset.label}
+                        {item.movement_type}
                       </Chip>
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
-
-              <Divider style={{ marginBottom: 12 }} />
-
-              <Paragraph style={styles.historyCount}>
-                {productHistory.length} movement{productHistory.length !== 1 ? 's' : ''} found
-              </Paragraph>
-
-              {loadingHistory ? (
-                <View style={styles.loadingContainer}>
-                  <Paragraph>Loading history...</Paragraph>
-                </View>
-              ) : productHistory.length === 0 ? (
-                <View style={styles.loadingContainer}>
-                  <Paragraph>No movement history found.</Paragraph>
-                </View>
-              ) : (
-                productHistory.map((item, index) => (
-                  <View key={item.id || index} style={styles.historyItem}>
-                    <View style={styles.historyItemHeader}>
-                      <View style={styles.historyItemDate}>
-                        <Paragraph style={styles.historyDate}>
-                          {new Date(item.created_at).toLocaleString('en-PH', {
-                            timeZone: 'Asia/Manila',
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </Paragraph>
-                      </View>
-                      <View style={styles.historyChips}>
-                        <Chip
-                          style={[styles.historyTypeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
-                          textStyle={styles.chipText}
-                          compact
-                        >
-                          {item.movement_type}
-                        </Chip>
-                      </View>
                     </View>
-
-                    <View style={styles.historyQuantityRow}>
-                      <View style={styles.historyQtyItem}>
-                        <Paragraph style={styles.historyQtyLabel}>Before</Paragraph>
-                        <Paragraph style={styles.historyQtyValue}>{item.quantity_before}</Paragraph>
-                      </View>
-                      <Paragraph style={styles.historyArrow}>→</Paragraph>
-                      <View style={styles.historyQtyItem}>
-                        <Paragraph style={styles.historyQtyLabel}>After</Paragraph>
-                        <Paragraph style={styles.historyQtyValue}>{item.quantity_after}</Paragraph>
-                      </View>
-                      <View style={styles.historyQtyItem}>
-                        <Paragraph style={styles.historyQtyLabel}>Change</Paragraph>
-                        <Paragraph style={[
-                          styles.historyChangeValue,
-                          { color: item.movement_type === 'IN' ? '#4CAF50' : '#F44336' }
-                        ]}>
-                          {item.movement_type === 'IN' ? '+' : '-'}{item.quantity}
-                        </Paragraph>
-                      </View>
-                    </View>
-
-                    <Chip
-                      style={[styles.historyRefChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
-                      textStyle={styles.chipTextSmall}
-                      compact
-                    >
-                      {item.reference_type}
-                    </Chip>
-
-                    {item.reference_number && (
-                      <Paragraph style={styles.historyRef}>Ref: {item.reference_number}</Paragraph>
-                    )}
-
-                    {item.notes && (
-                      <Paragraph style={styles.historyNotes}>{item.notes}</Paragraph>
-                    )}
-
-                    {index < productHistory.length - 1 && <Divider style={{ marginTop: 12 }} />}
                   </View>
-                ))
+
+                  <View style={styles.historyQuantityRow}>
+                    <View style={styles.historyQtyItem}>
+                      <Paragraph style={styles.historyQtyLabel}>Before</Paragraph>
+                      <Paragraph style={styles.historyQtyValue}>{item.quantity_before}</Paragraph>
+                    </View>
+                    <Paragraph style={styles.historyArrow}>→</Paragraph>
+                    <View style={styles.historyQtyItem}>
+                      <Paragraph style={styles.historyQtyLabel}>After</Paragraph>
+                      <Paragraph style={styles.historyQtyValue}>{item.quantity_after}</Paragraph>
+                    </View>
+                    <View style={styles.historyQtyItem}>
+                      <Paragraph style={styles.historyQtyLabel}>Change</Paragraph>
+                      <Paragraph style={[
+                        styles.historyChangeValue,
+                        { color: item.movement_type === 'IN' ? '#4CAF50' : '#F44336' }
+                      ]}>
+                        {item.movement_type === 'IN' ? '+' : '-'}{item.quantity}
+                      </Paragraph>
+                    </View>
+                  </View>
+
+                  <Chip
+                    style={[styles.historyRefChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
+                    textStyle={styles.chipTextSmall}
+                    compact
+                  >
+                    {item.reference_type}
+                  </Chip>
+
+                  {item.reference_number && (
+                    <Paragraph style={styles.historyRef}>Ref: {item.reference_number}</Paragraph>
+                  )}
+
+                  {item.notes && (
+                    <Paragraph style={styles.historyNotes}>{item.notes}</Paragraph>
+                  )}
+
+                  {index < productHistory.length - 1 && <Divider style={{ marginTop: 12 }} />}
+                </View>
               )}
-            </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => {
-              setHistoryDialogVisible(false);
-              setSelectedProduct(null);
-              setProductHistory([]);
-              setHistoryDatePreset('last_30_days');
-            }}>
-              Close
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1063,12 +1079,12 @@ const styles = StyleSheet.create({
   },
   typeChip: {
     alignSelf: 'flex-end',
-    height: 34,
+    paddingVertical: 4,
     justifyContent: 'center',
   },
   referenceChip: {
     alignSelf: 'flex-end',
-    height: 32,
+    paddingVertical: 2,
     justifyContent: 'center',
   },
   chipText: {
@@ -1213,29 +1229,65 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  tapHint: {
-    fontSize: 10,
-    color: '#2196F3',
-    fontStyle: 'italic',
+  viewHistoryButton: {
+    backgroundColor: '#E3F2FD',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1976D2',
+  },
+  viewHistoryButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1976D2',
   },
   loadingContainer: {
     padding: 24,
     alignItems: 'center',
   },
-  historyDialog: {
-    maxHeight: '85%',
+  historyFullScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
   },
-  historyScrollArea: {
-    maxHeight: 450,
-    paddingHorizontal: 0,
+  historyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+    elevation: 2,
   },
-  historyTitle: {
+  historyBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingRight: 12,
+  },
+  historyBackArrow: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#1976D2',
+    marginRight: 6,
+  },
+  historyBackText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1976D2',
+  },
+  historyHeaderTitle: {
     fontSize: 18,
     fontWeight: 'bold',
+    textAlign: 'center',
   },
   historyProductInfo: {
     alignItems: 'center',
     padding: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
     backgroundColor: '#E3F2FD',
     borderRadius: 8,
     marginBottom: 12,
@@ -1270,7 +1322,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   historyTypeChip: {
-    height: 28,
+    paddingVertical: 2,
     justifyContent: 'center',
   },
   historyQuantityRow: {
@@ -1307,7 +1359,7 @@ const styles = StyleSheet.create({
   historyRefChip: {
     alignSelf: 'flex-start',
     marginBottom: 4,
-    height: 26,
+    paddingVertical: 2,
     justifyContent: 'center',
   },
   historyRef: {
@@ -1324,6 +1376,7 @@ const styles = StyleSheet.create({
   },
   historyDateFilter: {
     marginBottom: 12,
+    paddingHorizontal: 16,
   },
   historyFilterLabel: {
     fontSize: 12,
@@ -1347,6 +1400,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     opacity: 0.7,
     marginBottom: 8,
+    paddingHorizontal: 16,
     textAlign: 'center',
   },
 });
