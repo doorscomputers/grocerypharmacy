@@ -491,16 +491,14 @@ export default function InventoryMovementsScreen({ navigation }: Props) {
             <Chip
               style={[styles.typeChip, { backgroundColor: getMovementTypeColor(item.movement_type) }]}
               textStyle={styles.chipText}
-              compact
             >
               {item.movement_type}
             </Chip>
             <Chip
               style={[styles.referenceChip, { backgroundColor: getReferenceTypeColor(item.reference_type) }]}
-              textStyle={styles.chipTextSmall}
-              compact
+              textStyle={styles.chipTextRef}
             >
-              {item.reference_type}
+              {item.reference_type?.replace(/_/g, ' ')}
             </Chip>
           </View>
         </View>
@@ -1065,18 +1063,24 @@ const styles = StyleSheet.create({
   },
   typeChip: {
     alignSelf: 'flex-end',
-    height: 28,
+    height: 34,
     justifyContent: 'center',
   },
   referenceChip: {
     alignSelf: 'flex-end',
-    height: 26,
+    height: 32,
     justifyContent: 'center',
   },
   chipText: {
     color: 'white',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  chipTextRef: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '700',
   },
   chipTextSmall: {
     color: 'white',

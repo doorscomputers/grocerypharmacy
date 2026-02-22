@@ -540,35 +540,37 @@ export default function StockValuationReportScreen({ navigation }: Props) {
           Showing {paginatedProducts.length} of {filteredProducts.length} products
         </Paragraph>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={true}>
-          <DataTable style={{ minWidth: 800 }}>
+        <DataTable>
             <DataTable.Header>
-              <DataTable.Title style={{ width: 100 }}>Code</DataTable.Title>
-              <DataTable.Title style={{ width: 200 }}>Product Name</DataTable.Title>
-              <DataTable.Title numeric style={{ width: 80 }}>Stock</DataTable.Title>
-              <DataTable.Title numeric style={{ width: 100 }}>Cost</DataTable.Title>
-              <DataTable.Title numeric style={{ width: 100 }}>Retail</DataTable.Title>
-              <DataTable.Title numeric style={{ width: 120 }}>Cost Value</DataTable.Title>
-              <DataTable.Title numeric style={{ width: 120 }}>Retail Value</DataTable.Title>
+              <DataTable.Title style={{ flex: 1 }}>Code</DataTable.Title>
+              <DataTable.Title style={{ flex: 2 }}>Product</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 0.7 }}>Stock</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 1 }}>Cost</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 1 }}>Retail</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 1.2 }}>Cost Val.</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 1.2 }}>Retail Val.</DataTable.Title>
             </DataTable.Header>
 
             {paginatedProducts.map((product) => (
               <DataTable.Row key={product.id}>
-                <DataTable.Cell style={{ width: 100 }}>{product.code || '-'}</DataTable.Cell>
-                <DataTable.Cell style={{ width: 200 }}>{product.name}</DataTable.Cell>
-                <DataTable.Cell numeric style={{ width: 80 }}>{product.stock_quantity}</DataTable.Cell>
-                <DataTable.Cell numeric style={{ width: 100 }}>{formatCurrency(product.cost || 0)}</DataTable.Cell>
-                <DataTable.Cell numeric style={{ width: 100 }}>{formatCurrency(product.price || 0)}</DataTable.Cell>
-                <DataTable.Cell numeric style={{ width: 120 }}>
+                <DataTable.Cell style={{ flex: 1 }}>
+                  <Paragraph numberOfLines={1} style={styles.cellSmall}>{product.code || '-'}</Paragraph>
+                </DataTable.Cell>
+                <DataTable.Cell style={{ flex: 2 }}>
+                  <Paragraph numberOfLines={1}>{product.name}</Paragraph>
+                </DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 0.7 }}>{product.stock_quantity}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 1 }}>{formatCurrency(product.cost || 0)}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 1 }}>{formatCurrency(product.price || 0)}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 1.2 }}>
                   {formatCurrency((product.cost || 0) * (product.stock_quantity || 0))}
                 </DataTable.Cell>
-                <DataTable.Cell numeric style={{ width: 120 }}>
+                <DataTable.Cell numeric style={{ flex: 1.2 }}>
                   {formatCurrency((product.price || 0) * (product.stock_quantity || 0))}
                 </DataTable.Cell>
               </DataTable.Row>
             ))}
           </DataTable>
-        </ScrollView>
 
         {totalPages > 1 && (
           <DataTable.Pagination
@@ -789,6 +791,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.7,
     marginBottom: 8,
+  },
+  cellSmall: {
+    fontSize: 11,
   },
   totalRow: {
     flexDirection: 'row',

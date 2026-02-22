@@ -674,14 +674,6 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
             >
               Refresh
             </Button>
-            <Button
-              mode="contained"
-              onPress={createTestData}
-              style={styles.refreshButton}
-              loading={loading}
-            >
-              Generate Test Data
-            </Button>
           </View>
         </Card.Content>
       </Card>
@@ -798,12 +790,14 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   statusChip: {
-    height: 28,
+    height: 32,
+    justifyContent: 'center',
   },
   statusChipText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
     color: 'white',
+    lineHeight: 14,
   },
   expandedContent: {
     paddingTop: 0,

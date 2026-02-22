@@ -4,6 +4,8 @@ import {
   StyleSheet,
   FlatList,
   ScrollView,
+  TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import {
   Card,
@@ -14,6 +16,8 @@ import {
   Chip,
   Divider,
   DataTable,
+  TextInput,
+  IconButton,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
@@ -46,6 +50,10 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
   });
 
   const [companySettings, setCompanySettings] = useState({ name: '', address: '', tin: '' });
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [sessionItems, setSessionItems] = useState<any[]>([]);
+  const [loadingItems, setLoadingItems] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
@@ -99,6 +107,26 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
       console.error('Error loading damage history:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleSessionExpand = async (sessionId: string) => {
+    if (expandedSessionId === sessionId) {
+      setExpandedSessionId(null);
+      setSessionItems([]);
+      return;
+    }
+    try {
+      setLoadingItems(true);
+      setExpandedSessionId(sessionId);
+      const dbService = getDatabase();
+      const sessionData = await dbService.getDamageSessionById(sessionId);
+      setSessionItems(sessionData?.items || []);
+    } catch (error) {
+      console.error('Error loading session items:', error);
+      setSessionItems([]);
+    } finally {
+      setLoadingItems(false);
     }
   };
 
@@ -350,54 +378,106 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
     `;
   };
 
-  const renderSession = ({ item }: { item: any }) => (
-    <Card style={styles.sessionCard}>
-      <Card.Content>
-        <View style={styles.sessionHeader}>
-          <View style={styles.sessionInfo}>
-            <Title style={styles.sessionId}>{item.session_id}</Title>
-            <Paragraph style={styles.sessionName}>{item.session_name}</Paragraph>
-            <Paragraph style={styles.sessionDate}>
-              Started: {formatPhilippineDate(item.started_at)}
-            </Paragraph>
-            <Paragraph style={styles.sessionUser}>
-              By: {item.started_by_name}
-            </Paragraph>
-          </View>
-          <View style={styles.sessionStats}>
-            <Chip
-              style={[styles.statusChip, { backgroundColor: getStatusColor(item.status) }]}
-              textStyle={{ color: 'white' }}
-            >
-              {item.status}
-            </Chip>
-            <Paragraph style={styles.itemCount}>
-              {item.total_items} items
-            </Paragraph>
-            <Paragraph style={styles.totalValue}>
-              ₱{item.total_value?.toFixed(2) || '0.00'}
-            </Paragraph>
-          </View>
-        </View>
+  const renderSession = ({ item }: { item: any }) => {
+    const isExpanded = expandedSessionId === item.session_id;
+    return (
+      <Card style={styles.sessionCard}>
+        <TouchableOpacity onPress={() => toggleSessionExpand(item.session_id)} activeOpacity={0.7}>
+          <Card.Content>
+            <View style={styles.sessionHeader}>
+              <View style={styles.sessionInfo}>
+                <Title style={styles.sessionId}>{item.session_id}</Title>
+                <Paragraph style={styles.sessionName}>{item.session_name}</Paragraph>
+                <Paragraph style={styles.sessionDate}>
+                  Started: {formatPhilippineDate(item.started_at)}
+                </Paragraph>
+                <Paragraph style={styles.sessionUser}>
+                  By: {item.started_by_name}
+                </Paragraph>
+              </View>
+              <View style={styles.sessionStats}>
+                <Chip
+                  style={[styles.statusChip, { backgroundColor: getStatusColor(item.status) }]}
+                  textStyle={{ color: 'white' }}
+                >
+                  {item.status}
+                </Chip>
+                <Paragraph style={styles.itemCount}>
+                  {item.total_items} items
+                </Paragraph>
+                <Paragraph style={styles.totalValue}>
+                  ₱{item.total_value?.toFixed(2) || '0.00'}
+                </Paragraph>
+                <IconButton
+                  icon={isExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  style={{ margin: 0 }}
+                />
+              </View>
+            </View>
 
-        {item.completed_at && (
-          <Paragraph style={styles.completedInfo}>
-            Completed: {formatPhilippineDate(item.completed_at)} by {item.completed_by_name}
-          </Paragraph>
-        )}
+            {item.completed_at && (
+              <Paragraph style={styles.completedInfo}>
+                Completed: {formatPhilippineDate(item.completed_at)} by {item.completed_by_name}
+              </Paragraph>
+            )}
 
-        {item.cancelled_reason && (
-          <Paragraph style={styles.cancelledInfo}>
-            Cancelled: {item.cancelled_reason} by {item.cancelled_by_name}
-          </Paragraph>
-        )}
+            {item.cancelled_reason && (
+              <Paragraph style={styles.cancelledInfo}>
+                Cancelled: {item.cancelled_reason} by {item.cancelled_by_name}
+              </Paragraph>
+            )}
 
-        {item.notes && (
-          <Paragraph style={styles.sessionNotes}>{item.notes}</Paragraph>
+            {item.notes && (
+              <Paragraph style={styles.sessionNotes}>{item.notes}</Paragraph>
+            )}
+          </Card.Content>
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <Card.Content style={styles.expandedItems}>
+            <Divider style={{ marginBottom: 8 }} />
+            <Paragraph style={styles.expandedTitle}>Damaged Items</Paragraph>
+            {loadingItems ? (
+              <ActivityIndicator size="small" style={{ paddingVertical: 16 }} />
+            ) : sessionItems.length === 0 ? (
+              <Paragraph style={styles.noItemsText}>No items in this session</Paragraph>
+            ) : (
+              <DataTable>
+                <DataTable.Header>
+                  <DataTable.Title style={{ flex: 2 }}>Product</DataTable.Title>
+                  <DataTable.Title style={{ flex: 1.2 }}>Reason</DataTable.Title>
+                  <DataTable.Title numeric style={{ flex: 0.6 }}>Qty</DataTable.Title>
+                  <DataTable.Title numeric style={{ flex: 1 }}>Value</DataTable.Title>
+                </DataTable.Header>
+                {sessionItems.map((di: any, idx: number) => (
+                  <DataTable.Row key={di.id || idx}>
+                    <DataTable.Cell style={{ flex: 2 }}>
+                      <View>
+                        <Paragraph style={styles.itemProductName} numberOfLines={1}>{di.product_name}</Paragraph>
+                        <Paragraph style={styles.itemProductCode}>{di.product_code}</Paragraph>
+                      </View>
+                    </DataTable.Cell>
+                    <DataTable.Cell style={{ flex: 1.2 }}>
+                      <Chip
+                        style={[styles.reasonChipSmall, { backgroundColor: getReasonColor(di.damage_reason) }]}
+                        textStyle={{ color: 'white', fontSize: 9 }}
+                        compact
+                      >
+                        {di.damage_reason}
+                      </Chip>
+                    </DataTable.Cell>
+                    <DataTable.Cell numeric style={{ flex: 0.6 }}>{di.damaged_quantity}</DataTable.Cell>
+                    <DataTable.Cell numeric style={{ flex: 1 }}>₱{(di.total_value || 0).toFixed(2)}</DataTable.Cell>
+                  </DataTable.Row>
+                ))}
+              </DataTable>
+            )}
+          </Card.Content>
         )}
-      </Card.Content>
-    </Card>
-  );
+      </Card>
+    );
+  };
 
   const renderReports = () => (
     <ScrollView contentContainerStyle={[styles.reportsContainer, { padding: lo.screenPadding }]}>
@@ -480,27 +560,43 @@ export default function DamagedItemsHistoryScreen({ navigation }: Props) {
       <Card style={styles.reportCard}>
         <Card.Content>
           <Title style={styles.reportTitle}>Top Damaged Products</Title>
+          <TextInput
+            mode="outlined"
+            placeholder="Search product name or code..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            style={styles.reportSearchInput}
+            dense
+            left={<TextInput.Icon icon="magnify" />}
+            right={searchQuery ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} /> : null}
+          />
           <DataTable>
             <DataTable.Header>
-              <DataTable.Title>Product</DataTable.Title>
-              <DataTable.Title numeric>Count</DataTable.Title>
-              <DataTable.Title numeric>Quantity</DataTable.Title>
-              <DataTable.Title numeric>Value</DataTable.Title>
+              <DataTable.Title style={{ flex: 2 }}>Product</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 0.8 }}>Count</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 0.8 }}>Qty</DataTable.Title>
+              <DataTable.Title numeric style={{ flex: 1.2 }}>Value</DataTable.Title>
             </DataTable.Header>
 
-            {damageReports?.productSummary?.map((item: any, index: number) => (
+            {(damageReports?.productSummary || [])
+              .filter((item: any) => {
+                if (!searchQuery.trim()) return true;
+                const q = searchQuery.toLowerCase();
+                return item.product_name?.toLowerCase().includes(q) || item.product_code?.toLowerCase().includes(q);
+              })
+              .map((item: any, index: number) => (
               <DataTable.Row key={index}>
-                <DataTable.Cell>
+                <DataTable.Cell style={{ flex: 2 }}>
                   <View>
                     <Paragraph style={styles.productName}>{item.product_name}</Paragraph>
                     <Paragraph style={styles.productCode}>{item.product_code}</Paragraph>
                   </View>
                 </DataTable.Cell>
-                <DataTable.Cell numeric>{item.damage_count}</DataTable.Cell>
-                <DataTable.Cell numeric>{item.total_quantity}</DataTable.Cell>
-                <DataTable.Cell numeric>₱{item.total_value?.toFixed(2)}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 0.8 }}>{item.damage_count}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 0.8 }}>{item.total_quantity}</DataTable.Cell>
+                <DataTable.Cell numeric style={{ flex: 1.2 }}>₱{item.total_value?.toFixed(2)}</DataTable.Cell>
               </DataTable.Row>
-            )) || []}
+            ))}
           </DataTable>
         </Card.Content>
       </Card>
@@ -717,6 +813,11 @@ const styles = StyleSheet.create({
   reasonChip: {
     alignSelf: 'flex-start',
   },
+  reasonChipSmall: {
+    alignSelf: 'flex-start',
+    height: 24,
+    justifyContent: 'center',
+  },
   productName: {
     fontSize: 12,
     fontWeight: 'bold',
@@ -724,5 +825,33 @@ const styles = StyleSheet.create({
   productCode: {
     fontSize: 10,
     opacity: 0.7,
+  },
+  expandedItems: {
+    paddingTop: 0,
+    paddingBottom: 12,
+  },
+  expandedTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  noItemsText: {
+    textAlign: 'center',
+    fontSize: 13,
+    opacity: 0.6,
+    paddingVertical: 12,
+  },
+  itemProductName: {
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  itemProductCode: {
+    fontSize: 10,
+    opacity: 0.6,
+  },
+  reportSearchInput: {
+    marginBottom: 12,
+    backgroundColor: '#fff',
   },
 });
