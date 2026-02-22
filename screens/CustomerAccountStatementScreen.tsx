@@ -14,7 +14,7 @@
  * - Email functionality
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -36,6 +36,7 @@ import {
   Surface,
   IconButton,
   ActivityIndicator,
+  TextInput,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
@@ -140,6 +141,7 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
 
   // Tab and data
   const [activeTab, setActiveTab] = useState('soa');
+  const [productSearchQuery, setProductSearchQuery] = useState('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [returns, setReturns] = useState<SalesReturn[]>([]);
@@ -240,8 +242,10 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
     try {
       setLoading(true);
       const dbService = getDatabase();
-      const startDateStr = dateRange.startDate.toISOString().split('T')[0];
-      const endDateStr = dateRange.endDate.toISOString().split('T')[0];
+      const sd = dateRange.startDate;
+      const ed = dateRange.endDate;
+      const startDateStr = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, '0')}-${String(sd.getDate()).padStart(2, '0')}`;
+      const endDateStr = `${ed.getFullYear()}-${String(ed.getMonth() + 1).padStart(2, '0')}-${String(ed.getDate()).padStart(2, '0')}`;
 
       // Load transactions with items
       const txData = await dbService.getCustomerTransactionsWithItems(
@@ -343,6 +347,26 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
   const totalCreditReturnsInRange = returns
     .filter(r => r.refund_method === 'CREDIT' || r.refund_method === 'EXCHANGE')
     .reduce((sum, r) => sum + (r.total_amount || 0), 0);
+
+  // Product search filtering
+  const pQuery = productSearchQuery.trim().toLowerCase();
+
+  const filteredTransactions = useMemo(() => {
+    if (!pQuery) return transactions;
+    return transactions.filter(tx =>
+      tx.items?.some(item => item.product_name.toLowerCase().includes(pQuery))
+    );
+  }, [transactions, pQuery]);
+
+  const filteredReturns = useMemo(() => {
+    if (!pQuery) return returns;
+    return returns.filter(ret =>
+      ret.items?.some(item => item.product_name.toLowerCase().includes(pQuery))
+    );
+  }, [returns, pQuery]);
+
+  const filteredPurchasesTotal = filteredTransactions.reduce((sum, t) => sum + (t.total_amount || 0), 0);
+  const filteredReturnsTotal = filteredReturns.reduce((sum, r) => sum + (r.total_amount || 0), 0);
 
   // SOA totals - unpaid invoices
   const totalUnpaidAmount = unpaidInvoices.reduce((sum, inv) => sum + (inv.original_amount || 0), 0);
@@ -1338,7 +1362,7 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
           {/* Tab Selector */}
           <SegmentedButtons
             value={activeTab}
-            onValueChange={setActiveTab}
+            onValueChange={(val) => { setActiveTab(val); setProductSearchQuery(''); }}
             buttons={[
               { value: 'soa', label: 'SOA', icon: 'file-document' },
               { value: 'purchases', label: 'Purchases', icon: 'cart' },
@@ -1372,23 +1396,37 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
               {activeTab === 'soa' && renderSOATab()}
               {activeTab === 'purchases' && (
                 <FlatList
-                  data={transactions}
+                  data={filteredTransactions}
                   keyExtractor={(item) => item.id.toString()}
                   renderItem={renderPurchaseItem}
                   contentContainerStyle={[styles.listContent, { padding: sp.md }]}
                   ListEmptyComponent={
                     <View style={styles.emptyContainer}>
-                      <Text style={styles.emptyText}>No purchases found for this period</Text>
+                      <Text style={styles.emptyText}>
+                        {pQuery ? `No purchases found matching "${productSearchQuery.trim()}"` : 'No purchases found for this period'}
+                      </Text>
                     </View>
                   }
                   ListHeaderComponent={
-                    transactions.length > 0 ? (
-                      <View style={styles.listHeader}>
-                        <Text style={styles.listHeaderText}>
-                          {transactions.length} purchase(s) • Total: {formatCurrency(totalPurchasesInRange)}
-                        </Text>
-                      </View>
-                    ) : null
+                    <>
+                      <TextInput
+                        mode="outlined"
+                        placeholder="Search by product name..."
+                        value={productSearchQuery}
+                        onChangeText={setProductSearchQuery}
+                        left={<TextInput.Icon icon="magnify" />}
+                        right={productSearchQuery ? <TextInput.Icon icon="close" onPress={() => setProductSearchQuery('')} /> : undefined}
+                        style={styles.productSearchInput}
+                        dense
+                      />
+                      {filteredTransactions.length > 0 ? (
+                        <View style={styles.listHeader}>
+                          <Text style={styles.listHeaderText}>
+                            {filteredTransactions.length} purchase(s) • Total: {formatCurrency(filteredPurchasesTotal)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </>
                   }
                 />
               )}
@@ -1416,23 +1454,37 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
               )}
               {activeTab === 'returns' && (
                 <FlatList
-                  data={returns}
+                  data={filteredReturns}
                   keyExtractor={(item) => item.id.toString()}
                   renderItem={renderReturnItem}
                   contentContainerStyle={[styles.listContent, { padding: sp.md }]}
                   ListEmptyComponent={
                     <View style={styles.emptyContainer}>
-                      <Text style={styles.emptyText}>No returns found for this period</Text>
+                      <Text style={styles.emptyText}>
+                        {pQuery ? `No returns found matching "${productSearchQuery.trim()}"` : 'No returns found for this period'}
+                      </Text>
                     </View>
                   }
                   ListHeaderComponent={
-                    returns.length > 0 ? (
-                      <View style={styles.listHeader}>
-                        <Text style={styles.listHeaderText}>
-                          {returns.length} return(s) • Total: {formatCurrency(totalReturnsInRange)}
-                        </Text>
-                      </View>
-                    ) : null
+                    <>
+                      <TextInput
+                        mode="outlined"
+                        placeholder="Search by product name..."
+                        value={productSearchQuery}
+                        onChangeText={setProductSearchQuery}
+                        left={<TextInput.Icon icon="magnify" />}
+                        right={productSearchQuery ? <TextInput.Icon icon="close" onPress={() => setProductSearchQuery('')} /> : undefined}
+                        style={styles.productSearchInput}
+                        dense
+                      />
+                      {filteredReturns.length > 0 ? (
+                        <View style={styles.listHeader}>
+                          <Text style={styles.listHeaderText}>
+                            {filteredReturns.length} return(s) • Total: {formatCurrency(filteredReturnsTotal)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </>
                   }
                 />
               )}
@@ -1533,6 +1585,10 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: 12,
+  },
+  productSearchInput: {
+    marginBottom: 10,
+    backgroundColor: '#fff',
   },
   listHeader: {
     backgroundColor: '#FAFAFA',
