@@ -1474,32 +1474,33 @@ export default function CustomerPaymentsScreen({ navigation }: Props) {
                 </View>
               )}
 
-              <View style={styles.modalButtons}>
-                <Button
-                  mode="outlined"
-                  onPress={() => {
-                    setPaymentModalVisible(false);
-                    if (selectedInvoicesTotal.count > 1) {
-                      // Keep selections for multi-invoice
-                    } else {
-                      setSelectedInvoiceIds(new Set());
-                    }
-                  }}
-                  style={styles.modalButton}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={processPayment}
-                  style={styles.modalButton}
-                  loading={loading}
-                >
-                  Process Payment
-                </Button>
-              </View>
             </View>
           </ScrollView>
+
+          <View style={styles.modalButtons}>
+            <Button
+              mode="outlined"
+              onPress={() => {
+                setPaymentModalVisible(false);
+                if (selectedInvoicesTotal.count > 1) {
+                  // Keep selections for multi-invoice
+                } else {
+                  setSelectedInvoiceIds(new Set());
+                }
+              }}
+              style={styles.modalButton}
+            >
+              Cancel
+            </Button>
+            <Button
+              mode="contained"
+              onPress={processPayment}
+              style={styles.modalButton}
+              loading={loading}
+            >
+              Process Payment
+            </Button>
+          </View>
         </Modal>
       </Portal>
 
@@ -1583,9 +1584,11 @@ const styles = StyleSheet.create({
     borderColor: '#ccc',
     borderRadius: 4,
     marginBottom: 8,
+    justifyContent: 'center',
+    minHeight: 64,
   },
   picker: {
-    height: 50,
+    height: 64,
     color: '#212121',
   },
   filterButton: {
