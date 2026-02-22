@@ -94,6 +94,19 @@ interface Payment {
   status: string;
 }
 
+interface SalesReturn {
+  id: number;
+  return_number: string;
+  return_date: string;
+  total_amount: number;
+  refund_method: string;
+  reason: string;
+  notes?: string;
+  original_invoice_number?: string;
+  processed_by_name?: string;
+  items: { product_name: string; quantity: number; unit_price: number; total_amount: number }[];
+}
+
 interface BalanceSummary {
   totalPurchases: number;
   totalPayments: number;
@@ -129,6 +142,7 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
   const [activeTab, setActiveTab] = useState('soa');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [returns, setReturns] = useState<SalesReturn[]>([]);
   const [unpaidInvoices, setUnpaidInvoices] = useState<UnpaidInvoice[]>([]);
   const [balanceSummary, setBalanceSummary] = useState<BalanceSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -244,6 +258,14 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
         endDateStr
       );
       setPayments(payData);
+
+      // Load returns
+      const retData = await dbService.getCustomerSalesReturns(
+        selectedCustomer.id,
+        startDateStr,
+        endDateStr
+      );
+      setReturns(retData);
     } catch (error) {
       console.error('Error loading date range data:', error);
       Alert.alert('Error', 'Failed to load customer data');
@@ -317,6 +339,10 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
   // Totals calculations
   const totalPurchasesInRange = transactions.reduce((sum, t) => sum + (t.total_amount || 0), 0);
   const totalPaymentsInRange = payments.reduce((sum, p) => sum + (p.amount_paid || 0), 0);
+  const totalReturnsInRange = returns.reduce((sum, r) => sum + (r.total_amount || 0), 0);
+  const totalCreditReturnsInRange = returns
+    .filter(r => r.refund_method === 'CREDIT' || r.refund_method === 'EXCHANGE')
+    .reduce((sum, r) => sum + (r.total_amount || 0), 0);
 
   // SOA totals - unpaid invoices
   const totalUnpaidAmount = unpaidInvoices.reduce((sum, inv) => sum + (inv.original_amount || 0), 0);
@@ -412,6 +438,26 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
       builder.separator();
     }
 
+    // Returns in date range
+    if (returns.length > 0) {
+      builder
+        .bold(true)
+        .println('RETURNS / CREDITS')
+        .bold(false);
+
+      for (const ret of returns) {
+        builder
+          .leftRight(ret.return_number, formatDate(ret.return_date))
+          .leftRight(`  ${ret.refund_method}:`, formatCurrency(ret.total_amount));
+        if (ret.original_invoice_number) {
+          builder.println(`    Orig: ${ret.original_invoice_number}`);
+        }
+        builder.println(`    ${ret.reason}`);
+      }
+      builder.leftRight('TOTAL RETURNS:', formatCurrency(totalReturnsInRange));
+      builder.separator();
+    }
+
     // Footer
     builder
       .feed(1)
@@ -454,6 +500,51 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
             <tr style="background:#E3F2FD; font-weight:bold;">
               <td colspan="3" style="padding:10px;">Total Purchases</td>
               <td style="text-align:right; padding:10px;">${formatCurrency(totalPurchasesInRange)}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    let returnsHtml = '';
+    if (returns.length > 0) {
+      const getRefundColor = (method: string) => {
+        switch (method) {
+          case 'CREDIT': return '#388E3C';
+          case 'EXCHANGE': return '#1976D2';
+          case 'CASH': return '#F57C00';
+          default: return '#757575';
+        }
+      };
+      returnsHtml = `
+        <h2 style="color:#D32F2F; margin-top:20px;">Returns / Credits</h2>
+        <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+          <thead>
+            <tr style="background:#FFEBEE;">
+              <th style="text-align:left; padding:10px; border-bottom:2px solid #D32F2F;">Return #</th>
+              <th style="text-align:left; padding:10px; border-bottom:2px solid #D32F2F;">Date</th>
+              <th style="text-align:left; padding:10px; border-bottom:2px solid #D32F2F;">Original Invoice</th>
+              <th style="text-align:center; padding:10px; border-bottom:2px solid #D32F2F;">Method</th>
+              <th style="text-align:left; padding:10px; border-bottom:2px solid #D32F2F;">Reason</th>
+              <th style="text-align:right; padding:10px; border-bottom:2px solid #D32F2F;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${returns.map(ret => `
+              <tr>
+                <td style="padding:10px; border-bottom:1px solid #eee;">${ret.return_number}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee;">${formatDate(ret.return_date)}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee;">${ret.original_invoice_number || '-'}</td>
+                <td style="text-align:center; padding:10px; border-bottom:1px solid #eee;">
+                  <span style="background:${getRefundColor(ret.refund_method)}; color:white; padding:2px 8px; border-radius:4px; font-size:11px;">${ret.refund_method}</span>
+                </td>
+                <td style="padding:10px; border-bottom:1px solid #eee; font-size:11px;">${ret.reason}${ret.notes ? '<br><em>' + ret.notes + '</em>' : ''}</td>
+                <td style="text-align:right; padding:10px; border-bottom:1px solid #eee;">${formatCurrency(ret.total_amount)}</td>
+              </tr>
+            `).join('')}
+            <tr style="background:#FFEBEE; font-weight:bold;">
+              <td colspan="5" style="padding:10px;">Total Returns</td>
+              <td style="text-align:right; padding:10px;">${formatCurrency(totalReturnsInRange)}</td>
             </tr>
           </tbody>
         </table>
@@ -555,6 +646,8 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
         ${purchasesHtml}
 
         ${paymentsHtml}
+
+        ${returnsHtml}
 
         <div class="footer">
           <p>Generated: ${formatPhilippineDateTime(new Date())}</p>
@@ -881,6 +974,98 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
     </Card>
   );
 
+  // Returns: badge colors by refund method
+  const getRefundMethodBadge = (method: string) => {
+    switch (method) {
+      case 'CREDIT': return { bg: '#E8F5E9', text: '#2E7D32', label: 'Credit' };
+      case 'EXCHANGE': return { bg: '#E3F2FD', text: '#1565C0', label: 'Exchange' };
+      case 'CASH': return { bg: '#FFF3E0', text: '#E65100', label: 'Cash Refund' };
+      case 'STORE_CREDIT': return { bg: '#F3E5F5', text: '#7B1FA2', label: 'Store Credit' };
+      default: return { bg: '#F5F5F5', text: '#616161', label: method };
+    }
+  };
+
+  const getRefundExplanation = (ret: SalesReturn) => {
+    switch (ret.refund_method) {
+      case 'CREDIT': return `Balance reduced by ${formatCurrency(ret.total_amount)}`;
+      case 'EXCHANGE': return 'Exchange — see items below';
+      case 'CASH': return `Cash refund ${formatCurrency(ret.total_amount)}`;
+      case 'STORE_CREDIT': return `Store credit ${formatCurrency(ret.total_amount)}`;
+      default: return '';
+    }
+  };
+
+  // Render return item card
+  const renderReturnItem = ({ item: ret }: { item: SalesReturn }) => {
+    const badge = getRefundMethodBadge(ret.refund_method);
+    return (
+      <Card style={styles.itemCard}>
+        <Card.Content>
+          <View style={styles.itemHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.invoiceNumber}>{ret.return_number}</Text>
+              <Text style={styles.dateText}>{formatDate(ret.return_date)}</Text>
+              {ret.original_invoice_number && (
+                <Text style={styles.forInvoice}>Orig: {ret.original_invoice_number}</Text>
+              )}
+            </View>
+            <View style={styles.amountContainer}>
+              <Text style={[styles.amountText, { color: '#D32F2F' }]}>
+                {formatCurrency(ret.total_amount)}
+              </Text>
+              <Chip
+                compact
+                mode="flat"
+                style={[styles.statusChip, { backgroundColor: badge.bg }]}
+                textStyle={[styles.statusChipText, { color: badge.text }]}
+              >
+                {badge.label}
+              </Chip>
+            </View>
+          </View>
+
+          {/* Explanation */}
+          <Text style={[styles.notes, { color: badge.text, fontStyle: 'normal', marginTop: 6 }]}>
+            {getRefundExplanation(ret)}
+          </Text>
+
+          {/* Reason */}
+          <Text style={[styles.notes, { marginTop: 4 }]}>
+            Reason: {ret.reason}
+          </Text>
+
+          {/* Notes (exchange details, etc.) */}
+          {ret.notes && (
+            <Text style={[styles.notes, { marginTop: 2 }]}>
+              {ret.notes}
+            </Text>
+          )}
+
+          {/* Items */}
+          {ret.items && ret.items.length > 0 && (
+            <View style={styles.itemsContainer}>
+              <Divider style={styles.divider} />
+              <Text style={styles.itemsHeader}>Returned Items:</Text>
+              {ret.items.map((item, idx) => (
+                <View key={idx} style={styles.itemRow}>
+                  <Text style={styles.itemName}>{item.quantity}x {item.product_name}</Text>
+                  <Text style={styles.itemPrice}>{formatCurrency(item.total_amount)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Processed by */}
+          {ret.processed_by_name && (
+            <Text style={[styles.notes, { marginTop: 4 }]}>
+              Processed by: {ret.processed_by_name}
+            </Text>
+          )}
+        </Card.Content>
+      </Card>
+    );
+  };
+
   // Render SOA (Statement of Account) tab
   const renderSOATab = () => (
     <ScrollView style={[styles.soaContainer, { padding: sp.md }]}>
@@ -1074,6 +1259,12 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
                 <Text style={styles.periodLabel}>Payments in period:</Text>
                 <Text style={styles.periodValue}>{formatCurrency(totalPaymentsInRange)}</Text>
               </View>
+              {totalReturnsInRange > 0 && (
+                <View style={styles.periodRow}>
+                  <Text style={styles.periodLabel}>Returns/Credits in period:</Text>
+                  <Text style={[styles.periodValue, { color: '#D32F2F' }]}>{formatCurrency(totalReturnsInRange)}</Text>
+                </View>
+              )}
             </Card.Content>
           </Card>
         </>
@@ -1152,6 +1343,7 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
               { value: 'soa', label: 'SOA', icon: 'file-document' },
               { value: 'purchases', label: 'Purchases', icon: 'cart' },
               { value: 'payments', label: 'Payments', icon: 'cash' },
+              { value: 'returns', label: 'Returns', icon: 'undo-variant' },
               { value: 'summary', label: 'Summary', icon: 'chart-bar' },
             ]}
             style={styles.segmentedButtons}
@@ -1216,6 +1408,28 @@ export default function CustomerAccountStatementScreen({ navigation }: Props) {
                       <View style={styles.listHeader}>
                         <Text style={styles.listHeaderText}>
                           {payments.length} payment(s) • Total: {formatCurrency(totalPaymentsInRange)}
+                        </Text>
+                      </View>
+                    ) : null
+                  }
+                />
+              )}
+              {activeTab === 'returns' && (
+                <FlatList
+                  data={returns}
+                  keyExtractor={(item) => item.id.toString()}
+                  renderItem={renderReturnItem}
+                  contentContainerStyle={[styles.listContent, { padding: sp.md }]}
+                  ListEmptyComponent={
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>No returns found for this period</Text>
+                    </View>
+                  }
+                  ListHeaderComponent={
+                    returns.length > 0 ? (
+                      <View style={styles.listHeader}>
+                        <Text style={styles.listHeaderText}>
+                          {returns.length} return(s) • Total: {formatCurrency(totalReturnsInRange)}
                         </Text>
                       </View>
                     ) : null

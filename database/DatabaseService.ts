@@ -4482,6 +4482,46 @@ export class DatabaseService {
   }
 
   /**
+   * Get customer sales returns for a date range
+   * Used for Customer Account Statement - Returns tab
+   */
+  public async getCustomerSalesReturns(
+    customerId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<any[]> {
+    const db = this.getDatabase();
+
+    try {
+      const returns = await db.getAllAsync<any>(
+        `SELECT sr.*, u.full_name as processed_by_name
+         FROM sales_returns sr
+         LEFT JOIN users u ON sr.processed_by = u.id
+         WHERE sr.customer_id = ?
+           AND DATE(sr.return_date) >= DATE(?)
+           AND DATE(sr.return_date) <= DATE(?)
+           AND sr.status = 'COMPLETED'
+         ORDER BY sr.return_date DESC, sr.id DESC`,
+        [customerId, startDate, endDate]
+      );
+
+      // Get items for each return
+      for (const ret of returns) {
+        const items = await db.getAllAsync<any>(
+          `SELECT * FROM sales_return_items WHERE sales_return_id = ?`,
+          [ret.id]
+        );
+        ret.items = items;
+      }
+
+      return returns;
+    } catch (error) {
+      console.error('Error getting customer sales returns:', error);
+      return [];
+    }
+  }
+
+  /**
    * Get customer balance summary
    * Used for Customer Account Statement - Summary section
    */

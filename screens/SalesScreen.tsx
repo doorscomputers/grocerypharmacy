@@ -39,8 +39,6 @@ import {
   POSPettyCashModal,
   POSXReadingModal,
   POSVoidModal,
-  POSRefundModal,
-  POSExchangeModal,
   POSQuickCustomerModal,
   POSUnterminatedSessionModal,
   POSReprintModal,
@@ -176,8 +174,6 @@ export default function SalesScreen({ navigation, route }: Props) {
   const [xReadingModalVisible, setXReadingModalVisible] = useState(false);
   const [xReadingTargetDate, setXReadingTargetDate] = useState<string | undefined>(undefined);
   const [voidModalVisible, setVoidModalVisible] = useState(false);
-  const [refundModalVisible, setRefundModalVisible] = useState(false);
-  const [exchangeModalVisible, setExchangeModalVisible] = useState(false);
   const [quickCustomerModalVisible, setQuickCustomerModalVisible] = useState(false);
   const [reprintModalVisible, setReprintModalVisible] = useState(false);
 
@@ -1162,11 +1158,11 @@ export default function SalesScreen({ navigation, route }: Props) {
         }}
         onRefund={() => {
           setHamburgerMenuVisible(false);
-          setRefundModalVisible(true);
+          navigation.navigate('Refund', { cashierId: user?.id || 0 });
         }}
         onExchange={() => {
           setHamburgerMenuVisible(false);
-          setExchangeModalVisible(true);
+          navigation.navigate('Exchange', { cashierId: user?.id || 0 });
         }}
         onVoid={() => {
           setHamburgerMenuVisible(false);
@@ -1213,28 +1209,6 @@ export default function SalesScreen({ navigation, route }: Props) {
         onClose={() => setVoidModalVisible(false)}
         onSuccess={() => {
           setVoidModalVisible(false);
-          refreshProducts();
-        }}
-        cashierId={user?.id || 0}
-      />
-
-      {/* Refund Modal */}
-      <POSRefundModal
-        visible={refundModalVisible}
-        onClose={() => setRefundModalVisible(false)}
-        onSuccess={() => {
-          setRefundModalVisible(false);
-          refreshProducts();
-        }}
-        cashierId={user?.id || 0}
-      />
-
-      {/* Exchange Modal */}
-      <POSExchangeModal
-        visible={exchangeModalVisible}
-        onClose={() => setExchangeModalVisible(false)}
-        onSuccess={() => {
-          setExchangeModalVisible(false);
           refreshProducts();
         }}
         cashierId={user?.id || 0}

@@ -1,19 +1,19 @@
-# Sales Report — Vivid Tabs + Per-Tab Search
+# Fix Exchange Screen - Process Exchange Button Cut Off
 
 ## TODO
-- [x] Clear search on tab switch
-- [x] Remove global search bar card
-- [x] Restyle tabs — remove Card wrapper, add "View:" label, bold styling
-- [x] Add renderSearchBar helper inside component
-- [x] Insert search bars into Products, Categories, and Transactions views
-- [x] Add new styles (tabSearchContainer, viewSelectorContainer)
+- [x] Step 1: Import `useSafeAreaInsets` and apply bottom inset padding to footer in ExchangeScreen
+- [x] Step 2: Apply same fix to RefundScreen which has the identical layout pattern
 
 ## Review
-- **Single file changed**: `screens/SalesReportScreen.tsx`
-- **Removed** the global search bar Card that sat above all tabs (confusing on Summary tab)
-- **Restyled tabs**: Removed Card wrapper, added a blue-tinted `viewSelectorContainer` with elevation 3, rounded corners, and a bold uppercase "View:" label — tabs now visually stand out from filter cards
-- **Added `renderSearchBar` helper**: Reusable inline function that renders a TextInput with magnify icon and clear button
-- **Per-tab search bars**: Products ("Search product name or code..."), Categories ("Search category name..."), Details ("Search invoice, customer, cashier...") — Summary has no search bar
-- **Search clears on tab switch**: `setSearchQuery('')` added to `onValueChange` so stale queries don't carry over
-- **No logic changes**: Existing `searchQuery` filtering in `filteredTransactions`, `salesByProduct`, and `salesByCategory` useMemos remain unchanged
-- TypeScript check passed (no new errors)
+
+### Root Cause
+Both screens use `SafeAreaView` from React Native core, which on **Android does NOT handle bottom safe area** (system navigation bar / gesture bar). The footer with action buttons sits behind the Android nav bar, making buttons half-visible and untappable. This is especially bad in landscape mode where vertical space is already limited.
+
+### Files Modified
+- **`screens/ExchangeScreen.tsx`** — Added `useSafeAreaInsets` + applied `paddingBottom: Math.max(insets.bottom, 16)` to footer
+- **`screens/RefundScreen.tsx`** — Same fix (identical layout pattern had same bug)
+
+### Changes Made
+1. Imported `useSafeAreaInsets` from `react-native-safe-area-context` (already in project dependencies)
+2. Added `const insets = useSafeAreaInsets()` hook call
+3. Applied `paddingBottom: Math.max(insets.bottom, 16)` as inline style on the footer View — this ensures the footer clears the system navigation bar while keeping a minimum 16px padding on devices without bottom insets

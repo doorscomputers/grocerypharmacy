@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, StyleSheet, ScrollView, Platform, TouchableOpacity } from 'react-native';
 import {
   Card,
@@ -12,6 +12,7 @@ import {
   Modal,
   Portal,
   Divider,
+  TextInput,
 } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
@@ -89,6 +90,9 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
   const [refundItemsMap, setRefundItemsMap] = useState<Record<number, TransactionItem[]>>({});
   const [exchangeItemsMap, setExchangeItemsMap] = useState<Record<number, TransactionItem[]>>({});
   const [exchangeReplacementsMap, setExchangeReplacementsMap] = useState<Record<number, TransactionItem[]>>({});
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Detail modal
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -260,11 +264,40 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
     }
   };
 
+  // Filtered transactions based on product name search
+  const query = searchQuery.trim().toLowerCase();
+
+  const filteredVoids = useMemo(() => {
+    if (!query) return voidTransactions;
+    return voidTransactions.filter(t => {
+      const items = voidItemsMap[t.id] || [];
+      return items.some(item => item.product_name.toLowerCase().includes(query));
+    });
+  }, [voidTransactions, voidItemsMap, query]);
+
+  const filteredRefunds = useMemo(() => {
+    if (!query) return refundTransactions;
+    return refundTransactions.filter(t => {
+      const items = refundItemsMap[t.id] || [];
+      return items.some(item => item.product_name.toLowerCase().includes(query));
+    });
+  }, [refundTransactions, refundItemsMap, query]);
+
+  const filteredExchanges = useMemo(() => {
+    if (!query) return exchangeTransactions;
+    return exchangeTransactions.filter(t => {
+      const items = exchangeItemsMap[t.id] || [];
+      const replacements = exchangeReplacementsMap[t.id] || [];
+      return items.some(item => item.product_name.toLowerCase().includes(query)) ||
+             replacements.some(item => item.product_name.toLowerCase().includes(query));
+    });
+  }, [exchangeTransactions, exchangeItemsMap, exchangeReplacementsMap, query]);
+
   const tabs: { key: TabType; label: string; count: number; color: string }[] = [
-    { key: 'ALL', label: 'All', count: summary.voidCount + summary.refundCount + summary.exchangeCount, color: theme.colors.primary },
-    { key: 'VOID', label: 'Voided', count: summary.voidCount, color: '#D32F2F' },
-    { key: 'REFUND', label: 'Refunded', count: summary.refundCount, color: '#FF9800' },
-    { key: 'EXCHANGE', label: 'Exchanged', count: summary.exchangeCount, color: '#2196F3' },
+    { key: 'ALL', label: 'All', count: filteredVoids.length + filteredRefunds.length + filteredExchanges.length, color: theme.colors.primary },
+    { key: 'VOID', label: 'Voided', count: filteredVoids.length, color: '#D32F2F' },
+    { key: 'REFUND', label: 'Refunded', count: filteredRefunds.length, color: '#FF9800' },
+    { key: 'EXCHANGE', label: 'Exchanged', count: filteredExchanges.length, color: '#2196F3' },
   ];
 
   const buildPrintReport = (printerWidth: number): ESCPOSBuilder => {
@@ -627,7 +660,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
       </DataTable.Header>
 
-      {voidTransactions.map((item) => (
+      {filteredVoids.map((item) => (
         <DataTable.Row key={`void-${item.id}`}>
           <DataTable.Cell style={{ flex: 1.5 }}>{item.invoice_number}</DataTable.Cell>
           <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(item.void_date)}</DataTable.Cell>
@@ -653,7 +686,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
       </DataTable.Header>
 
-      {refundTransactions.map((item) => (
+      {filteredRefunds.map((item) => (
         <DataTable.Row key={`refund-${item.id}`}>
           <DataTable.Cell style={{ flex: 1.5 }}>{item.return_number}</DataTable.Cell>
           <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(item.return_date)}</DataTable.Cell>
@@ -683,7 +716,7 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         <DataTable.Title style={{ flex: 0.5 }}></DataTable.Title>
       </DataTable.Header>
 
-      {exchangeTransactions.map((item) => (
+      {filteredExchanges.map((item) => (
         <DataTable.Row key={`exchange-${item.id}`}>
           <DataTable.Cell style={{ flex: 1.5 }}>{item.return_number}</DataTable.Cell>
           <DataTable.Cell style={{ flex: 1.2 }}>{formatDate(item.return_date)}</DataTable.Cell>
@@ -724,6 +757,18 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
             />
           </Card.Content>
         </Card>
+
+        {/* Product Name Search */}
+        <TextInput
+          mode="outlined"
+          placeholder="Search by product name..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          left={<TextInput.Icon icon="magnify" />}
+          right={searchQuery ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} /> : undefined}
+          style={styles.searchInput}
+          dense
+        />
 
         {/* Summary Cards */}
         <View style={styles.summaryRow}>
@@ -788,13 +833,13 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
         {/* Content based on active tab */}
         {!loading && (
           <>
-            {(activeTab === 'ALL' || activeTab === 'VOID') && voidTransactions.length > 0 && (
+            {(activeTab === 'ALL' || activeTab === 'VOID') && filteredVoids.length > 0 && (
               <Card style={styles.tableCard}>
                 <Card.Content>
                   <View style={styles.tableTitleRow}>
                     <View style={[styles.colorIndicator, { backgroundColor: '#D32F2F' }]} />
                     <Title style={[styles.tableTitle, { color: '#D32F2F', fontSize: fs.h3 }]}>
-                      Voided Transactions ({voidTransactions.length})
+                      Voided Transactions ({filteredVoids.length})
                     </Title>
                   </View>
                   {renderVoidTable()}
@@ -802,13 +847,13 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
               </Card>
             )}
 
-            {(activeTab === 'ALL' || activeTab === 'REFUND') && refundTransactions.length > 0 && (
+            {(activeTab === 'ALL' || activeTab === 'REFUND') && filteredRefunds.length > 0 && (
               <Card style={styles.tableCard}>
                 <Card.Content>
                   <View style={styles.tableTitleRow}>
                     <View style={[styles.colorIndicator, { backgroundColor: '#FF9800' }]} />
                     <Title style={[styles.tableTitle, { color: '#FF9800', fontSize: fs.h3 }]}>
-                      Refunded Transactions ({refundTransactions.length})
+                      Refunded Transactions ({filteredRefunds.length})
                     </Title>
                   </View>
                   {renderRefundTable()}
@@ -816,13 +861,13 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
               </Card>
             )}
 
-            {(activeTab === 'ALL' || activeTab === 'EXCHANGE') && exchangeTransactions.length > 0 && (
+            {(activeTab === 'ALL' || activeTab === 'EXCHANGE') && filteredExchanges.length > 0 && (
               <Card style={styles.tableCard}>
                 <Card.Content>
                   <View style={styles.tableTitleRow}>
                     <View style={[styles.colorIndicator, { backgroundColor: '#2196F3' }]} />
                     <Title style={[styles.tableTitle, { color: '#2196F3', fontSize: fs.h3 }]}>
-                      Exchanged Transactions ({exchangeTransactions.length})
+                      Exchanged Transactions ({filteredExchanges.length})
                     </Title>
                   </View>
                   {renderExchangeTable()}
@@ -832,13 +877,15 @@ export default function VoidRefundExchangeReportScreen({ navigation }: Props) {
 
             {/* Empty state */}
             {!loading &&
-              ((activeTab === 'ALL' && voidTransactions.length === 0 && refundTransactions.length === 0 && exchangeTransactions.length === 0) ||
-               (activeTab === 'VOID' && voidTransactions.length === 0) ||
-               (activeTab === 'REFUND' && refundTransactions.length === 0) ||
-               (activeTab === 'EXCHANGE' && exchangeTransactions.length === 0)) && (
+              ((activeTab === 'ALL' && filteredVoids.length === 0 && filteredRefunds.length === 0 && filteredExchanges.length === 0) ||
+               (activeTab === 'VOID' && filteredVoids.length === 0) ||
+               (activeTab === 'REFUND' && filteredRefunds.length === 0) ||
+               (activeTab === 'EXCHANGE' && filteredExchanges.length === 0)) && (
               <Card style={styles.emptyCard}>
                 <Card.Content style={styles.emptyContent}>
-                  <Paragraph style={styles.emptyText}>No transactions found for the selected period</Paragraph>
+                  <Paragraph style={styles.emptyText}>
+                    {query ? `No transactions found matching "${searchQuery.trim()}"` : 'No transactions found for the selected period'}
+                  </Paragraph>
                 </Card.Content>
               </Card>
             )}
@@ -996,8 +1043,12 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   filterCard: {
-    marginBottom: 16,
+    marginBottom: 12,
     elevation: 2,
+  },
+  searchInput: {
+    marginBottom: 16,
+    backgroundColor: '#fff',
   },
   summaryRow: {
     flexDirection: 'row',

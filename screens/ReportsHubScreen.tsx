@@ -39,8 +39,6 @@ export default function ReportsHubScreen({ navigation }: Props) {
       color: '#4CAF50',
       reports: [
         { title: 'Sales Report', description: 'Complete sales with filters & analysis', icon: 'file-chart', screen: 'SalesReport' },
-        { title: 'Z-Reading (End of Day)', description: 'End-of-day closing report history', icon: 'calculator', screen: 'ZReadingHistory' },
-        { title: 'X-Reading (Inquiry)', description: 'Mid-day inquiry report history', icon: 'poll', screen: 'XReadingHistory' },
         { title: 'Void/Refund/Exchange', description: 'View all voided, refunded & exchanged invoices', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
         { title: 'Sales by Product', description: 'Top selling products report', icon: 'chart-bar', screen: 'SalesReport', params: { initialView: 'products' } },
         { title: 'Sales by Category', description: 'Sales breakdown by category', icon: 'chart-pie', screen: 'SalesReport', params: { initialView: 'categories' } },
@@ -109,8 +107,6 @@ export default function ReportsHubScreen({ navigation }: Props) {
       color: '#607D8B',
       reports: [
         { title: 'eSales Journal', description: 'Electronic sales journal of all receipts', icon: 'book-open-page-variant', screen: 'EJournalReport' },
-        { title: 'eSales Report', description: 'Monthly sales report for BIR submission', icon: 'file-export', screen: 'ESalesReport' },
-        { title: 'Void/Refund/Exchange Report', description: 'Track all voided, refunded & exchanged transactions', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
         { title: 'Z-Reading History', description: 'End of day report history', icon: 'calculator', screen: 'ZReadingHistory' },
         { title: 'X-Reading History', description: 'Mid-day inquiry report history', icon: 'poll', screen: 'XReadingHistory' },
       ]

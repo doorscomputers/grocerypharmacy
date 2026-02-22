@@ -90,6 +90,8 @@ import XReadingHistoryScreen from './screens/XReadingHistoryScreen';
 import ZReadingHistoryScreen from './screens/ZReadingHistoryScreen';
 import CurrentStockLevelsScreen from './screens/CurrentStockLevelsScreen';
 import TabletSalesScreen from './screens/TabletSalesScreen';
+import RefundScreen from './screens/RefundScreen';
+import ExchangeScreen from './screens/ExchangeScreen';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -155,6 +157,8 @@ export type RootStackParamList = {
   ZReadingHistory: undefined;
   CurrentStockLevels: { lowStock?: boolean } | undefined;
   TabletSales: undefined;
+  Refund: { cashierId: number };
+  Exchange: { cashierId: number };
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -727,6 +731,24 @@ function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialSt
               name="ZReadingHistory"
               component={ZReadingHistoryScreen}
               options={{ title: 'Z-Reading History' }}
+            />
+            <Stack.Screen
+              name="Refund"
+              component={RefundScreen}
+              options={{
+                title: 'Process Refund',
+                headerStyle: { backgroundColor: '#FF9800' },
+                headerTintColor: '#FFFFFF',
+              }}
+            />
+            <Stack.Screen
+              name="Exchange"
+              component={ExchangeScreen}
+              options={{
+                title: 'Exchange Item',
+                headerStyle: { backgroundColor: '#2196F3' },
+                headerTintColor: '#FFFFFF',
+              }}
             />
           </Stack.Navigator>
         </NavigationContainer>
