@@ -1,6 +1,6 @@
-import React from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Card, Title, Paragraph, useTheme, List, Divider } from 'react-native-paper';
+import React, { useState, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, TextInput } from 'react-native';
+import { Card, Title, Paragraph, useTheme, List, Divider, IconButton, Text } from 'react-native-paper';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { useResponsiveTheme } from '../utils/responsive';
@@ -29,6 +29,7 @@ interface ReportItem {
 export default function ReportsHubScreen({ navigation }: Props) {
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
+  const [searchQuery, setSearchQuery] = useState('');
 
   const reportCategories: ReportCategory[] = [
     {
@@ -41,8 +42,8 @@ export default function ReportsHubScreen({ navigation }: Props) {
         { title: 'Z-Reading (End of Day)', description: 'End-of-day closing report history', icon: 'calculator', screen: 'ZReadingHistory' },
         { title: 'X-Reading (Inquiry)', description: 'Mid-day inquiry report history', icon: 'poll', screen: 'XReadingHistory' },
         { title: 'Void/Refund/Exchange', description: 'View all voided, refunded & exchanged invoices', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
-        { title: 'Sales by Product', description: 'Top selling products report', icon: 'chart-bar', screen: 'SalesReport' },
-        { title: 'Sales by Category', description: 'Sales breakdown by category', icon: 'chart-pie', screen: 'SalesReport' },
+        { title: 'Sales by Product', description: 'Top selling products report', icon: 'chart-bar', screen: 'SalesReport', params: { initialView: 'products' } },
+        { title: 'Sales by Category', description: 'Sales breakdown by category', icon: 'chart-pie', screen: 'SalesReport', params: { initialView: 'categories' } },
       ]
     },
     {
@@ -122,6 +123,25 @@ export default function ReportsHubScreen({ navigation }: Props) {
     }
   };
 
+  const filteredCategories = useMemo(() => {
+    if (!searchQuery.trim()) return reportCategories;
+    const query = searchQuery.toLowerCase().trim();
+    return reportCategories
+      .map(cat => ({
+        ...cat,
+        reports: cat.reports.filter(r =>
+          r.title.toLowerCase().includes(query) ||
+          r.description.toLowerCase().includes(query) ||
+          cat.title.toLowerCase().includes(query)
+        ),
+      }))
+      .filter(cat => cat.reports.length > 0);
+  }, [searchQuery]);
+
+  const totalMatchCount = useMemo(() => {
+    return filteredCategories.reduce((sum, cat) => sum + cat.reports.length, 0);
+  }, [filteredCategories]);
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView
@@ -136,7 +156,35 @@ export default function ReportsHubScreen({ navigation }: Props) {
           </Paragraph>
         </View>
 
-        {reportCategories.map((category, categoryIndex) => (
+        <View style={styles.searchContainer}>
+          <View style={styles.searchBar}>
+            <IconButton icon="magnify" size={24} iconColor="#1976D2" style={styles.searchIcon} />
+            <TextInput
+              style={[styles.searchInput, { fontSize: fs.body }]}
+              placeholder="Search reports..."
+              placeholderTextColor="#888"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <IconButton icon="close-circle" size={20} iconColor="#666" onPress={() => setSearchQuery('')} />
+            )}
+          </View>
+          {searchQuery.trim().length > 0 && (
+            <Text style={styles.matchCount}>
+              Found {totalMatchCount} report{totalMatchCount !== 1 ? 's' : ''}
+            </Text>
+          )}
+        </View>
+
+        {filteredCategories.length === 0 && searchQuery.trim().length > 0 && (
+          <View style={styles.emptyState}>
+            <IconButton icon="file-search-outline" size={48} />
+            <Text style={styles.emptyStateText}>No reports found for "{searchQuery.trim()}"</Text>
+          </View>
+        )}
+
+        {filteredCategories.map((category, categoryIndex) => (
           <Card key={categoryIndex} style={[styles.categoryCard, { marginBottom: sp.md }]}>
             <Card.Content style={{ padding: sp.md }}>
               <View style={styles.categoryHeader}>
@@ -239,6 +287,50 @@ const styles = StyleSheet.create({
   },
   reportDescription: {
     fontSize: 12,
+  },
+  searchContainer: {
+    marginBottom: 14,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: '#1976D2',
+    paddingHorizontal: 4,
+    height: 52,
+    elevation: 4,
+    shadowColor: '#1976D2',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  searchIcon: {
+    margin: 0,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#222',
+    paddingVertical: 0,
+    fontWeight: '500',
+  },
+  matchCount: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 6,
+    marginLeft: 12,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  emptyStateText: {
+    fontSize: 15,
+    color: '#666',
+    marginTop: 4,
   },
   footer: {
     marginTop: 16,

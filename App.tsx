@@ -131,7 +131,7 @@ export type RootStackParamList = {
   PurchaseReturnsReport: undefined;
   AccountsReceivableReport: undefined;
   AccountsPayableReport: undefined;
-  SalesReport: undefined;
+  SalesReport: { initialView?: string } | undefined;
   DeliveredItemsReport: undefined;
   ResetData: undefined;
   PDCTracking: undefined;

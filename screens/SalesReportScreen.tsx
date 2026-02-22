@@ -11,11 +11,13 @@ import {
   Chip,
   TextInput,
   IconButton,
-  SegmentedButtons,
   List,
 } from 'react-native-paper';
+import { TouchableOpacity } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { StackNavigationProp } from '@react-navigation/stack';
+import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import DateRangeFilter, { getDateRange, DatePreset } from '../components/DateRangeFilter';
@@ -27,6 +29,7 @@ import { useResponsiveTheme } from '../utils/responsive';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'SalesReport'>;
+  route: RouteProp<RootStackParamList, 'SalesReport'>;
 };
 
 interface Transaction {
@@ -85,7 +88,7 @@ interface CategorySale {
 
 type ReportView = 'summary' | 'products' | 'categories' | 'transactions';
 
-export default function SalesReportScreen({ navigation }: Props) {
+export default function SalesReportScreen({ navigation, route }: Props) {
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -94,7 +97,9 @@ export default function SalesReportScreen({ navigation }: Props) {
   const [categories, setCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeView, setActiveView] = useState<ReportView>('summary');
+  const [activeView, setActiveView] = useState<ReportView>(
+    (route.params?.initialView as ReportView) || 'summary'
+  );
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState(() => {
     const range = getDateRange('this_month');
@@ -778,6 +783,21 @@ export default function SalesReportScreen({ navigation }: Props) {
 
   const totalPages = Math.ceil(filteredTransactions.length / itemsPerPage);
 
+  const renderSearchBar = (placeholder: string) => (
+    <View style={styles.tabSearchContainer}>
+      <TextInput
+        placeholder={placeholder}
+        value={searchQuery}
+        onChangeText={setSearchQuery}
+        mode="outlined"
+        dense
+        left={<TextInput.Icon icon="magnify" />}
+        right={searchQuery ? <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} /> : null}
+        style={styles.searchInput}
+      />
+    </View>
+  );
+
   const renderSummaryView = () => (
     <>
       {/* Summary Cards */}
@@ -940,7 +960,9 @@ export default function SalesReportScreen({ navigation }: Props) {
   );
 
   const renderProductsView = () => (
-    <Card style={styles.card}>
+    <>
+      {renderSearchBar('Search product name or code...')}
+      <Card style={styles.card}>
       <Card.Content>
         <Title style={styles.sectionTitle}>
           Sales by Product ({salesByProduct.length} items)
@@ -949,7 +971,6 @@ export default function SalesReportScreen({ navigation }: Props) {
         {salesByProduct.length === 0 ? (
           <Paragraph style={styles.emptyText}>No product sales found</Paragraph>
         ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator>
           <DataTable>
             <DataTable.Header>
               <DataTable.Title style={{ flex: 0.8 }}>Code</DataTable.Title>
@@ -992,7 +1013,6 @@ export default function SalesReportScreen({ navigation }: Props) {
               </DataTable.Cell>
             </DataTable.Row>
           </DataTable>
-          </ScrollView>
         )}
 
         {salesByProduct.length > 50 && (
@@ -1002,10 +1022,13 @@ export default function SalesReportScreen({ navigation }: Props) {
         )}
       </Card.Content>
     </Card>
+    </>
   );
 
   const renderCategoriesView = () => (
-    <Card style={styles.card}>
+    <>
+      {renderSearchBar('Search category name...')}
+      <Card style={styles.card}>
       <Card.Content>
         <Title style={styles.sectionTitle}>
           Sales by Category ({salesByCategory.length} categories)
@@ -1063,10 +1086,13 @@ export default function SalesReportScreen({ navigation }: Props) {
         )}
       </Card.Content>
     </Card>
+    </>
   );
 
   const renderTransactionsView = () => (
-    <Card style={styles.card}>
+    <>
+      {renderSearchBar('Search invoice, customer, cashier...')}
+      <Card style={styles.card}>
       <Card.Content>
         <Title style={styles.sectionTitle}>
           Transaction Details ({filteredTransactions.length} transactions)
@@ -1137,6 +1163,7 @@ export default function SalesReportScreen({ navigation }: Props) {
         )}
       </Card.Content>
     </Card>
+    </>
   );
 
   return (
@@ -1161,24 +1188,6 @@ export default function SalesReportScreen({ navigation }: Props) {
             <DateRangeFilter
               onDateChange={handleDateChange}
               selectedPreset="this_month"
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Search Bar */}
-        <Card style={styles.filterCard}>
-          <Card.Content>
-            <TextInput
-              label="Search (Invoice, Customer, Product, etc.)"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              mode="outlined"
-              dense
-              left={<TextInput.Icon icon="magnify" />}
-              right={searchQuery ? (
-                <TextInput.Icon icon="close" onPress={() => setSearchQuery('')} />
-              ) : null}
-              style={styles.searchInput}
             />
           </Card.Content>
         </Card>
@@ -1213,21 +1222,43 @@ export default function SalesReportScreen({ navigation }: Props) {
         </Card>
 
         {/* View Selector */}
-        <Card style={styles.filterCard}>
-          <Card.Content>
-            <SegmentedButtons
-              value={activeView}
-              onValueChange={(value) => setActiveView(value as ReportView)}
-              buttons={[
-                { value: 'summary', label: 'Summary', icon: 'chart-pie' },
-                { value: 'products', label: 'Products', icon: 'package-variant' },
-                { value: 'categories', label: 'Categories', icon: 'shape' },
-                { value: 'transactions', label: 'Details', icon: 'format-list-bulleted' },
-              ]}
-              style={styles.segmentedButtons}
-            />
-          </Card.Content>
-        </Card>
+        <View style={styles.viewSelectorContainer}>
+          <Paragraph style={styles.viewSelectorLabel}>View:</Paragraph>
+          <View style={styles.tabRow}>
+            {([
+              { value: 'summary' as ReportView, label: 'Summary', icon: 'chart-pie' as const, color: '#1976D2' },
+              { value: 'products' as ReportView, label: 'Products', icon: 'package-variant' as const, color: '#388E3C' },
+              { value: 'categories' as ReportView, label: 'Categories', icon: 'shape' as const, color: '#F57C00' },
+              { value: 'transactions' as ReportView, label: 'Details', icon: 'format-list-bulleted' as const, color: '#7B1FA2' },
+            ]).map((tab) => {
+              const isActive = activeView === tab.value;
+              return (
+                <TouchableOpacity
+                  key={tab.value}
+                  style={[
+                    styles.tabButton,
+                    { borderColor: tab.color },
+                    isActive && { backgroundColor: tab.color },
+                  ]}
+                  onPress={() => { setActiveView(tab.value); setSearchQuery(''); }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialCommunityIcons
+                    name={tab.icon}
+                    size={18}
+                    color={isActive ? '#fff' : tab.color}
+                  />
+                  <Paragraph style={[
+                    styles.tabButtonLabel,
+                    { color: isActive ? '#fff' : tab.color },
+                  ]}>
+                    {tab.label}
+                  </Paragraph>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
 
         {/* Content based on active view */}
         {loading ? (
@@ -1302,8 +1333,43 @@ const styles = StyleSheet.create({
   chip: {
     marginRight: 4,
   },
-  segmentedButtons: {
-    marginTop: 4,
+  viewSelectorContainer: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    elevation: 3,
+  },
+  viewSelectorLabel: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#555',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  tabRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  tabButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    borderWidth: 2,
+    backgroundColor: '#fff',
+  },
+  tabButtonLabel: {
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  tabSearchContainer: {
+    marginBottom: 12,
   },
   summaryGrid: {
     flexDirection: 'row',
