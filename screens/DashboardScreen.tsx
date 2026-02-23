@@ -33,6 +33,8 @@ import { PermissionService } from '../utils/permissions';
 import { spacing, typography, borderRadius, shadows, layout } from '../utils/theme';
 import { useResponsive, responsiveValue, useResponsiveTheme, useLandscapeLayout } from '../utils/responsive';
 import { toLocalDateString } from '../utils/dateTime';
+import { DatabaseBackupService } from '../utils/DatabaseBackupService';
+import * as Sharing from 'expo-sharing';
 
 // Dashboard Components
 import { HeroSalesCard } from '../components/dashboard/HeroSalesCard';
@@ -146,6 +148,7 @@ export default function DashboardScreen({ navigation }: Props) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showCustomDateModal, setShowCustomDateModal] = useState(false);
   const [showActionSearch, setShowActionSearch] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
   const [tempStartDate, setTempStartDate] = useState('');
   const [tempEndDate, setTempEndDate] = useState('');
 
@@ -380,8 +383,55 @@ export default function DashboardScreen({ navigation }: Props) {
     },
   ];
 
+  const handleBackupNow = async () => {
+    try {
+      setBackingUp(true);
+      const backupService = DatabaseBackupService.getInstance();
+      const backupPath = await backupService.createBackup();
+
+      if (Platform.OS === 'web') {
+        Alert.alert('Success', 'Backup downloaded successfully!');
+      } else {
+        Alert.alert(
+          'Backup Created',
+          'Your database backup has been saved successfully.',
+          [
+            { text: 'OK' },
+            {
+              text: 'Share Copy',
+              onPress: async () => {
+                try {
+                  if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(backupPath, {
+                      mimeType: 'application/x-sqlite3',
+                      dialogTitle: 'Share Database Backup',
+                    });
+                  }
+                } catch (e) {
+                  console.error('Share failed:', e);
+                }
+              },
+            },
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Backup failed:', error);
+      Alert.alert('Backup Failed', `${error}`);
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
   // Admin-only quick actions
   const adminQuickActions: QuickAction[] = [
+    {
+      id: 'backup',
+      label: 'Backup',
+      icon: 'backup-restore',
+      color: '#4CAF50',
+      onPress: handleBackupNow,
+    },
     {
       id: 'users',
       label: 'Users',
@@ -588,7 +638,7 @@ export default function DashboardScreen({ navigation }: Props) {
             <QuickActionRow
               title="Admin Tools"
               actions={adminQuickActions}
-              maxVisible={4}
+              maxVisible={5}
               onShowMore={() => setShowActionSearch(true)}
             />
           </View>
