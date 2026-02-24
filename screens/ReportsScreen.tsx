@@ -426,7 +426,7 @@ export default function ReportsScreen({ navigation }: Props) {
           </div>
           <div class="row">
             <span>Time:</span>
-            <span>${new Date().toLocaleTimeString()}</span>
+            <span>${new Date().toLocaleTimeString('en-PH', { hour12: true })}</span>
           </div>
 
           <div class="divider"></div>
@@ -592,7 +592,7 @@ export default function ReportsScreen({ navigation }: Props) {
       .map(transaction => `
         <tr>
           <td>${transaction.invoice_number}</td>
-          <td>${new Date(transaction.transaction_date).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' })}</td>
+          <td>${new Date(transaction.transaction_date).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour12: true })}</td>
           <td style="text-align: right;">₱${transaction.total_amount.toFixed(2)}</td>
           <td>${transaction.payment_method}</td>
         </tr>
@@ -657,7 +657,7 @@ export default function ReportsScreen({ navigation }: Props) {
 
     const sessionsHTML = inventoryHistory.map((session: any, sessionIndex: number) => {
       const sessionDate = new Date(session.created_at).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
-      const sessionTime = new Date(session.created_at).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+      const sessionTime = new Date(session.created_at).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour12: true });
       const discrepancyValue = Math.abs(session.amount);
       const performedBy = session.performed_by || 'Unknown User';
       const username = session.user_username || '';
@@ -740,7 +740,7 @@ export default function ReportsScreen({ navigation }: Props) {
           <div class="header">
             <h2>${companyName}</h2>
             <h3>${reportTitle}</h3>
-            <p>Generated on: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
+            <p>Generated on: ${new Date().toLocaleDateString('en-PH')} at ${new Date().toLocaleTimeString('en-PH', { hour12: true })}</p>
             ${dateRange ? `<p><strong>Report Period:</strong> ${dateRange.startDate} to ${dateRange.endDate}</p>` : ''}
           </div>
 

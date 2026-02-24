@@ -193,7 +193,7 @@ export default function CurrentStockLevelsScreen({ navigation, route }: Props) {
   const buildPdfHtml = (): string => {
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
-    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour12: true });
 
     return `
       <!DOCTYPE html>

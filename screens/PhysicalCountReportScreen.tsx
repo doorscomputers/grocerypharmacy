@@ -417,7 +417,7 @@ export default function PhysicalCountReportScreen({ navigation }: Props) {
   const buildPdfHtml = (): string => {
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
-    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour12: true });
 
     const totalSessions = reportData.length;
     const completedSessions = reportData.filter(r => r.session.status === 'completed').length;

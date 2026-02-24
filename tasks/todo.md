@@ -1,24 +1,35 @@
-# Add Quick Access Backup Button to Dashboard Admin Tools
+# Fix Time Formatting on Receipts and All Transactions
 
-## Tasks
-- [x] Add imports for DatabaseBackupService and expo-sharing
-- [x] Add backingUp state variable
-- [x] Add handleBackupNow handler function
-- [x] Add Backup entry as first item in adminQuickActions array
-- [x] Update maxVisible from 4 to 5
-- [x] Review
+## Problem
+1. Receipt time shows garbled Chinese characters (秒, 拝) instead of AM/PM on thermal printer
+2. Time display potentially incorrect due to missing `hour12: true` in formatters
+3. `toLocaleTimeString('en-PH')` on Android produces non-ASCII characters that thermal printers can't handle
+
+## Todo Items
+
+- [x] Add `formatPrinterTime()` ASCII-safe time formatter to `utils/dateTime.ts`
+- [x] Add `formatPrinterDateNumeric()` ASCII-safe date formatter to `utils/dateTime.ts`
+- [x] Fix `formatPhilippineDateTime()` and `formatPhilippineTime()` — add `hour12: true`
+- [x] Fix all 15 `toLocale*` calls in `escpos.ts` with ASCII-safe formatters
+- [x] Fix `POSTransactionCompleteDialog.tsx` thermal print to use `formatPrinterDateTime`
+- [x] Add `hour12: true` to all remaining `toLocaleTimeString()` calls across 10+ screens/components
 
 ## Review
 
-### Changes Summary
+### Summary
+Fixed time formatting across 13 files. Thermal printer output now uses manual ASCII formatting (guaranteed no Chinese characters). All UI/PDF time displays now include `hour12: true` for correct AM/PM.
 
-**`screens/DashboardScreen.tsx`**
-
-1. **Added imports** — `DatabaseBackupService` and `expo-sharing` at top of file.
-2. **Added `backingUp` state** — Tracks backup-in-progress status.
-3. **Added `handleBackupNow` handler** — Same proven pattern from SettingsScreen: calls `DatabaseBackupService.getInstance().createBackup()`, shows success Alert with "Share Copy" option on native, handles web platform separately, catches errors.
-4. **Added Backup to adminQuickActions** — Inserted as first item with green color (`#4CAF50`), `backup-restore` icon.
-5. **Updated `maxVisible` from 4 to 5** — All 5 Admin Tools buttons (Backup, Users, Permissions, Reset Data, Database) now show without overflow.
-
-### Button order:
-Backup (green) | Users | Permissions | Reset Data | Database
+### Files Changed
+1. `utils/dateTime.ts` — Added `formatPrinterTime()`, `formatPrinterDateNumeric()`, fixed hour12
+2. `utils/escpos.ts` — Replaced ALL 15 `toLocale*` calls with ASCII-safe formatters
+3. `utils/ReceiptPdfService.ts` — Added hour12: true
+4. `components/ReceiptPreview.tsx` — Added hour12: true
+5. `components/pos/POSTransactionCompleteDialog.tsx` — Switched to formatPrinterDateTime
+6. `screens/EJournalReportScreen.tsx` — Added hour12: true
+7. `screens/CurrentStockLevelsScreen.tsx` — Added hour12: true
+8. `screens/DeliveredItemsReportScreen.tsx` — Added hour12: true
+9. `screens/ESalesReportScreen.tsx` — Added hour12: true
+10. `screens/PhysicalCountReportScreen.tsx` — Added hour12: true
+11. `screens/TopCustomersReportScreen.tsx` — Added hour12: true
+12. `screens/ZeroInventoryReportScreen.tsx` — Added hour12: true
+13. `screens/ReportsScreen.tsx` — Added hour12: true to 4 locations

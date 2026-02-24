@@ -272,7 +272,7 @@ export default function ESalesReportScreen({ navigation }: Props) {
   const buildPdfHtml = (): string => {
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' });
-    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+    const timeStr = now.toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour12: true });
 
     const totalSales = reportData ? (reportData.vatableSales || 0) +
       (reportData.vatZeroRatedSales || 0) +

@@ -119,6 +119,7 @@ export function formatPhilippineDateTime(date: Date | string): string {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: true,
   });
 }
 
@@ -133,6 +134,7 @@ export function formatPhilippineTime(date: Date | string): string {
     timeZone: 'Asia/Manila',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: true,
   });
 }
 
@@ -169,4 +171,25 @@ export function formatPrinterShortDateTime(date: Date | string): string {
   const ampm = h >= 12 ? 'PM' : 'AM';
   const h12 = h % 12 || 12;
   return `${SHORT_MONTHS[d.getMonth()]} ${d.getDate()} ${padZero(h12)}:${padZero(d.getMinutes())} ${ampm}`;
+}
+
+/**
+ * ASCII-safe time-only formatter for thermal printers (e.g. "02:30 PM")
+ * Avoids toLocaleTimeString which can produce non-ASCII AM/PM on some devices
+ */
+export function formatPrinterTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const h = d.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${padZero(h12)}:${padZero(d.getMinutes())} ${ampm}`;
+}
+
+/**
+ * ASCII-safe numeric date formatter for thermal printers (e.g. "02/23/2026")
+ * Avoids toLocaleDateString which can produce non-ASCII characters on some devices
+ */
+export function formatPrinterDateNumeric(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return `${padZero(d.getMonth() + 1)}/${padZero(d.getDate())}/${d.getFullYear()}`;
 }

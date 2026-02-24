@@ -17,7 +17,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { ESCPOSBuilder, PRINTER_WIDTH } from '../../utils/escpos';
 import BluetoothPrinterService from '../../utils/BluetoothPrinterService';
 import { DatabaseService } from '../../database/DatabaseService';
-import { formatPhilippineDateTime } from '../../utils/dateTime';
+import { formatPhilippineDateTime, formatPrinterDateTime } from '../../utils/dateTime';
 import { useResponsiveTheme } from '../../utils/responsive';
 
 export type TransactionType = 'VOID' | 'REFUND' | 'EXCHANGE';
@@ -144,7 +144,7 @@ export default function POSTransactionCompleteDialog({
     builder
       .println(`Ref #: ${data.referenceNumber}`)
       .println(`Orig Invoice: ${data.originalInvoice}`)
-      .println(`Date: ${formatPhilippineDateTime(data.transactionDate)}`)
+      .println(`Date: ${formatPrinterDateTime(data.transactionDate)}`)
       .println(`Cashier: ${data.cashierName || 'N/A'}`)
       .println(`Customer: ${data.customerName || 'Walk-in'}`)
       .separator();

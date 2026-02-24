@@ -119,6 +119,7 @@ export default function ReceiptPreview({
     return date.toLocaleTimeString('en-PH', {
       hour: '2-digit',
       minute: '2-digit',
+      hour12: true,
     });
   };
 

@@ -5,6 +5,8 @@
  * These commands follow the ESC/POS standard used by most POS printers.
  */
 
+import { formatPrinterTime, formatPrinterDateNumeric, formatPrinterDateTime } from './dateTime';
+
 // Printer width constants
 export const PRINTER_WIDTH = {
   MM_58: 32,  // 58mm printer - 32 characters per line
@@ -429,15 +431,8 @@ export function buildReceipt(data: ReceiptData, printerWidth: number = PRINTER_W
     .align('left')
     .feed();
 
-  const dateStr = data.transactionDate.toLocaleDateString('en-PH', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const timeStr = data.transactionDate.toLocaleTimeString('en-PH', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const dateStr = formatPrinterDateNumeric(data.transactionDate);
+  const timeStr = formatPrinterTime(data.transactionDate);
 
   builder
     .leftRight('Invoice #:', data.invoiceNumber)
@@ -547,7 +542,7 @@ export function buildTestPrint(printerWidth: number = PRINTER_WIDTH.MM_58): ESCP
     .align('center')
     .println('Printer is working!')
     .feed()
-    .println(new Date().toLocaleString())
+    .println(formatPrinterDateTime(new Date()))
     .cut();
 
   return builder;
@@ -829,7 +824,7 @@ export function buildZReading(
   // Report info
   builder
     .leftRight('Z-Reading No:', `#${data.zReadingNumber}`)
-    .leftRight('Date:', data.date.toLocaleDateString())
+    .leftRight('Date:', formatPrinterDateNumeric(data.date))
     .leftRight('Reset Counter:', data.resetCounter.toString())
     .separator();
 
@@ -991,7 +986,7 @@ export function buildZReading(
     .bold(true)
     .println('*** END OF DAY REPORT ***')
     .bold(false)
-    .println(new Date().toLocaleString())
+    .println(formatPrinterDateTime(new Date()))
     .cut();
 
   return builder;
@@ -1026,19 +1021,11 @@ export function buildPaymentReceipt(
   const builder = new ESCPOSBuilder(printerWidth);
 
   const formatDate = (date: Date): string => {
-    return date.toLocaleDateString('en-PH', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
+    return formatPrinterDateNumeric(date);
   };
 
   const formatTime = (date: Date): string => {
-    return date.toLocaleTimeString('en-PH', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
+    return formatPrinterTime(date);
   };
 
   // Header
@@ -1137,7 +1124,7 @@ export function buildPaymentReceipt(
     .bold(true)
     .println('*** PAYMENT ACKNOWLEDGMENT ***')
     .bold(false)
-    .println(new Date().toLocaleString())
+    .println(formatPrinterDateTime(new Date()))
     .cut();
 
   return builder;
@@ -1177,19 +1164,11 @@ export function buildReturnReceipt(
   const builder = new ESCPOSBuilder(printerWidth);
 
   const formatDate = (date: Date): string => {
-    return date.toLocaleDateString('en-PH', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
+    return formatPrinterDateNumeric(date);
   };
 
   const formatTime = (date: Date): string => {
-    return date.toLocaleTimeString('en-PH', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
+    return formatPrinterTime(date);
   };
 
   // Header
@@ -1296,7 +1275,7 @@ export function buildReturnReceipt(
     .bold(true)
     .println('*** SALES RETURN ACKNOWLEDGMENT ***')
     .bold(false)
-    .println(new Date().toLocaleString())
+    .println(formatPrinterDateTime(new Date()))
     .cut();
 
   return builder;
@@ -1391,7 +1370,7 @@ export function buildPurchaseOrder(
   }
 
   builder.align('center');
-  builder.println(new Date().toLocaleString('en-PH'));
+  builder.println(formatPrinterDateTime(new Date()));
   builder.cut();
 
   return builder;
@@ -1517,19 +1496,11 @@ export function buildCashMovementReceipt(
   const builder = new ESCPOSBuilder(printerWidth);
 
   const formatDate = (date: Date): string => {
-    return date.toLocaleDateString('en-PH', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
+    return formatPrinterDateNumeric(date);
   };
 
   const formatTime = (date: Date): string => {
-    return date.toLocaleTimeString('en-PH', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
+    return formatPrinterTime(date);
   };
 
   const typeLabels: Record<string, string> = {
@@ -1616,7 +1587,7 @@ export function buildCashMovementReceipt(
     .bold(true)
     .println(isWithdrawal ? '*** PETTY CASH VOUCHER ***' : '*** CASH FUND RECEIPT ***')
     .bold(false)
-    .println(new Date().toLocaleString())
+    .println(formatPrinterDateTime(new Date()))
     .cut();
 
   return builder;
