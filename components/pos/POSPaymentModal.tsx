@@ -57,6 +57,7 @@ interface POSPaymentModalProps {
   loading?: boolean;
   initialPaymentMethod?: PaymentMethod;
   initialCustomer?: Customer | null;
+  requireCustomerName?: boolean;
 }
 
 const PAYMENT_METHODS: { key: PaymentMethod; label: string; icon: string }[] = [
@@ -80,6 +81,7 @@ function POSPaymentModal({
   loading = false,
   initialPaymentMethod,
   initialCustomer,
+  requireCustomerName = false,
 }: POSPaymentModalProps) {
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
@@ -179,6 +181,12 @@ function POSPaymentModal({
   }, []);
 
   const handleComplete = useCallback(() => {
+    // Require customer name validation
+    if (requireCustomerName && !selectedCustomer) {
+      Alert.alert('Customer Required', 'Please select a customer before completing the sale.');
+      return;
+    }
+
     // Validation based on payment method
     if (paymentMethod === 'CHARGE_INVOICE' && !selectedCustomer) {
       Alert.alert('Customer Required', 'Please select a customer for charge invoice.');
@@ -261,10 +269,14 @@ function POSPaymentModal({
       referenceNumber: (paymentMethod === 'CARD' || paymentMethod === 'ONLINE') ? referenceNumber : undefined,
       changeAmount: changeAmount > 0 ? changeAmount : 0,
     });
-  }, [paymentMethod, tenderedAmount, totals.total, selectedCustomer, onComplete, checkNumber, checkPayee, checkAmountValue, referenceNumber, changeAmount]);
+  }, [paymentMethod, tenderedAmount, totals.total, selectedCustomer, onComplete, checkNumber, checkPayee, checkAmountValue, referenceNumber, changeAmount, requireCustomerName]);
 
   // Validation based on payment method
   const isValid = (() => {
+    // When require_customer_name is on, customer must be selected for all payment methods
+    if (requireCustomerName && !selectedCustomer) {
+      return false;
+    }
     if (paymentMethod === 'CHARGE_INVOICE') {
       return selectedCustomer !== null;
     }
@@ -688,10 +700,12 @@ function POSPaymentModal({
                   </View>
                 )}
 
-                {/* Optional Customer Selection (for non-charge) */}
+                {/* Customer Selection (for non-charge) */}
                 {paymentMethod !== 'CHARGE_INVOICE' && (
                   <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Customer (Optional)</Text>
+                    <Text style={[styles.sectionTitle, requireCustomerName && !selectedCustomer && { color: '#D32F2F' }]}>
+                      {requireCustomerName ? 'Customer (Required)' : 'Customer (Optional)'}
+                    </Text>
                     {selectedCustomer ? (
                       <View style={styles.selectedCustomer}>
                         <View style={styles.selectedCustomerInfo}>
@@ -708,12 +722,15 @@ function POSPaymentModal({
                       </View>
                     ) : (
                       <TouchableOpacity
-                        style={[styles.selectCustomerButton, styles.selectCustomerButtonOptional]}
+                        style={[
+                          styles.selectCustomerButton,
+                          requireCustomerName ? styles.selectCustomerButtonRequired : styles.selectCustomerButtonOptional,
+                        ]}
                         onPress={() => setShowCustomerList(true)}
                         activeOpacity={0.7}
                       >
-                        <Text style={styles.selectCustomerTextOptional}>
-                          + Add Customer
+                        <Text style={requireCustomerName ? styles.selectCustomerTextRequired : styles.selectCustomerTextOptional}>
+                          {requireCustomerName ? '⚠ Select Customer' : '+ Add Customer'}
                         </Text>
                       </TouchableOpacity>
                     )}
@@ -954,6 +971,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#616161',
+    textAlign: 'center',
+  },
+  selectCustomerButtonRequired: {
+    backgroundColor: '#FFF3E0',
+    borderColor: '#E65100',
+  },
+  selectCustomerTextRequired: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#E65100',
     textAlign: 'center',
   },
   selectedCustomer: {

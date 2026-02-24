@@ -7,7 +7,6 @@ import {
   Platform,
   Linking,
 } from 'react-native';
-import * as ExpoFileSystem from 'expo-file-system/legacy';
 import {
   Card,
   Title,
@@ -32,15 +31,11 @@ import { getDatabase } from '../database/getDatabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppTheme } from '../contexts/ThemeContext';
 import { ThemeName, themeDisplayNames } from '../utils/theme';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
-
-import { DatabaseBackupService, BackupInfo } from '../utils/DatabaseBackupService';
 import BarcodeLabelTemplateSettings from '../components/BarcodeLabelTemplateSettings';
 import { DeviceBindingService, TrialStatus } from '../utils/DeviceBindingService';
 import { useResponsiveTheme } from '../utils/responsive';
-
-const WEB_STORAGE_KEY = 'posmobile_webmock_db';
+import { DatabaseBackupService } from '../utils/DatabaseBackupService';
+import * as Sharing from 'expo-sharing';
 
 type SettingsScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -69,6 +64,8 @@ export default function SettingsScreen({ navigation }: Props) {
     vat_rate: '12.00',
     receipt_footer: '',
   });
+  const [requireCustomerName, setRequireCustomerName] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
   const [currentSetting, setCurrentSetting] = useState<{
@@ -80,22 +77,6 @@ export default function SettingsScreen({ navigation }: Props) {
   const [licensePasswordDialogVisible, setLicensePasswordDialogVisible] = useState(false);
   const [licensePassword, setLicensePassword] = useState('');
   const [labelTemplateVisible, setLabelTemplateVisible] = useState(false);
-  const [clearInventoryPasswordVisible, setClearInventoryPasswordVisible] = useState(false);
-  const [clearInventoryPassword, setClearInventoryPassword] = useState('');
-  const [dbHealth, setDbHealth] = useState<{
-    isHealthy: boolean;
-    walMode: boolean;
-    synchronousMode: string;
-    integrityOk: boolean;
-    estimatedSizeKB: number;
-    issues: string[];
-  } | null>(null);
-  const [checkingHealth, setCheckingHealth] = useState(false);
-  const [fixingIssues, setFixingIssues] = useState(false);
-  const [diskSpace, setDiskSpace] = useState<{ free: number; total: number } | null>(null);
-  const [backupList, setBackupList] = useState<BackupInfo[]>([]);
-  const [showBackupList, setShowBackupList] = useState(false);
-  const [loadingBackups, setLoadingBackups] = useState(false);
   const [licenseStatus, setLicenseStatus] = useState<TrialStatus | null>(null);
   const [deviceId, setDeviceId] = useState('');
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
@@ -108,8 +89,6 @@ export default function SettingsScreen({ navigation }: Props) {
 
   useEffect(() => {
     loadSettings();
-    checkDatabaseHealth();
-    checkDiskSpace();
     loadLicenseStatus();
     loadDeviceId();
   }, []);
@@ -213,102 +192,6 @@ export default function SettingsScreen({ navigation }: Props) {
     }
   };
 
-  const checkDatabaseHealth = useCallback(async () => {
-    setCheckingHealth(true);
-    try {
-      const dbService = getDatabase();
-      const health = await dbService.checkDatabaseHealth();
-      const dbInfo = await dbService.getDatabaseInfo();
-      setDbHealth({
-        isHealthy: health.isHealthy,
-        walMode: health.walMode,
-        synchronousMode: health.synchronousMode,
-        integrityOk: health.integrityOk,
-        estimatedSizeKB: dbInfo.estimatedSizeKB,
-        issues: health.issues,
-      });
-    } catch (error) {
-      console.error('Error checking database health:', error);
-      setDbHealth({
-        isHealthy: false,
-        walMode: false,
-        synchronousMode: 'UNKNOWN',
-        integrityOk: false,
-        estimatedSizeKB: 0,
-        issues: [`Health check failed: ${error}`],
-      });
-    } finally {
-      setCheckingHealth(false);
-    }
-  }, []);
-
-  const checkDiskSpace = async () => {
-    try {
-      const isWebPlatform = Platform.OS === 'web';
-      if (isWebPlatform) {
-        // Web doesn't have direct disk space API
-        setDiskSpace(null);
-      } else if (ExpoFileSystem.getFreeDiskStorageAsync) {
-        const free = await ExpoFileSystem.getFreeDiskStorageAsync();
-        const total = await ExpoFileSystem.getTotalDiskCapacityAsync();
-        setDiskSpace({
-          free: Math.round(free / (1024 * 1024)), // Convert to MB
-          total: Math.round(total / (1024 * 1024)), // Convert to MB
-        });
-      }
-    } catch (error) {
-      console.error('Error checking disk space:', error);
-      setDiskSpace(null);
-    }
-  };
-
-  const handleCheckpointWAL = async () => {
-    try {
-      setLoading(true);
-      const dbService = getDatabase();
-      const result = await dbService.checkpointWAL();
-      if (result.success) {
-        Alert.alert('Success', `WAL checkpoint completed. ${result.pagesCheckpointed} pages written to database.`);
-      } else {
-        Alert.alert('Warning', 'WAL checkpoint could not be completed.');
-      }
-    } catch (error) {
-      Alert.alert('Error', `Checkpoint failed: ${error}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFixIssues = async () => {
-    try {
-      setFixingIssues(true);
-      const dbService = getDatabase();
-      const result = await dbService.fixDatabaseIssues();
-
-      if (result.success) {
-        Alert.alert(
-          'Issues Fixed',
-          result.fixesApplied.length > 0
-            ? `The following fixes were applied:\n\n${result.fixesApplied.map(f => '• ' + f).join('\n')}\n\nYour database is now properly configured.`
-            : 'No issues found that needed fixing.',
-          [{ text: 'OK' }]
-        );
-        // Refresh health check to show updated status
-        await checkDatabaseHealth();
-      } else {
-        Alert.alert(
-          'Fix Incomplete',
-          result.message,
-          [{ text: 'OK' }]
-        );
-      }
-    } catch (error) {
-      Alert.alert('Error', `Failed to fix issues: ${error}`);
-    } finally {
-      setFixingIssues(false);
-    }
-  };
-
   const loadSettings = async () => {
     try {
       const dbService = getDatabase();
@@ -321,9 +204,62 @@ export default function SettingsScreen({ navigation }: Props) {
         receipt_footer: await dbService.getSetting('receipt_footer') || 'Thank you for shopping with us! Come Again!!!',
       };
       setSettings(settingsData);
+      const reqCust = await dbService.getSetting('require_customer_name');
+      setRequireCustomerName(reqCust === 'true');
     } catch (error) {
       console.error('Error loading settings:', error);
       Alert.alert('Error', 'Failed to load settings');
+    }
+  };
+
+  const handleToggleRequireCustomer = async (value: boolean) => {
+    try {
+      const dbService = getDatabase();
+      await dbService.updateSetting('require_customer_name', value ? 'true' : 'false');
+      setRequireCustomerName(value);
+    } catch (error) {
+      console.error('Error saving setting:', error);
+      Alert.alert('Error', 'Failed to save setting');
+    }
+  };
+
+  const handleBackupNow = async () => {
+    try {
+      setBackingUp(true);
+      const backupService = DatabaseBackupService.getInstance();
+      const backupPath = await backupService.createBackup();
+
+      if (Platform.OS === 'web') {
+        Alert.alert('Success', 'Backup downloaded successfully!');
+      } else {
+        Alert.alert(
+          'Backup Created',
+          'Your database backup has been saved successfully.',
+          [
+            { text: 'OK' },
+            {
+              text: 'Share Copy',
+              onPress: async () => {
+                try {
+                  if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(backupPath, {
+                      mimeType: 'application/x-sqlite3',
+                      dialogTitle: 'Share Database Backup',
+                    });
+                  }
+                } catch (e) {
+                  console.error('Share failed:', e);
+                }
+              },
+            },
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Backup failed:', error);
+      Alert.alert('Backup Failed', `${error}`);
+    } finally {
+      setBackingUp(false);
     }
   };
 
@@ -409,407 +345,6 @@ export default function SettingsScreen({ navigation }: Props) {
     }
   };
 
-  const loadBackupList = async () => {
-    const isWebPlatform = Platform.OS === 'web';
-    if (isWebPlatform) {
-      Alert.alert('Info', 'Backup history is not available on web. Backups are downloaded directly to your device.');
-      return;
-    }
-
-    setLoadingBackups(true);
-    try {
-      const backupService = DatabaseBackupService.getInstance();
-      const backups = await backupService.listBackups();
-      setBackupList(backups);
-      setShowBackupList(true);
-    } catch (error) {
-      console.error('Error loading backups:', error);
-      Alert.alert('Error', 'Failed to load backup list');
-    } finally {
-      setLoadingBackups(false);
-    }
-  };
-
-  const handleRestoreFromBackup = async (backup: BackupInfo) => {
-    Alert.alert(
-      'Restore Backup',
-      `Restore from backup created on ${backup.timestamp.toLocaleString()}?\n\nThis will REPLACE all current data. This action cannot be undone!`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Restore',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setLoading(true);
-              setShowBackupList(false);
-
-              const backupService = DatabaseBackupService.getInstance();
-              // Create a safety backup first
-              await backupService.createAutoBackup('pre-restore');
-
-              // Read and restore
-              const content = await FileSystem.readAsStringAsync(backup.filepath);
-              const backupData = JSON.parse(content);
-
-              if (!backupData.metadata || !backupData.tables) {
-                throw new Error('Invalid backup format');
-              }
-
-              const { DatabaseService } = require('../database/DatabaseService');
-              const dbService = DatabaseService.getInstance();
-              const db = dbService.getDatabase();
-
-              // Disable foreign keys
-              await db.execAsync('PRAGMA foreign_keys = OFF');
-
-              // Clear and restore tables
-              const tables = Object.keys(backupData.tables);
-              for (const tableName of tables) {
-                const tableData = backupData.tables[tableName];
-                if (Array.isArray(tableData) && tableData.length > 0) {
-                  // Clear table
-                  try {
-                    await db.execAsync(`DELETE FROM ${tableName}`);
-                  } catch (e) {
-                    console.warn(`Could not clear table ${tableName}`);
-                  }
-
-                  // Restore data
-                  const columns = Object.keys(tableData[0]);
-                  const placeholders = columns.map(() => '?').join(', ');
-                  const insertSql = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
-
-                  for (const row of tableData) {
-                    const values = columns.map(col => row[col]);
-                    try {
-                      await db.runAsync(insertSql, values);
-                    } catch (e) {
-                      console.warn(`Could not insert into ${tableName}:`, e);
-                    }
-                  }
-                }
-              }
-
-              // Re-enable foreign keys
-              await db.execAsync('PRAGMA foreign_keys = ON');
-
-              Alert.alert(
-                'Restore Complete',
-                'Database has been restored successfully. Please restart the app to ensure all changes take effect.',
-                [{ text: 'OK', onPress: () => loadSettings() }]
-              );
-            } catch (error) {
-              console.error('Restore error:', error);
-              Alert.alert('Error', `Restore failed: ${error}`);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const handleDeleteBackup = async (backup: BackupInfo) => {
-    Alert.alert(
-      'Delete Backup',
-      `Delete backup from ${backup.timestamp.toLocaleString()}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const backupService = DatabaseBackupService.getInstance();
-              await backupService.deleteBackup(backup.filepath);
-              // Refresh list
-              const backups = await backupService.listBackups();
-              setBackupList(backups);
-              Alert.alert('Success', 'Backup deleted');
-            } catch (error) {
-              Alert.alert('Error', 'Failed to delete backup');
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const handleShareBackup = async (backup: BackupInfo) => {
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(backup.filepath, {
-          mimeType: 'application/json',
-          dialogTitle: 'Share Backup File'
-        });
-      } else {
-        Alert.alert('Error', 'Sharing is not available on this device');
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to share backup');
-    }
-  };
-
-  const handleBackup = async () => {
-    Alert.alert(
-      'Create Backup',
-      'This will create a complete backup of ALL your data (products, transactions, settings, inventory, etc.). The share sheet will open so you can save to Google Drive, email, or other storage.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Backup',
-          onPress: async () => {
-            try {
-              setLoading(true);
-
-              const backupService = DatabaseBackupService.getInstance();
-              const backupPath = await backupService.createBackup();
-
-              // On native, open share sheet so user can save to Google Drive, etc.
-              const isWebPlatform = Platform.OS === 'web';
-              if (!isWebPlatform) {
-                await backupService.shareBackup(backupPath);
-              }
-
-              Alert.alert('Success', 'Database backup created successfully! Save it to Google Drive or another safe location for easy restore later.');
-            } catch (error) {
-              console.error('Backup failed:', error);
-              Alert.alert('Error', `Backup failed: ${error}`);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  };
-
-
-  const handleRestore = async () => {
-    // Check if user has permission to restore (Admin or Manager only)
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'MANAGER')) {
-      Alert.alert(
-        'Access Denied',
-        'Only administrators and managers can restore database backups.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    Alert.alert(
-      'Restore Database',
-      'This will replace ALL current data with data from a backup file. A safety backup will be created first.\n\nYou can pick a file from Google Drive, local storage, or any other source.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Choose Backup File',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setLoading(true);
-
-              const backupService = DatabaseBackupService.getInstance();
-
-              // Create safety backup before restoring (native only)
-              const isWebPlatform = Platform.OS === 'web';
-              if (!isWebPlatform) {
-                try {
-                  await backupService.createAutoBackup('pre-restore');
-                  console.log('[Restore] Safety backup created before restore');
-                } catch (safetyError) {
-                  console.warn('[Restore] Safety backup failed:', safetyError);
-                }
-              }
-
-              // Use DatabaseBackupService which handles file picker + actual data restore
-              const success = await backupService.restoreFromFile();
-
-              if (success) {
-                Alert.alert(
-                  'Success',
-                  'Database restored successfully. Please restart the app to ensure all changes take effect.',
-                  [
-                    {
-                      text: 'OK',
-                      onPress: () => {
-                        loadSettings();
-                        if (isWebPlatform) {
-                          window.location.reload();
-                        }
-                      }
-                    }
-                  ]
-                );
-              }
-            } catch (error) {
-              console.error('Restore failed:', error);
-              Alert.alert('Error', `Restore failed: ${error}`);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  };
-
-
-  const handleClearPhysicalInventory = async () => {
-    Alert.alert(
-      'Clear Physical Inventory Data',
-      'This will delete all physical inventory history, count sessions, and reset all product stock quantities to zero. This action cannot be undone!',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: () => {
-            Alert.alert(
-              'Confirm Clear',
-              'Are you sure? This will permanently delete all physical inventory data and reset stock quantities to zero.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Yes, Clear All',
-                  style: 'destructive',
-                  onPress: () => {
-                    setClearInventoryPassword('');
-                    setClearInventoryPasswordVisible(true);
-                  },
-                },
-              ]
-            );
-          },
-        },
-      ]
-    );
-  };
-
-  const handleClearInventoryPasswordSubmit = async () => {
-    if (!clearInventoryPassword.trim()) {
-      Alert.alert('Error', 'Please enter your admin password');
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const dbService = getDatabase();
-      const isValid = await dbService.verifyAdminPassword(clearInventoryPassword);
-
-      if (!isValid) {
-        Alert.alert('Access Denied', 'Incorrect admin password');
-        setClearInventoryPassword('');
-        setLoading(false);
-        return;
-      }
-
-      setClearInventoryPasswordVisible(false);
-      setClearInventoryPassword('');
-
-      await dbService.clearPhysicalInventoryData();
-      Alert.alert('Success', 'Physical inventory data cleared and stock quantities reset to zero successfully.');
-    } catch (error) {
-      console.error('Error clearing physical inventory data:', error);
-      Alert.alert('Error', 'Failed to clear physical inventory data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
-  const handleValidateDatabase = async () => {
-    try {
-      setLoading(true);
-
-      const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
-      let validation: { isValid: boolean; errors: string[] };
-
-      if (isWebPlatform) {
-        validation = validateWebDatabase();
-      } else {
-        const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
-        const backupService = DatabaseBackupService.getInstance();
-        validation = await backupService.validateDatabase();
-      }
-
-      if (validation.isValid) {
-        Alert.alert(
-          'Database Validation',
-          'Database is healthy and all integrity checks passed.',
-          [{ text: 'OK' }]
-        );
-      } else {
-        Alert.alert(
-          'Database Issues Found',
-          `Found ${validation.errors.length} issue(s):\n\n${validation.errors.join('\n')}\n\nWould you like to attempt repair?`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Repair',
-              onPress: async () => {
-                try {
-                  if (isWebPlatform) {
-                    repairWebDatabase();
-                    Alert.alert('Repair Successful', 'Database repair completed successfully', [{ text: 'OK' }]);
-                  } else {
-                    const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
-                    const backupService = DatabaseBackupService.getInstance();
-                    const repair = await backupService.repairDatabase();
-                    Alert.alert(
-                      repair.success ? 'Repair Successful' : 'Repair Failed',
-                      repair.message,
-                      [{ text: 'OK' }]
-                    );
-                  }
-                } catch (error) {
-                  Alert.alert('Error', `Repair failed: ${error}`);
-                }
-              }
-            }
-          ]
-        );
-      }
-    } catch (error) {
-      Alert.alert('Error', `Validation failed: ${error}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const validateWebDatabase = (): { isValid: boolean; errors: string[] } => {
-    const errors: string[] = [];
-    try {
-      const storedData = localStorage.getItem(WEB_STORAGE_KEY);
-      if (!storedData) {
-        errors.push('No database data found');
-        return { isValid: false, errors };
-      }
-      const data = JSON.parse(storedData);
-      const requiredArrays = ['products', 'users', 'categories'];
-      for (const arr of requiredArrays) {
-        if (!Array.isArray(data[arr])) {
-          errors.push(`Missing or invalid data: ${arr}`);
-        }
-      }
-      const adminUser = data.users?.find((u: any) => u.role === 'ADMIN');
-      if (!adminUser) {
-        errors.push('No admin user found');
-      }
-    } catch (error) {
-      errors.push(`Database validation error: ${error}`);
-    }
-    return { isValid: errors.length === 0, errors };
-  };
-
-  const repairWebDatabase = () => {
-    const storedData = localStorage.getItem(WEB_STORAGE_KEY);
-    if (storedData) {
-      const data = JSON.parse(storedData);
-      localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(data));
-    }
-  };
 
   const handleOpenLicenseGenerator = () => {
     setLicensePassword('');
@@ -825,45 +360,6 @@ export default function SettingsScreen({ navigation }: Props) {
       Alert.alert('Access Denied', 'Incorrect password');
       setLicensePassword('');
     }
-  };
-
-  const handleOptimizeDatabase = async () => {
-    Alert.alert(
-      'Optimize Database',
-      'This will analyze, reindex, and compact the database to improve performance. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Optimize',
-          onPress: async () => {
-            try {
-              setLoading(true);
-
-              const isWebPlatform = Platform.OS === 'web' || typeof window !== 'undefined' && typeof (window as any).document !== 'undefined';
-
-              if (isWebPlatform) {
-                // Web optimization - compact localStorage
-                const storedData = localStorage.getItem(WEB_STORAGE_KEY);
-                if (storedData) {
-                  const data = JSON.parse(storedData);
-                  localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(data));
-                }
-              } else {
-                const { DatabaseBackupService } = require('../utils/DatabaseBackupService');
-                const backupService = DatabaseBackupService.getInstance();
-                await backupService.optimizeDatabase();
-              }
-
-              Alert.alert('Success', 'Database optimization completed successfully!');
-            } catch (error) {
-              Alert.alert('Error', `Optimization failed: ${error}`);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
   };
 
   const settingsList = [
@@ -1016,6 +512,22 @@ export default function SettingsScreen({ navigation }: Props) {
                   style={styles.listItem}
                 />
               ))}
+
+              <Divider />
+
+              <List.Item
+                title="Require Customer Name"
+                description={requireCustomerName ? 'Customer name is required during sales' : 'Customer name is optional during sales'}
+                left={props => <List.Icon {...props} icon="account-check" />}
+                right={() => (
+                  <Switch
+                    value={requireCustomerName}
+                    onValueChange={handleToggleRequireCustomer}
+                  />
+                )}
+                onPress={() => handleToggleRequireCustomer(!requireCustomerName)}
+                style={styles.listItem}
+              />
             </Card.Content>
           </Card>
 
@@ -1259,214 +771,24 @@ export default function SettingsScreen({ navigation }: Props) {
             </Card.Content>
           </Card>
 
-          {/* Database Health & Protection */}
+          {/* Database Tools */}
           <Card style={styles.card}>
             <Card.Content>
-              <Title style={styles.cardTitle}>Database Health & Protection</Title>
-              <Paragraph style={styles.cardSubtitle}>
-                Monitor database health and prevent data corruption
-              </Paragraph>
-
-              {/* Health Status Summary */}
-              <View style={[styles.healthSummary, { backgroundColor: dbHealth?.isHealthy ? '#E8F5E9' : '#FFEBEE' }]}>
-                <List.Icon
-                  icon={dbHealth?.isHealthy ? 'check-circle' : 'alert-circle'}
-                  color={dbHealth?.isHealthy ? '#4CAF50' : '#F44336'}
-                />
-                <View style={styles.healthSummaryText}>
-                  <Paragraph style={{ fontWeight: 'bold', color: dbHealth?.isHealthy ? '#4CAF50' : '#F44336' }}>
-                    {checkingHealth ? 'Checking...' : dbHealth?.isHealthy ? 'Database Healthy' : 'Issues Detected'}
-                  </Paragraph>
-                  {dbHealth?.estimatedSizeKB ? (
-                    <Paragraph style={styles.healthDetail}>
-                      Size: {dbHealth.estimatedSizeKB > 1024 ? `${(dbHealth.estimatedSizeKB / 1024).toFixed(1)} MB` : `${dbHealth.estimatedSizeKB} KB`}
-                    </Paragraph>
-                  ) : null}
-                </View>
-                <Button mode="text" onPress={checkDatabaseHealth} loading={checkingHealth} compact>
-                  Refresh
-                </Button>
-              </View>
-
-              {/* Health Details */}
-              <List.Item
-                title="WAL Mode (Crash Recovery)"
-                description={dbHealth?.walMode ? 'Enabled - Better crash recovery' : 'Disabled - Enable for protection'}
-                left={props => <List.Icon {...props} icon="shield-check" color={dbHealth?.walMode ? '#4CAF50' : '#FF9800'} />}
-                right={() => (
-                  <Paragraph style={{ color: dbHealth?.walMode ? '#4CAF50' : '#FF9800' }}>
-                    {dbHealth?.walMode ? 'ON' : 'OFF'}
-                  </Paragraph>
-                )}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Synchronous Mode"
-                description={dbHealth?.synchronousMode === 'FULL' ? 'Maximum durability' : 'May lose data on crash'}
-                left={props => <List.Icon {...props} icon="sync" color={dbHealth?.synchronousMode === 'FULL' ? '#4CAF50' : '#FF9800'} />}
-                right={() => (
-                  <Paragraph style={{ color: dbHealth?.synchronousMode === 'FULL' ? '#4CAF50' : '#FF9800' }}>
-                    {dbHealth?.synchronousMode || 'Unknown'}
-                  </Paragraph>
-                )}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Integrity Check"
-                description={dbHealth?.integrityOk ? 'No corruption detected' : 'Database may be corrupted'}
-                left={props => <List.Icon {...props} icon="database-check" color={dbHealth?.integrityOk ? '#4CAF50' : '#F44336'} />}
-                right={() => (
-                  <Paragraph style={{ color: dbHealth?.integrityOk ? '#4CAF50' : '#F44336' }}>
-                    {dbHealth?.integrityOk ? 'OK' : 'FAILED'}
-                  </Paragraph>
-                )}
-              />
-
-              {diskSpace && (
-                <>
-                  <Divider />
-                  <List.Item
-                    title="Storage Space"
-                    description={`${diskSpace.free.toLocaleString()} MB free of ${diskSpace.total.toLocaleString()} MB`}
-                    left={props => <List.Icon {...props} icon="harddisk" color={diskSpace.free < 100 ? '#F44336' : '#4CAF50'} />}
-                    right={() => (
-                      <Paragraph style={{ color: diskSpace.free < 100 ? '#F44336' : '#4CAF50' }}>
-                        {diskSpace.free < 100 ? 'LOW' : 'OK'}
-                      </Paragraph>
-                    )}
-                  />
-                </>
-              )}
-
-              {/* Issues List */}
-              {dbHealth?.issues && dbHealth.issues.length > 0 && (
-                <View style={styles.issuesContainer}>
-                  <Paragraph style={styles.issuesTitle}>Issues Found:</Paragraph>
-                  {dbHealth.issues.map((issue, index) => (
-                    <Paragraph key={index} style={styles.issueItem}>• {issue}</Paragraph>
-                  ))}
-                </View>
-              )}
-
-              {/* Protection Actions */}
-              <View style={styles.healthActions}>
-                {dbHealth?.issues && dbHealth.issues.length > 0 && (
-                  <Button
-                    mode="contained"
-                    onPress={handleFixIssues}
-                    loading={fixingIssues}
-                    icon="wrench"
-                    style={[styles.healthButton, { backgroundColor: '#FF9800' }]}
-                    disabled={fixingIssues || loading}
-                  >
-                    Fix Issues
-                  </Button>
-                )}
-                <Button
-                  mode="outlined"
-                  onPress={handleCheckpointWAL}
-                  loading={loading}
-                  icon="content-save"
-                  style={styles.healthButton}
-                  disabled={fixingIssues || loading}
-                >
-                  Save to Disk
-                </Button>
-              </View>
-
-              <Paragraph style={styles.healthNote}>
-                Tip: Database protection is always enabled. Use "Save to Disk" before closing the app to ensure all changes are saved.
-                {dbHealth?.issues && dbHealth.issues.length > 0 && ' Tap "Fix Issues" to resolve the problems above.'}
-              </Paragraph>
-            </Card.Content>
-          </Card>
-
-          {/* Data Management */}
-          <Card style={styles.card}>
-            <Card.Content>
-              <Title style={styles.cardTitle}>Data Management</Title>
-              <Paragraph style={styles.cardSubtitle}>
-                Backup, restore, and reset options
-              </Paragraph>
-
               <List.Item
                 title="Backup Database"
-                description="Export all data for backup"
-                left={props => <List.Icon {...props} icon="export" />}
-                right={props => <Button mode="outlined" compact onPress={handleBackup}>Backup</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="View Backups"
-                description={`${backupList.length > 0 ? `${backupList.length} backup(s) available` : 'View and manage saved backups'}`}
-                left={props => <List.Icon {...props} icon="folder-open" />}
-                right={props => <Button mode="outlined" compact onPress={loadBackupList} loading={loadingBackups}>View</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Restore Database"
-                description="Import data from backup file"
-                left={props => <List.Icon {...props} icon="import" />}
-                right={props => <Button mode="outlined" compact onPress={handleRestore}>Restore</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Validate Database"
-                description="Check database integrity and repair if needed"
-                left={props => <List.Icon {...props} icon="database-check" />}
-                right={props => <Button mode="outlined" compact onPress={handleValidateDatabase}>Validate</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Optimize Database"
-                description="Improve database performance"
-                left={props => <List.Icon {...props} icon="tune" />}
-                right={props => <Button mode="outlined" compact onPress={handleOptimizeDatabase}>Optimize</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Test Data Generator"
-                description="Add 5000 test products for testing"
-                left={props => <List.Icon {...props} icon="test-tube" />}
-                right={props => <Button mode="outlined" compact onPress={() => navigation.navigate('TestData')}>Generate</Button>}
-                style={styles.listItem}
-              />
-
-              <Divider />
-
-              <List.Item
-                title="Clear Physical Inventory"
-                description="Delete physical inventory data and reset stock to zero"
-                left={props => <List.Icon {...props} icon="package-variant" />}
-                right={props => (
+                description="Create a backup of your database now"
+                left={props => <List.Icon {...props} icon="database-export" />}
+                right={() => (
                   <Button
-                    mode="outlined"
+                    mode="contained"
                     compact
-                    textColor="#FF9800"
-                    onPress={handleClearPhysicalInventory}
-                    loading={loading}
-                    disabled={loading}
+                    icon="backup-restore"
+                    onPress={handleBackupNow}
+                    loading={backingUp}
+                    disabled={backingUp}
+                    buttonColor="#4CAF50"
                   >
-                    Clear
+                    {backingUp ? 'Backing up...' : 'Backup Now'}
                   </Button>
                 )}
                 style={styles.listItem}
@@ -1475,15 +797,13 @@ export default function SettingsScreen({ navigation }: Props) {
               <Divider />
 
               <List.Item
-                title="Reset Transactional Data"
-                description="Delete all sales, purchases, payments, and inventory movements"
-                left={props => <List.Icon {...props} icon="delete-forever" />}
-                right={props => <List.Icon {...props} icon="chevron-right" color="#F44336" />}
-                onPress={() => navigation.navigate('ResetData')}
+                title="Database & Data Management"
+                description="View tables, backup, restore, and monitor health"
+                left={props => <List.Icon {...props} icon="database-cog" />}
+                right={props => <List.Icon {...props} icon="chevron-right" />}
+                onPress={() => navigation.navigate('DatabaseViewer')}
                 style={styles.listItem}
-                titleStyle={{ color: '#F44336' }}
               />
-
             </Card.Content>
           </Card>
 
@@ -1624,114 +944,6 @@ export default function SettingsScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
 
-        {/* Clear Physical Inventory Password Dialog */}
-        <Dialog
-          visible={clearInventoryPasswordVisible}
-          onDismiss={() => {
-            setClearInventoryPasswordVisible(false);
-            setClearInventoryPassword('');
-          }}
-        >
-          <Dialog.Title>Enter Password</Dialog.Title>
-          <Dialog.Content>
-            <Paragraph style={{ marginBottom: 16 }}>
-              Enter your admin password to clear physical inventory data
-            </Paragraph>
-            <TextInput
-              label="Password"
-              value={clearInventoryPassword}
-              onChangeText={setClearInventoryPassword}
-              mode="outlined"
-              secureTextEntry={true}
-              autoFocus={true}
-              style={styles.dialogInput}
-              disabled={loading}
-            />
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => {
-              setClearInventoryPasswordVisible(false);
-              setClearInventoryPassword('');
-            }} disabled={loading}>Cancel</Button>
-            <Button
-              onPress={handleClearInventoryPasswordSubmit}
-              loading={loading}
-              disabled={loading || !clearInventoryPassword.trim()}
-            >OK</Button>
-          </Dialog.Actions>
-        </Dialog>
-
-        {/* Backup List Dialog */}
-        <Dialog
-          visible={showBackupList}
-          onDismiss={() => setShowBackupList(false)}
-          style={styles.backupDialog}
-        >
-          <Dialog.Title>Saved Backups</Dialog.Title>
-          <Dialog.ScrollArea style={styles.backupScrollArea}>
-            <ScrollView>
-              {backupList.length === 0 ? (
-                <Paragraph style={styles.noBackupsText}>
-                  No backups found in the POSBackups folder.
-                </Paragraph>
-              ) : (
-                backupList.map((backup, index) => (
-                  <View key={backup.filename}>
-                    <View style={styles.backupItem}>
-                      <View style={styles.backupInfo}>
-                        <Paragraph style={styles.backupDate}>
-                          {backup.timestamp.toLocaleString('en-PH', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </Paragraph>
-                        <Paragraph style={styles.backupMeta}>
-                          {backup.sizeKB} KB
-                          {backup.metadata?.product_count ? ` • ${backup.metadata.product_count} products` : ''}
-                          {backup.metadata?.backup_reason ? ` • ${backup.metadata.backup_reason}` : ''}
-                        </Paragraph>
-                      </View>
-                      <View style={styles.backupActions}>
-                        <Button
-                          mode="text"
-                          compact
-                          icon="share"
-                          onPress={() => handleShareBackup(backup)}
-                        >
-                          Share
-                        </Button>
-                        <Button
-                          mode="text"
-                          compact
-                          icon="restore"
-                          onPress={() => handleRestoreFromBackup(backup)}
-                        >
-                          Restore
-                        </Button>
-                        <Button
-                          mode="text"
-                          compact
-                          icon="delete"
-                          textColor="#F44336"
-                          onPress={() => handleDeleteBackup(backup)}
-                        >
-                          Delete
-                        </Button>
-                      </View>
-                    </View>
-                    {index < backupList.length - 1 && <Divider />}
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </Dialog.ScrollArea>
-          <Dialog.Actions>
-            <Button onPress={() => setShowBackupList(false)}>Close</Button>
-          </Dialog.Actions>
-        </Dialog>
       </Portal>
 
       {/* Label Template Settings Dialog */}
@@ -1887,88 +1099,6 @@ const styles = StyleSheet.create({
   helperText: {
     fontSize: 12,
     opacity: 0.7,
-    fontStyle: 'italic',
-  },
-  healthSummary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  healthSummaryText: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  healthDetail: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
-  issuesContainer: {
-    backgroundColor: '#FFEBEE',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 12,
-  },
-  issuesTitle: {
-    fontWeight: 'bold',
-    color: '#F44336',
-    marginBottom: 8,
-  },
-  issueItem: {
-    fontSize: 12,
-    color: '#C62828',
-    marginLeft: 8,
-    marginBottom: 4,
-  },
-  healthActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 16,
-    gap: 8,
-  },
-  healthButton: {
-    flex: 1,
-  },
-  healthNote: {
-    fontSize: 11,
-    opacity: 0.6,
-    fontStyle: 'italic',
-    marginTop: 12,
-    textAlign: 'center',
-  },
-  backupDialog: {
-    maxHeight: '80%',
-  },
-  backupScrollArea: {
-    maxHeight: 400,
-    paddingHorizontal: 0,
-  },
-  backupItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-  },
-  backupInfo: {
-    marginBottom: 8,
-  },
-  backupDate: {
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  backupMeta: {
-    fontSize: 12,
-    opacity: 0.7,
-    marginTop: 2,
-  },
-  backupActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 4,
-  },
-  noBackupsText: {
-    textAlign: 'center',
-    padding: 24,
-    opacity: 0.6,
     fontStyle: 'italic',
   },
   // Theme selector styles

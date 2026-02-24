@@ -72,6 +72,12 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [fixingIssues, setFixingIssues] = useState(false);
   const [diskSpace, setDiskSpace] = useState<{ free: number; total: number } | null>(null);
+  const [autoFixMessage, setAutoFixMessage] = useState<string | null>(null);
+
+  // Purge dialog state
+  const [purgePasswordVisible, setPurgePasswordVisible] = useState(false);
+  const [purgePassword, setPurgePassword] = useState('');
+  const [purging, setPurging] = useState(false);
 
   // Management tab state
   const [backupList, setBackupList] = useState<BackupInfo[]>([]);
@@ -248,10 +254,23 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
 
   const checkDatabaseHealth = useCallback(async () => {
     setCheckingHealth(true);
+    setAutoFixMessage(null);
     try {
       const dbService = getDatabase();
-      const health = await dbService.checkDatabaseHealth();
+      let health = await dbService.checkDatabaseHealth();
       const dbInfo = await dbService.getDatabaseInfo();
+
+      // Auto-fix: if fixable issues detected (WAL, synchronous, foreign keys), fix them automatically
+      const hasFixableIssues = !health.isHealthy && health.integrityOk && health.issues.length > 0;
+      if (hasFixableIssues) {
+        const fixResult = await dbService.fixDatabaseIssues();
+        if (fixResult.success && fixResult.fixesApplied.length > 0) {
+          // Re-check health after auto-fix
+          health = await dbService.checkDatabaseHealth();
+          setAutoFixMessage(`${fixResult.fixesApplied.length} issue(s) automatically fixed`);
+        }
+      }
+
       setDbHealth({
         isHealthy: health.isHealthy,
         walMode: health.walMode,
@@ -421,22 +440,26 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   };
 
   const handleRestoreFromBackup = async (backup: BackupInfo) => {
-    Alert.alert(
-      'Restore Backup',
-      `Restore from backup created on ${backup.timestamp.toLocaleString()}?\n\nThis will REPLACE all current data. This action cannot be undone!`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Restore',
-          style: 'destructive',
-          onPress: () => {
-            setPendingRestoreBackup(backup);
-            setRestorePassword('');
-            setRestorePasswordVisible(true);
+    // Close the dialog first so Alert buttons are not blocked by the overlay
+    setShowBackupList(false);
+    setTimeout(() => {
+      Alert.alert(
+        'Restore Backup',
+        `Restore from backup created on ${backup.timestamp.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}?\n\nThis will REPLACE all current data. This action cannot be undone!`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restore',
+            style: 'destructive',
+            onPress: () => {
+              setPendingRestoreBackup(backup);
+              setRestorePassword('');
+              setRestorePasswordVisible(true);
+            }
           }
-        }
-      ]
-    );
+        ]
+      );
+    }, 300);
   };
 
   const handleRestorePasswordSubmit = async () => {
@@ -487,29 +510,41 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
   };
 
   const handleDeleteBackup = async (backup: BackupInfo) => {
-    Alert.alert(
-      'Delete Backup',
-      `Delete backup from ${backup.timestamp.toLocaleString()}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const backupService = DatabaseBackupService.getInstance();
-              await backupService.deleteBackup(backup.filepath);
-              const backups = await backupService.listBackups();
-              setBackupList(backups);
-              setBackupCount(backups.length);
-              Alert.alert('Success', 'Backup deleted');
-            } catch (error) {
-              Alert.alert('Error', 'Failed to delete backup');
+    // Close the dialog first so Alert buttons are not blocked by the overlay
+    setShowBackupList(false);
+    setTimeout(() => {
+      Alert.alert(
+        'Delete Backup',
+        `Delete backup from ${backup.timestamp.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}?`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => setShowBackupList(true),
+          },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const backupService = DatabaseBackupService.getInstance();
+                await backupService.deleteBackup(backup.filepath);
+                const backups = await backupService.listBackups();
+                setBackupList(backups);
+                setBackupCount(backups.length);
+                Alert.alert('Success', 'Backup deleted', [
+                  { text: 'OK', onPress: () => setShowBackupList(true) },
+                ]);
+              } catch (error) {
+                Alert.alert('Error', 'Failed to delete backup', [
+                  { text: 'OK', onPress: () => setShowBackupList(true) },
+                ]);
+              }
             }
           }
-        }
-      ]
-    );
+        ]
+      );
+    }, 300);
   };
 
   const handleShareBackup = async (backup: BackupInfo) => {
@@ -723,35 +758,9 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
     );
   };
 
-  const handleClearPhysicalInventory = async () => {
-    Alert.alert(
-      'Clear Physical Inventory Data',
-      'This will delete all physical inventory history, count sessions, and reset all product stock quantities to zero. This action cannot be undone!',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: () => {
-            Alert.alert(
-              'Confirm Clear',
-              'Are you sure? This will permanently delete all physical inventory data and reset stock quantities to zero.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Yes, Clear All',
-                  style: 'destructive',
-                  onPress: () => {
-                    setClearInventoryPassword('');
-                    setClearInventoryPasswordVisible(true);
-                  },
-                },
-              ]
-            );
-          },
-        },
-      ]
-    );
+  const handleClearPhysicalInventory = () => {
+    setClearInventoryPassword('');
+    setClearInventoryPasswordVisible(true);
   };
 
   const handleClearInventoryPasswordSubmit = async () => {
@@ -782,6 +791,62 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
       Alert.alert('Error', 'Failed to clear physical inventory data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePurgeOldRecords = () => {
+    setPurgePassword('');
+    setPurgePasswordVisible(true);
+  };
+
+  const handlePurgePasswordSubmit = async () => {
+    if (!purgePassword.trim()) {
+      Alert.alert('Error', 'Please enter your admin password');
+      return;
+    }
+
+    try {
+      setPurging(true);
+      const dbService = getDatabase();
+      const isValid = await dbService.verifyAdminPassword(purgePassword);
+
+      if (!isValid) {
+        Alert.alert('Access Denied', 'Incorrect admin password');
+        setPurgePassword('');
+        setPurging(false);
+        return;
+      }
+
+      setPurgePasswordVisible(false);
+      setPurgePassword('');
+
+      // Create auto-backup before purge
+      const backupService = DatabaseBackupService.getInstance();
+      await backupService.createAutoBackup('pre-purge');
+
+      // Calculate cutoff date (2 years ago)
+      const cutoffDate = new Date();
+      cutoffDate.setFullYear(cutoffDate.getFullYear() - 2);
+
+      const result = await dbService.purgeOldTransactions(cutoffDate);
+
+      if (result.success) {
+        const summary = result.details.length > 0
+          ? result.details.map(d => `${d.table}: ${d.count}`).join('\n')
+          : 'No records older than 2 years found.';
+
+        Alert.alert(
+          'Purge Complete',
+          `${result.totalDeleted} record(s) deleted.\n\nAn auto-backup was created before the purge.\n\n${summary}`
+        );
+      } else {
+        Alert.alert('Purge Failed', result.message);
+      }
+    } catch (error) {
+      console.error('Error purging old records:', error);
+      Alert.alert('Error', `Purge failed: ${error}`);
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -994,16 +1059,6 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         <Divider />
 
         <List.Item
-          title="Test Data Generator"
-          description="Add 5000 test products for testing"
-          left={props => <List.Icon {...props} icon="test-tube" />}
-          right={props => <Button mode="outlined" compact onPress={() => navigation.navigate('TestData')}>Generate</Button>}
-          style={styles.listItem}
-        />
-
-        <Divider />
-
-        <List.Item
           title="Clear Physical Inventory"
           description="Delete physical inventory data and reset stock to zero"
           left={props => <List.Icon {...props} icon="package-variant" />}
@@ -1017,6 +1072,27 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
               disabled={loading}
             >
               Clear
+            </Button>
+          )}
+          style={styles.listItem}
+        />
+
+        <Divider />
+
+        <List.Item
+          title="Purge Old Records"
+          description="Delete transactional records older than 2 years"
+          left={props => <List.Icon {...props} icon="calendar-remove" />}
+          right={props => (
+            <Button
+              mode="outlined"
+              compact
+              textColor="#FF9800"
+              onPress={handlePurgeOldRecords}
+              loading={purging}
+              disabled={purging || loading}
+            >
+              Purge
             </Button>
           )}
           style={styles.listItem}
@@ -1065,6 +1141,27 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
             Refresh
           </Button>
         </View>
+
+        {/* Auto-fix message */}
+        {autoFixMessage && (
+          <View style={{ backgroundColor: '#E8F5E9', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+            <Paragraph style={{ color: '#2E7D32', fontSize: 13 }}>
+              {'\u2714'} {autoFixMessage}
+            </Paragraph>
+          </View>
+        )}
+
+        {/* Integrity corruption warning */}
+        {dbHealth && !dbHealth.integrityOk && (
+          <View style={{ backgroundColor: '#FFEBEE', padding: 12, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#F44336' }}>
+            <Paragraph style={{ color: '#C62828', fontWeight: 'bold', marginBottom: 4 }}>
+              Database may be corrupted
+            </Paragraph>
+            <Paragraph style={{ color: '#C62828', fontSize: 12 }}>
+              The integrity check failed. This cannot be auto-fixed. Restore from a recent backup to recover your data.
+            </Paragraph>
+          </View>
+        )}
 
         {/* Health Details */}
         <List.Item
@@ -1249,17 +1346,22 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
         <Dialog
           visible={clearInventoryPasswordVisible}
           onDismiss={() => {
-            setClearInventoryPasswordVisible(false);
-            setClearInventoryPassword('');
+            if (!loading) {
+              setClearInventoryPasswordVisible(false);
+              setClearInventoryPassword('');
+            }
           }}
         >
-          <Dialog.Title>Enter Password</Dialog.Title>
+          <Dialog.Title style={{ color: '#D32F2F' }}>Clear Physical Inventory</Dialog.Title>
           <Dialog.Content>
+            <Paragraph style={{ marginBottom: 8, color: '#D32F2F', fontWeight: 'bold' }}>
+              Warning: This action cannot be undone!
+            </Paragraph>
             <Paragraph style={{ marginBottom: 16 }}>
-              Enter your admin password to clear physical inventory data
+              This will delete all physical inventory history, count sessions, and reset all product stock quantities to zero. Enter your admin password to proceed.
             </Paragraph>
             <TextInput
-              label="Password"
+              label="Admin Password"
               value={clearInventoryPassword}
               onChangeText={setClearInventoryPassword}
               mode="outlined"
@@ -1278,7 +1380,54 @@ export default function DatabaseViewerScreen({ navigation }: Props) {
               onPress={handleClearInventoryPasswordSubmit}
               loading={loading}
               disabled={loading || !clearInventoryPassword.trim()}
-            >OK</Button>
+              textColor="#D32F2F"
+            >Clear All</Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        {/* Purge Old Records Password Dialog */}
+        <Dialog
+          visible={purgePasswordVisible}
+          onDismiss={() => {
+            if (!purging) {
+              setPurgePasswordVisible(false);
+              setPurgePassword('');
+            }
+          }}
+        >
+          <Dialog.Title style={{ color: '#E65100' }}>Purge Old Records</Dialog.Title>
+          <Dialog.Content>
+            <Paragraph style={{ marginBottom: 8, color: '#E65100', fontWeight: 'bold' }}>
+              This will delete transactional records older than 2 years.
+            </Paragraph>
+            <Paragraph style={{ marginBottom: 8, fontSize: 12 }}>
+              Affected: transactions, purchases, returns, payments, inventory movements, eJournal entries, readings, and shifts.
+            </Paragraph>
+            <Paragraph style={{ marginBottom: 16, fontSize: 12 }}>
+              Master data (products, customers, suppliers) and unpaid accounts will NOT be affected. An auto-backup will be created before the purge.
+            </Paragraph>
+            <TextInput
+              label="Admin Password"
+              value={purgePassword}
+              onChangeText={setPurgePassword}
+              mode="outlined"
+              secureTextEntry={true}
+              autoFocus={true}
+              style={styles.dialogInput}
+              disabled={purging}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => {
+              setPurgePasswordVisible(false);
+              setPurgePassword('');
+            }} disabled={purging}>Cancel</Button>
+            <Button
+              onPress={handlePurgePasswordSubmit}
+              loading={purging}
+              disabled={purging || !purgePassword.trim()}
+              textColor="#E65100"
+            >Purge</Button>
           </Dialog.Actions>
         </Dialog>
 

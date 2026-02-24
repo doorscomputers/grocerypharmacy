@@ -47,6 +47,13 @@ export class DatabaseService {
     return DatabaseService.instance;
   }
 
+  // Re-open the database after a file-level restore
+  public async reinitialize(): Promise<void> {
+    this.db = null;
+    this.initializationPromise = null;
+    await this.initialize();
+  }
+
   public async initialize(): Promise<void> {
     // If already initialized, return immediately
     if (this.db) {
@@ -9020,6 +9027,146 @@ export class DatabaseService {
     } catch (error) {
       console.error('[DatabaseService] Error getting dashboard analytics:', error);
       throw error;
+    }
+  }
+
+  // ==================== PURGE OLD TRANSACTIONS ====================
+
+  public async purgeOldTransactions(cutoffDate: Date): Promise<{
+    success: boolean;
+    totalDeleted: number;
+    details: { table: string; count: number }[];
+    message: string;
+  }> {
+    const db = this.getDatabase();
+    const details: { table: string; count: number }[] = [];
+    let totalDeleted = 0;
+    const cutoffStr = cutoffDate.toISOString();
+
+    try {
+      console.log('[DatabaseService] ========== STARTING PURGE OLD TRANSACTIONS ==========');
+      console.log('[DatabaseService] Cutoff date:', cutoffStr);
+
+      // Disable foreign keys temporarily for safe deletion order
+      await db.execAsync('PRAGMA foreign_keys = OFF;');
+
+      // 1. sales_return_items (via join on sales_returns by date)
+      let result = await db.runAsync(
+        `DELETE FROM sales_return_items WHERE sales_return_id IN (
+          SELECT id FROM sales_returns WHERE return_date < ?
+        )`, [cutoffStr]
+      );
+      if (result.changes > 0) { details.push({ table: 'sales_return_items', count: result.changes }); totalDeleted += result.changes; }
+
+      // 2. sales_returns
+      result = await db.runAsync('DELETE FROM sales_returns WHERE return_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'sales_returns', count: result.changes }); totalDeleted += result.changes; }
+
+      // 3. customer_payments
+      result = await db.runAsync('DELETE FROM customer_payments WHERE payment_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'customer_payments', count: result.changes }); totalDeleted += result.changes; }
+
+      // 4. accounts_receivable (only PAID — never delete unpaid)
+      result = await db.runAsync('DELETE FROM accounts_receivable WHERE created_at < ? AND status = ?', [cutoffStr, 'PAID']);
+      if (result.changes > 0) { details.push({ table: 'accounts_receivable', count: result.changes }); totalDeleted += result.changes; }
+
+      // 5. transaction_items (via join on transactions by date)
+      result = await db.runAsync(
+        `DELETE FROM transaction_items WHERE transaction_id IN (
+          SELECT id FROM transactions WHERE transaction_date < ?
+        )`, [cutoffStr]
+      );
+      if (result.changes > 0) { details.push({ table: 'transaction_items', count: result.changes }); totalDeleted += result.changes; }
+
+      // 6. transactions
+      result = await db.runAsync('DELETE FROM transactions WHERE transaction_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'transactions', count: result.changes }); totalDeleted += result.changes; }
+
+      // 7. purchase_return_items (via join on purchase_returns by date)
+      result = await db.runAsync(
+        `DELETE FROM purchase_return_items WHERE purchase_return_id IN (
+          SELECT id FROM purchase_returns WHERE return_date < ?
+        )`, [cutoffStr]
+      );
+      if (result.changes > 0) { details.push({ table: 'purchase_return_items', count: result.changes }); totalDeleted += result.changes; }
+
+      // 8. purchase_returns
+      result = await db.runAsync('DELETE FROM purchase_returns WHERE return_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'purchase_returns', count: result.changes }); totalDeleted += result.changes; }
+
+      // 9. supplier_payments
+      result = await db.runAsync('DELETE FROM supplier_payments WHERE payment_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'supplier_payments', count: result.changes }); totalDeleted += result.changes; }
+
+      // 10. accounts_payable (only PAID — never delete unpaid)
+      result = await db.runAsync('DELETE FROM accounts_payable WHERE created_at < ? AND status = ?', [cutoffStr, 'PAID']);
+      if (result.changes > 0) { details.push({ table: 'accounts_payable', count: result.changes }); totalDeleted += result.changes; }
+
+      // 11. purchase_details (via join on purchases by date)
+      result = await db.runAsync(
+        `DELETE FROM purchase_details WHERE purchase_id IN (
+          SELECT id FROM purchases WHERE purchase_date < ?
+        )`, [cutoffStr]
+      );
+      if (result.changes > 0) { details.push({ table: 'purchase_details', count: result.changes }); totalDeleted += result.changes; }
+
+      // 12. purchases
+      result = await db.runAsync('DELETE FROM purchases WHERE purchase_date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'purchases', count: result.changes }); totalDeleted += result.changes; }
+
+      // 13. inventory_movements
+      result = await db.runAsync('DELETE FROM inventory_movements WHERE created_at < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'inventory_movements', count: result.changes }); totalDeleted += result.changes; }
+
+      // 14. cash_movements
+      result = await db.runAsync('DELETE FROM cash_movements WHERE created_at < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'cash_movements', count: result.changes }); totalDeleted += result.changes; }
+
+      // 15. ejournal
+      result = await db.runAsync('DELETE FROM ejournal WHERE created_at < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'ejournal', count: result.changes }); totalDeleted += result.changes; }
+
+      // 16. x_readings
+      result = await db.runAsync('DELETE FROM x_readings WHERE date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'x_readings', count: result.changes }); totalDeleted += result.changes; }
+
+      // 17. z_readings
+      result = await db.runAsync('DELETE FROM z_readings WHERE date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'z_readings', count: result.changes }); totalDeleted += result.changes; }
+
+      // 18. end_of_day_records
+      result = await db.runAsync('DELETE FROM end_of_day_records WHERE date < ?', [cutoffStr]);
+      if (result.changes > 0) { details.push({ table: 'end_of_day_records', count: result.changes }); totalDeleted += result.changes; }
+
+      // 19. shifts (only CLOSED)
+      result = await db.runAsync('DELETE FROM shifts WHERE start_time < ? AND status = ?', [cutoffStr, 'CLOSED']);
+      if (result.changes > 0) { details.push({ table: 'shifts', count: result.changes }); totalDeleted += result.changes; }
+
+      // Re-enable foreign keys
+      await db.execAsync('PRAGMA foreign_keys = ON;');
+
+      // VACUUM to reclaim disk space
+      await db.execAsync('VACUUM;');
+
+      console.log('[DatabaseService] Purge complete. Total deleted:', totalDeleted);
+      console.log('[DatabaseService] ========== PURGE COMPLETE ==========');
+
+      return {
+        success: true,
+        totalDeleted,
+        details,
+        message: `Successfully purged ${totalDeleted} old records.`,
+      };
+    } catch (error) {
+      // Re-enable foreign keys even on error
+      try { await db.execAsync('PRAGMA foreign_keys = ON;'); } catch (e) { /* ignore */ }
+      console.error('[DatabaseService] Error purging old transactions:', error);
+      return {
+        success: false,
+        totalDeleted,
+        details,
+        message: `Error during purge: ${error}`,
+      };
     }
   }
 }

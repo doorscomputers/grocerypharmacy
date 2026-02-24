@@ -167,6 +167,7 @@ export default function SalesScreen({ navigation, route }: Props) {
   const [selectedItemForQty, setSelectedItemForQty] = useState<CartItem | null>(null);
   const [hamburgerMenuVisible, setHamburgerMenuVisible] = useState(false);
   const [lastReceiptData, setLastReceiptData] = useState<ReceiptData | null>(null);
+  const [requireCustomerName, setRequireCustomerName] = useState(false);
 
   // POS Operation Modal States
   const [cashFundModalVisible, setCashFundModalVisible] = useState(false);
@@ -254,9 +255,10 @@ export default function SalesScreen({ navigation, route }: Props) {
     navigation.navigate('EndOfDay', { targetDate: oldestDate });
   };
 
-  // Load customers
+  // Load customers and settings
   useEffect(() => {
     loadCustomers();
+    loadRequireCustomerSetting();
   }, []);
 
   // Refresh on focus and auto-focus search
@@ -265,6 +267,8 @@ export default function SalesScreen({ navigation, route }: Props) {
       refreshProducts();
       // Re-check for unterminated sessions when returning to this screen
       checkActiveShift();
+      // Reload setting in case it changed
+      loadRequireCustomerSetting();
       // Auto-focus search field for barcode scanning
       setTimeout(() => {
         searchInputRef.current?.focus();
@@ -284,6 +288,16 @@ export default function SalesScreen({ navigation, route }: Props) {
       setCustomers(customerList);
     } catch (error) {
       console.error('Error loading customers:', error);
+    }
+  };
+
+  const loadRequireCustomerSetting = async () => {
+    try {
+      const dbService = getDatabase();
+      const val = await dbService.getSetting('require_customer_name');
+      setRequireCustomerName(val === 'true');
+    } catch (error) {
+      console.error('Error loading require_customer_name setting:', error);
     }
   };
 
@@ -1041,6 +1055,7 @@ export default function SalesScreen({ navigation, route }: Props) {
         loading={isProcessing}
         initialPaymentMethod="CASH"
         initialCustomer={null}
+        requireCustomerName={requireCustomerName}
       />
 
       {/* Discount Modal */}

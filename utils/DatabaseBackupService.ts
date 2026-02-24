@@ -27,10 +27,16 @@ export interface BackupInfo {
 
 const WEB_STORAGE_KEY = 'posmobile_webmock_db';
 const BACKUP_FOLDER_NAME = 'POSBackups';
+const DB_NAME = 'pos_database.db';
 
 // Check if running on web platform
 const isWeb = (): boolean => {
   return Platform.OS === 'web' || typeof document !== 'undefined';
+};
+
+// Get the path to the SQLite database file
+const getDbFilePath = (): string => {
+  return `${FileSystem.documentDirectory}SQLite/${DB_NAME}`;
 };
 
 export class DatabaseBackupService {
@@ -68,10 +74,9 @@ export class DatabaseBackupService {
     return backupDir;
   }
 
-  // List all backups in the backup folder
+  // List all backups in the backup folder (.db and legacy .json)
   async listBackups(): Promise<BackupInfo[]> {
     if (isWeb()) {
-      // Web doesn't have persistent backup storage
       return [];
     }
 
@@ -82,38 +87,66 @@ export class DatabaseBackupService {
       const backups: BackupInfo[] = [];
 
       for (const filename of files) {
-        if (filename.endsWith('.json') && filename.startsWith('pos_backup_')) {
-          const filepath = `${backupDir}${filename}`;
-          const fileInfo = await FileSystem.getInfoAsync(filepath, { size: true });
+        if (!filename.startsWith('pos_backup_')) continue;
 
-          if (fileInfo.exists) {
-            // Try to read metadata
-            let metadata: BackupMetadata | undefined;
-            try {
-              const content = await FileSystem.readAsStringAsync(filepath);
-              const data = JSON.parse(content);
-              metadata = data.metadata;
-            } catch (e) {
-              // Could not read metadata
-            }
+        const isDb = filename.endsWith('.db');
+        const isJson = filename.endsWith('.json');
+        if (!isDb && !isJson) continue;
 
-            // Extract timestamp from filename
-            const timestampMatch = filename.match(/pos_backup_(.+)\.json/);
-            let timestamp = new Date();
-            if (timestampMatch) {
-              const dateStr = timestampMatch[1].replace(/-/g, ':').replace('T', ' ');
-              timestamp = new Date(dateStr);
-            }
+        const filepath = `${backupDir}${filename}`;
+        const fileInfo = await FileSystem.getInfoAsync(filepath, { size: true });
 
-            backups.push({
-              filename,
-              filepath,
-              timestamp,
-              sizeKB: Math.round((fileInfo.size || 0) / 1024),
-              metadata,
-            });
+        if (!fileInfo.exists) continue;
+
+        let metadata: BackupMetadata | undefined;
+        let timestamp = new Date();
+
+        if (isDb) {
+          // For .db backups, read the companion .meta.json file
+          const metaPath = `${filepath}.meta.json`;
+          try {
+            const metaContent = await FileSystem.readAsStringAsync(metaPath);
+            metadata = JSON.parse(metaContent);
+          } catch (e) {
+            // No metadata file — parse timestamp from filename
+          }
+        } else {
+          // Legacy .json backups — read metadata from within file
+          try {
+            const content = await FileSystem.readAsStringAsync(filepath);
+            const data = JSON.parse(content);
+            metadata = data.metadata;
+          } catch (e) {
+            // Could not read metadata
           }
         }
+
+        // Get timestamp from metadata first, fallback to filename parsing
+        if (metadata?.timestamp) {
+          timestamp = new Date(metadata.timestamp);
+        } else {
+          const dateMatch = filename.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z?\.(?:db|json)$/);
+          if (dateMatch) {
+            const [, year, month, day, hour, min, sec, ms] = dateMatch;
+            timestamp = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}.${ms}Z`);
+          }
+        }
+
+        const sizeKB = Math.round((fileInfo.size || 0) / 1024);
+
+        // Skip empty/invalid backup files (0KB)
+        if (sizeKB === 0) {
+          console.log('[Backup] Skipping empty backup:', filename);
+          continue;
+        }
+
+        backups.push({
+          filename,
+          filepath,
+          timestamp,
+          sizeKB,
+          metadata,
+        });
       }
 
       // Sort by timestamp, newest first
@@ -124,7 +157,7 @@ export class DatabaseBackupService {
     }
   }
 
-  // Delete a backup file
+  // Delete a backup file (and its .meta.json companion if .db)
   async deleteBackup(filepath: string): Promise<boolean> {
     if (isWeb()) {
       return false;
@@ -132,6 +165,10 @@ export class DatabaseBackupService {
 
     try {
       await FileSystem.deleteAsync(filepath, { idempotent: true });
+      // Also delete companion metadata file for .db backups
+      if (filepath.endsWith('.db')) {
+        await FileSystem.deleteAsync(`${filepath}.meta.json`, { idempotent: true });
+      }
       console.log('[Backup] Deleted backup:', filepath);
       return true;
     } catch (error) {
@@ -140,54 +177,16 @@ export class DatabaseBackupService {
     }
   }
 
-  // Create auto-backup before dangerous operations
+  // Create auto-backup before dangerous operations (uses raw SQLite file copy)
   async createAutoBackup(reason: string = 'auto'): Promise<string | null> {
     console.log('[Backup] Creating auto-backup, reason:', reason);
     try {
       if (isWeb()) {
-        // For web, we can't auto-save, so just return null
         console.log('[Backup] Auto-backup skipped on web platform');
         return null;
       }
 
-      const backupDir = await this.getBackupFolderPath();
-      const { DatabaseService } = require('../database/DatabaseService');
-      const dbService = DatabaseService.getInstance();
-      const db = dbService.getDatabase();
-
-      // Get metadata
-      const metadata = await this.getBackupMetadata(db);
-      metadata.backup_reason = reason;
-
-      // Get all table data
-      const tables = await this.getAllTables(db);
-      const backupData = {
-        metadata,
-        platform: 'native',
-        tables: {} as Record<string, any[]>
-      };
-
-      for (const table of tables) {
-        try {
-          const data = await db.getAllAsync(`SELECT * FROM ${table}`);
-          backupData.tables[table] = data;
-        } catch (error) {
-          backupData.tables[table] = [];
-        }
-      }
-
-      // Generate filename with reason prefix
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const filename = `pos_backup_${reason}_${timestamp}.json`;
-      const backupPath = `${backupDir}${filename}`;
-
-      await FileSystem.writeAsStringAsync(
-        backupPath,
-        JSON.stringify(backupData, null, 2)
-      );
-
-      console.log('[Backup] Auto-backup created:', backupPath);
-      return backupPath;
+      return await this.copyDatabaseFile(reason);
     } catch (error) {
       console.error('[Backup] Auto-backup failed:', error);
       return null;
@@ -202,13 +201,14 @@ export class DatabaseBackupService {
 
     try {
       const backups = await this.listBackups();
-      const autoBackups = backups.filter(b => b.filename.includes('_auto_') || b.filename.includes('_pre-reset_'));
+      const autoBackups = backups.filter(b =>
+        b.filename.includes('_auto_') || b.filename.includes('_pre-reset_') || b.filename.includes('_pre-restore_')
+      );
 
       if (autoBackups.length <= keepCount) {
         return 0;
       }
 
-      // Delete oldest auto-backups
       const toDelete = autoBackups.slice(keepCount);
       let deletedCount = 0;
 
@@ -235,11 +235,10 @@ export class DatabaseBackupService {
     return await this.createNativeBackup();
   }
 
-  // Web backup - exports localStorage data
+  // Web backup - exports localStorage data as JSON download
   private async createWebBackup(): Promise<string> {
     const dbService = getDatabase();
 
-    // Get counts for metadata
     const products = await dbService.getProducts();
     const transactions = await dbService.getTransactions();
     const users = await dbService.getUsers();
@@ -253,7 +252,6 @@ export class DatabaseBackupService {
       user_count: users.length
     };
 
-    // Get all localStorage data
     const storedData = localStorage.getItem(WEB_STORAGE_KEY);
     const backupData = {
       metadata,
@@ -261,15 +259,12 @@ export class DatabaseBackupService {
       data: storedData ? JSON.parse(storedData) : {}
     };
 
-    // Generate filename with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `pos_backup_${timestamp}.json`;
 
-    // Create downloadable file
     const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
 
-    // Trigger download
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
@@ -281,52 +276,67 @@ export class DatabaseBackupService {
     return filename;
   }
 
-  // Native backup - exports SQLite data to dedicated backup folder
+  // Native backup — raw SQLite file copy (best practice)
   private async createNativeBackup(): Promise<string> {
+    return await this.copyDatabaseFile('manual');
+  }
+
+  // Core backup method: VACUUM INTO (best practice) with WAL checkpoint + copy fallback
+  private async copyDatabaseFile(reason: string): Promise<string> {
     const { DatabaseService } = require('../database/DatabaseService');
     const dbService = DatabaseService.getInstance();
     const db = dbService.getDatabase();
 
-    // Get metadata for the backup
-    const metadata = await this.getBackupMetadata(db);
-
-    // Get all table names
-    const tables = await this.getAllTables(db);
-
-    // Create backup data structure
-    const backupData = {
-      metadata,
-      platform: 'native',
-      tables: {} as Record<string, any[]>
-    };
-
-    // Export all table data
-    for (const table of tables) {
-      try {
-        const data = await db.getAllAsync(`SELECT * FROM ${table}`);
-        backupData.tables[table] = data;
-      } catch (error) {
-        console.warn(`Could not backup table ${table}:`, error);
-        backupData.tables[table] = [];
-      }
-    }
-
-    // Get dedicated backup folder
     const backupDir = await this.getBackupFolderPath();
-
-    // Generate filename with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `pos_backup_manual_${timestamp}.json`;
+    const filename = `pos_backup_${reason}_${timestamp}.db`;
     const backupPath = `${backupDir}${filename}`;
 
-    console.log('[Backup] Saving to:', backupPath);
+    let backupCreated = false;
 
+    // Method 1: VACUUM INTO — creates a complete, self-contained backup
+    // regardless of WAL state (SQLite best practice)
+    try {
+      await db.execAsync(`VACUUM INTO '${backupPath}'`);
+      console.log('[Backup] VACUUM INTO succeeded:', backupPath);
+      backupCreated = true;
+    } catch (e) {
+      console.warn('[Backup] VACUUM INTO failed, falling back to file copy:', e);
+    }
+
+    // Method 2: Fallback — WAL checkpoint + raw file copy
+    if (!backupCreated) {
+      try {
+        await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
+        console.log('[Backup] WAL checkpoint completed');
+      } catch (e) {
+        console.warn('[Backup] WAL checkpoint failed:', e);
+        // Continue anyway — the main .db may still have data
+      }
+
+      const dbPath = getDbFilePath();
+      await FileSystem.copyAsync({ from: dbPath, to: backupPath });
+      console.log('[Backup] Database file copied to:', backupPath);
+    }
+
+    // Verify the backup file is not empty
+    const backupInfo = await FileSystem.getInfoAsync(backupPath, { size: true });
+    if (!backupInfo.exists || !backupInfo.size || backupInfo.size < 4096) {
+      // Clean up the empty/invalid backup file
+      await FileSystem.deleteAsync(backupPath, { idempotent: true });
+      throw new Error('Backup file is empty or too small. The database may not have flushed properly. Please try again.');
+    }
+    console.log('[Backup] Verified backup size:', Math.round(backupInfo.size / 1024), 'KB');
+
+    // Write metadata as a sidecar file
+    const metadata = await this.getBackupMetadata(db);
+    metadata.backup_reason = reason;
     await FileSystem.writeAsStringAsync(
-      backupPath,
-      JSON.stringify(backupData, null, 2)
+      `${backupPath}.meta.json`,
+      JSON.stringify(metadata)
     );
 
-    // Clean old auto-backups (keep last 5)
+    // Clean old auto-backups
     await this.cleanOldBackups(5);
 
     return backupPath;
@@ -335,14 +345,16 @@ export class DatabaseBackupService {
   // Share the backup file
   async shareBackup(backupPath: string): Promise<void> {
     if (isWeb()) {
-      // On web, the file was already downloaded
       console.log('Backup downloaded:', backupPath);
       return;
     }
 
     if (await Sharing.isAvailableAsync()) {
+      const mimeType = backupPath.endsWith('.db')
+        ? 'application/x-sqlite3'
+        : 'application/json';
       await Sharing.shareAsync(backupPath, {
-        mimeType: 'application/json',
+        mimeType,
         dialogTitle: 'Share Database Backup'
       });
     } else {
@@ -350,7 +362,7 @@ export class DatabaseBackupService {
     }
   }
 
-  // Pick and restore a backup file
+  // Pick and restore a backup file via document picker
   async restoreFromFile(): Promise<boolean> {
     if (isWeb()) {
       return await this.restoreWebFromFile();
@@ -376,18 +388,15 @@ export class DatabaseBackupService {
           const content = await file.text();
           const backupData = JSON.parse(content);
 
-          // Validate backup format
           if (!backupData.metadata) {
             throw new Error('Invalid backup file format');
           }
 
-          // Restore data to localStorage
           if (backupData.platform === 'web' && backupData.data) {
             localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(backupData.data));
             console.log('Web backup restored successfully');
             resolve(true);
           } else if (backupData.tables) {
-            // Convert native backup format to web format
             const webData = this.convertNativeToWebFormat(backupData.tables);
             localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(webData));
             console.log('Native backup converted and restored to web');
@@ -454,11 +463,11 @@ export class DatabaseBackupService {
     return settings;
   }
 
-  // Native restore
+  // Native restore from document picker (supports both .db and legacy .json)
   private async restoreNativeFromFile(): Promise<boolean> {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
+        type: '*/*',
         copyToCacheDirectory: true
       });
 
@@ -466,39 +475,98 @@ export class DatabaseBackupService {
         return false;
       }
 
-      const backupPath = result.assets[0].uri;
-      return await this.restoreNativeBackup(backupPath);
+      const filePath = result.assets[0].uri;
+      const fileName = result.assets[0].name || '';
+
+      if (fileName.endsWith('.db')) {
+        return await this.restoreFromDbFile(filePath);
+      } else if (fileName.endsWith('.json')) {
+        return await this.restoreFromJsonFile(filePath);
+      } else {
+        throw new Error('Unsupported file type. Please select a .db or .json backup file.');
+      }
     } catch (error) {
       console.error('Error picking backup file:', error);
-      throw new Error('Failed to pick backup file');
+      throw error;
     }
   }
 
-  // Restore native database from backup file
-  private async restoreNativeBackup(backupPath: string): Promise<boolean> {
+  // Restore from a saved backup by filepath (called from the backup list UI)
+  async restoreFromPath(backupPath: string): Promise<boolean> {
+    if (backupPath.endsWith('.db')) {
+      return await this.restoreFromDbFile(backupPath);
+    } else if (backupPath.endsWith('.json')) {
+      return await this.restoreFromJsonFile(backupPath);
+    }
+    throw new Error('Unsupported backup file format');
+  }
+
+  // Restore by replacing the SQLite database file (best practice)
+  private async restoreFromDbFile(backupPath: string): Promise<boolean> {
     try {
       const { DatabaseService } = require('../database/DatabaseService');
-      const { initializeDatabase } = require('../database/schema');
+      const dbService = DatabaseService.getInstance();
 
-      // Read backup file
+      // Close the current database connection
+      try {
+        const db = dbService.getDatabase();
+        await db.closeAsync();
+        console.log('[Restore] Database connection closed');
+      } catch (e) {
+        console.warn('[Restore] Could not close database:', e);
+      }
+
+      // Copy the backup file over the current database
+      const dbPath = getDbFilePath();
+      await FileSystem.copyAsync({ from: backupPath, to: dbPath });
+      console.log('[Restore] Database file replaced from backup');
+
+      // Delete any WAL/SHM files so SQLite starts fresh
+      try {
+        await FileSystem.deleteAsync(`${dbPath}-wal`, { idempotent: true });
+        await FileSystem.deleteAsync(`${dbPath}-shm`, { idempotent: true });
+      } catch (e) {
+        // These files may not exist — that's fine
+      }
+
+      // Re-open the database connection
+      await dbService.reinitialize();
+      console.log('[Restore] Database re-opened successfully');
+
+      return true;
+    } catch (error) {
+      console.error('[Restore] Error restoring from .db file:', error);
+      throw new Error(`Failed to restore backup: ${error}`);
+    }
+  }
+
+  // Restore from legacy JSON backup (row-by-row insert)
+  private async restoreFromJsonFile(backupPath: string): Promise<boolean> {
+    try {
+      const { DatabaseService } = require('../database/DatabaseService');
+
       const backupContent = await FileSystem.readAsStringAsync(backupPath);
       const backupData = JSON.parse(backupContent);
 
-      // Validate backup format
       if (!backupData.metadata || !backupData.tables) {
         throw new Error('Invalid backup file format');
       }
 
-      // Get database service
       const dbService = DatabaseService.getInstance();
       const db = dbService.getDatabase();
 
-      // Disable foreign keys temporarily
       await db.execAsync('PRAGMA foreign_keys = OFF');
 
       try {
-        // Clear existing data (except system tables)
-        await this.clearUserData(db);
+        // Clear all tables
+        const allTables = await this.getAllTables(db);
+        for (const table of allTables) {
+          try {
+            await db.execAsync(`DELETE FROM ${table}`);
+          } catch (e) {
+            console.warn(`Could not clear table ${table}:`, e);
+          }
+        }
 
         // Restore data table by table
         for (const [tableName, tableData] of Object.entries(backupData.tables)) {
@@ -507,20 +575,15 @@ export class DatabaseBackupService {
           }
         }
 
-        // Re-enable foreign keys
         await db.execAsync('PRAGMA foreign_keys = ON');
-
-        console.log('Database restored successfully');
+        console.log('[Restore] JSON backup restored successfully');
         return true;
-
       } catch (error) {
-        // Re-enable foreign keys even if restore failed
         await db.execAsync('PRAGMA foreign_keys = ON');
         throw error;
       }
-
     } catch (error) {
-      console.error('Error restoring backup:', error);
+      console.error('[Restore] Error restoring from JSON file:', error);
       throw new Error(`Failed to restore backup: ${error}`);
     }
   }
@@ -545,7 +608,6 @@ export class DatabaseBackupService {
 
       const data = JSON.parse(storedData);
 
-      // Check required arrays exist
       const requiredArrays = ['products', 'users', 'categories'];
       for (const arr of requiredArrays) {
         if (!Array.isArray(data[arr])) {
@@ -553,7 +615,6 @@ export class DatabaseBackupService {
         }
       }
 
-      // Check for admin user
       const adminUser = data.users?.find((u: any) => u.role === 'ADMIN');
       if (!adminUser) {
         errors.push('No admin user found');
@@ -576,19 +637,16 @@ export class DatabaseBackupService {
     const errors: string[] = [];
 
     try {
-      // Check database integrity
       const integrityCheck = await db.getFirstAsync<{integrity_check: string}>('PRAGMA integrity_check');
       if (integrityCheck?.integrity_check !== 'ok') {
         errors.push(`Database integrity check failed: ${integrityCheck?.integrity_check}`);
       }
 
-      // Check foreign key consistency
       const foreignKeyCheck = await db.getAllAsync('PRAGMA foreign_key_check');
       if (foreignKeyCheck.length > 0) {
         errors.push(`Foreign key violations found: ${foreignKeyCheck.length} issues`);
       }
 
-      // Validate essential tables exist
       const tables = await this.getAllTables(db);
       const requiredTables = ['products', 'transactions', 'users', 'settings'];
       for (const table of requiredTables) {
@@ -619,7 +677,6 @@ export class DatabaseBackupService {
     try {
       const storedData = localStorage.getItem(WEB_STORAGE_KEY);
       if (!storedData) {
-        // Re-initialize with empty data
         const { WebMockDatabaseService } = require('../database/WebMockDatabaseService');
         WebMockDatabaseService.getInstance();
         return {
@@ -628,7 +685,6 @@ export class DatabaseBackupService {
         };
       }
 
-      // Try to parse and re-save (fixes any JSON formatting issues)
       const data = JSON.parse(storedData);
       localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(data));
 
@@ -653,12 +709,10 @@ export class DatabaseBackupService {
     const db = dbService.getDatabase();
 
     try {
-      // Try to recover using SQLite recovery commands
       await db.execAsync('PRAGMA integrity_check');
       await db.execAsync('REINDEX');
       await db.execAsync('VACUUM');
 
-      // Re-initialize database schema to fix any structural issues
       await initializeDatabase(db);
 
       return {
@@ -678,7 +732,6 @@ export class DatabaseBackupService {
   // Optimize database performance
   async optimizeDatabase(): Promise<void> {
     if (isWeb()) {
-      // For web, just compact the localStorage data
       const storedData = localStorage.getItem(WEB_STORAGE_KEY);
       if (storedData) {
         const data = JSON.parse(storedData);
@@ -693,13 +746,8 @@ export class DatabaseBackupService {
     const db = dbService.getDatabase();
 
     try {
-      // Analyze tables for query optimization
       await db.execAsync('ANALYZE');
-
-      // Rebuild indexes
       await db.execAsync('REINDEX');
-
-      // Compact database
       await db.execAsync('VACUUM');
 
       console.log('Database optimization completed');
@@ -734,45 +782,15 @@ export class DatabaseBackupService {
     return result.map(row => row.name);
   }
 
-  private async clearUserData(db: SQLite.SQLiteDatabase): Promise<void> {
-    // Clear tables in order to respect foreign key constraints
-    const tablesToClear = [
-      'transaction_items',
-      'transactions',
-      'inventory_movements',
-      'ejournal',
-      'x_readings',
-      'z_readings',
-      'physical_count_details',
-      'physical_count_sessions',
-      'role_permissions',
-      'products',
-      'categories',
-      'users',
-      'stores',
-      'settings'
-    ];
-
-    for (const table of tablesToClear) {
-      try {
-        await db.execAsync(`DELETE FROM ${table}`);
-      } catch (error) {
-        console.warn(`Could not clear table ${table}:`, error);
-      }
-    }
-  }
-
   private async restoreTableData(db: SQLite.SQLiteDatabase, tableName: string, data: any[]): Promise<void> {
     if (data.length === 0) return;
 
-    // Get column names from first row
     const columns = Object.keys(data[0]);
     const placeholders = columns.map(() => '?').join(', ');
     const columnsStr = columns.join(', ');
 
     const insertStatement = `INSERT OR REPLACE INTO ${tableName} (${columnsStr}) VALUES (${placeholders})`;
 
-    // Insert data in batches
     const batchSize = 100;
     for (let i = 0; i < data.length; i += batchSize) {
       const batch = data.slice(i, i + batchSize);

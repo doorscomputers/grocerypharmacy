@@ -43,6 +43,50 @@ export type Permission =
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER';
 
+export interface PermissionCategory {
+  label: string;
+  icon: string;
+  permissions: Permission[];
+}
+
+export const PERMISSION_CATEGORIES: PermissionCategory[] = [
+  {
+    label: 'POS / Sales',
+    icon: 'cash-register',
+    permissions: ['VIEW_DASHBOARD', 'CREATE_SALE', 'VIEW_ALL_SALES', 'VIEW_OWN_SALES', 'VOID_SALE', 'REFUND_SALE'],
+  },
+  {
+    label: 'Products',
+    icon: 'package-variant',
+    permissions: ['MANAGE_PRODUCTS', 'VIEW_PRODUCTS', 'ADD_PRODUCT', 'EDIT_PRODUCT', 'DELETE_PRODUCT', 'VIEW_PRODUCT_COST'],
+  },
+  {
+    label: 'Inventory',
+    icon: 'warehouse',
+    permissions: ['MANAGE_INVENTORY'],
+  },
+  {
+    label: 'Purchasing',
+    icon: 'truck-delivery',
+    permissions: ['MANAGE_PURCHASES', 'CREATE_PURCHASE_ORDER', 'RECEIVE_PURCHASE', 'MANAGE_SUPPLIERS', 'MANAGE_SUPPLIER_PAYMENTS', 'PAY_PAYABLES', 'VIEW_ACCOUNTS_PAYABLE', 'MANAGE_DAMAGED_ITEMS'],
+  },
+  {
+    label: 'Customers',
+    icon: 'account-group',
+    permissions: ['MANAGE_CUSTOMERS', 'ADD_CUSTOMER', 'EDIT_CUSTOMER', 'DELETE_CUSTOMER', 'COLLECT_CUSTOMER_PAYMENTS', 'VIEW_ACCOUNTS_RECEIVABLE', 'CREATE_CHARGE_INVOICE'],
+  },
+  {
+    label: 'Reports',
+    icon: 'chart-bar',
+    permissions: ['VIEW_REPORTS', 'PERFORM_Z_READING', 'PERFORM_X_READING', 'VIEW_EJOURNAL'],
+  },
+  {
+    label: 'System',
+    icon: 'cog',
+    permissions: ['VIEW_SETTINGS', 'MANAGE_SETTINGS', 'MANAGE_USERS', 'DELETE_RECORDS', 'ACCESS_ADMIN_TOOLS', 'MANAGE_PERMISSIONS'],
+  },
+];
+
 const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ADMIN: [
     'VIEW_DASHBOARD',
@@ -282,14 +326,19 @@ export class PermissionService {
       { permission: 'MANAGE_INVENTORY', label: 'Manage Inventory', description: 'Handle inventory movements and counting' },
       { permission: 'VIEW_REPORTS', label: 'View Reports', description: 'Access to BIR reports and analytics' },
       { permission: 'VIEW_SETTINGS', label: 'View Settings', description: 'See system configuration' },
+      { permission: 'MANAGE_SETTINGS', label: 'Manage Settings', description: 'Modify system configuration' },
+      { permission: 'MANAGE_USERS', label: 'Manage Users', description: 'Add, edit, and manage user accounts' },
       { permission: 'PERFORM_Z_READING', label: 'Z-Reading', description: 'Generate end-of-day reports' },
       { permission: 'PERFORM_X_READING', label: 'X-Reading', description: 'Generate mid-day inquiry reports' },
       { permission: 'VIEW_EJOURNAL', label: 'View eJournal', description: 'Access audit trail logs' },
       { permission: 'MANAGE_PURCHASES', label: 'Manage Purchases', description: 'Handle purchase orders' },
+      { permission: 'CREATE_PURCHASE_ORDER', label: 'Create Purchase Orders', description: 'Create new purchase orders' },
       { permission: 'RECEIVE_PURCHASE', label: 'Receive Purchases', description: 'Accept deliveries from suppliers' },
+      { permission: 'MANAGE_SUPPLIERS', label: 'Manage Suppliers', description: 'Add, edit, and manage suppliers' },
       { permission: 'MANAGE_SUPPLIER_PAYMENTS', label: 'Manage Supplier Payments', description: 'Full supplier payment management' },
       { permission: 'PAY_PAYABLES', label: 'Pay Payables', description: 'Make payments to suppliers' },
       { permission: 'VIEW_ACCOUNTS_PAYABLE', label: 'View Accounts Payable', description: 'See outstanding supplier balances' },
+      { permission: 'MANAGE_DAMAGED_ITEMS', label: 'Manage Damaged Items', description: 'Record and manage damaged inventory' },
       { permission: 'MANAGE_CUSTOMERS', label: 'Manage Customers', description: 'Full customer management access' },
       { permission: 'ADD_CUSTOMER', label: 'Add Customers', description: 'Create new customer records' },
       { permission: 'EDIT_CUSTOMER', label: 'Edit Customers', description: 'Modify customer information' },

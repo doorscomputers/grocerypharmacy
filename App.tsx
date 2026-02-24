@@ -480,7 +480,7 @@ function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialSt
             <Stack.Screen
               name="DatabaseViewer"
               component={DatabaseViewerScreen}
-              options={{ title: 'Database Viewer' }}
+              options={{ title: 'Database Tools' }}
             />
             <Stack.Screen
               name="UserManagement"
