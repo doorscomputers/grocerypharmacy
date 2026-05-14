@@ -83,6 +83,7 @@ import EJournalReportScreen from './screens/EJournalReportScreen';
 import ESalesReportScreen from './screens/ESalesReportScreen';
 import DashboardViewScreen from './screens/DashboardViewScreen';
 import VoidRefundExchangeReportScreen from './screens/VoidRefundExchangeReportScreen';
+import ReturnsAnalyticsReportScreen from './screens/ReturnsAnalyticsReportScreen';
 import CustomerAccountStatementScreen from './screens/CustomerAccountStatementScreen';
 import SupplierAccountStatementScreen from './screens/SupplierAccountStatementScreen';
 import UpcomingPDCReportScreen from './screens/UpcomingPDCReportScreen';
@@ -153,6 +154,7 @@ export type RootStackParamList = {
   EJournalReport: undefined;
   ESalesReport: undefined;
   VoidRefundExchangeReport: undefined;
+  ReturnsAnalyticsReport: undefined;
   XReadingHistory: undefined;
   ZReadingHistory: undefined;
   CurrentStockLevels: { lowStock?: boolean } | undefined;
@@ -721,6 +723,11 @@ function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialSt
               name="VoidRefundExchangeReport"
               component={VoidRefundExchangeReportScreen}
               options={{ title: 'Void/Refund/Exchange Report' }}
+            />
+            <Stack.Screen
+              name="ReturnsAnalyticsReport"
+              component={ReturnsAnalyticsReportScreen}
+              options={{ title: 'Returns & Refunds Analytics' }}
             />
             <Stack.Screen
               name="XReadingHistory"

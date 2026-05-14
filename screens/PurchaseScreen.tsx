@@ -287,21 +287,33 @@ export default function PurchaseScreen({ navigation }: Props) {
 
         // Step 6: Update product quantities and record inventory movements
         for (const item of purchaseItems) {
-          const currentProduct = await db.getFirstAsync<{ stock_quantity: number }>(
-            'SELECT stock_quantity FROM products WHERE id = ?',
+          // Get current stock and conversion factor for multi-unit support
+          const currentProduct = await db.getFirstAsync<{ stock_quantity: number; conversion_factor: number }>(
+            'SELECT stock_quantity, COALESCE(conversion_factor, 1) as conversion_factor FROM products WHERE id = ?',
             [item.product_id]
           );
           const quantityBefore = currentProduct?.stock_quantity || 0;
-          const quantityAfter = quantityBefore + item.quantity;
+          const conversionFactor = currentProduct?.conversion_factor || 1;
+
+          // Convert purchase quantity to selling units
+          const sellingQty = item.quantity * conversionFactor;
+          const quantityAfter = quantityBefore + sellingQty;
           const totalValue = item.quantity * item.unit_cost;
 
-          // Update stock quantity and cost
+          // Cost per selling unit
+          const costPerSellingUnit = item.unit_cost / conversionFactor;
+
+          // Update stock quantity (in selling units) and cost (per selling unit)
           await db.runAsync(
             'UPDATE products SET stock_quantity = ?, cost = ? WHERE id = ?',
-            [quantityAfter, item.unit_cost, item.product_id]
+            [quantityAfter, costPerSellingUnit, item.product_id]
           );
 
-          // Record inventory movement with actual purchase ID
+          // Record inventory movement in selling units
+          const notes = conversionFactor > 1
+            ? `Purchase from ${supplierName} - ${referenceNumber} (${item.quantity} x ${conversionFactor} = ${sellingQty})`
+            : `Purchase from ${supplierName} - ${referenceNumber}`;
+
           await db.runAsync(
             `INSERT INTO inventory_movements (
               product_id, product_code, product_name, movement_type, quantity,
@@ -313,15 +325,15 @@ export default function PurchaseScreen({ navigation }: Props) {
               item.product_code,
               item.product_name,
               'IN',
-              item.quantity,
+              sellingQty,
               quantityBefore,
               quantityAfter,
-              item.unit_cost,
+              costPerSellingUnit,
               totalValue,
               'PURCHASE',
               purchaseId,
               referenceNumber,
-              `Purchase from ${supplierName} - ${referenceNumber}`,
+              notes,
               userId
             ]
           );

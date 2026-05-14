@@ -26,6 +26,8 @@ export interface DatabaseSchema {
     category_id?: number;
     brand_id?: number;
     unit_id?: number;
+    purchase_unit_id?: number;   // FK to units table - unit used when buying from suppliers
+    conversion_factor: number;   // How many selling units per 1 purchase unit (default: 1)
     size_id?: number;
     vat_type: 'vatable' | 'vat_exempt' | 'zero_rated'; // BIR VAT classification
     tax_rate: number; // VAT rate (12% for vatable, 0% for exempt/zero-rated)
@@ -787,11 +789,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       category_id INTEGER,
       brand_id INTEGER,
       unit_id INTEGER,
+      purchase_unit_id INTEGER,
+      conversion_factor REAL DEFAULT 1,
       size_id INTEGER,
       vat_type TEXT CHECK (vat_type IN ('vatable', 'vat_exempt', 'zero_rated')) DEFAULT 'vatable',
       tax_rate DECIMAL(5,2) DEFAULT 12.00,
       is_vat_inclusive BOOLEAN DEFAULT 1,
-      stock_quantity INTEGER DEFAULT 0,
+      stock_quantity REAL DEFAULT 0,
       reorder_level INTEGER DEFAULT 0,
       unit TEXT DEFAULT 'pcs',
       is_active BOOLEAN DEFAULT 1,
@@ -800,6 +804,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (category_id) REFERENCES categories (id),
       FOREIGN KEY (brand_id) REFERENCES brands (id),
       FOREIGN KEY (unit_id) REFERENCES units (id),
+      FOREIGN KEY (purchase_unit_id) REFERENCES units (id),
       FOREIGN KEY (size_id) REFERENCES sizes (id)
     );
   `);
@@ -830,6 +835,14 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   // Add wholesale_price column for wholesale pricing feature
   try {
     await db.execAsync(`ALTER TABLE products ADD COLUMN wholesale_price DECIMAL(10,2) DEFAULT NULL;`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Add purchase_unit_id and conversion_factor for multi-unit support
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN purchase_unit_id INTEGER REFERENCES units(id);`);
+  } catch (e) { /* Column may already exist */ }
+  try {
+    await db.execAsync(`ALTER TABLE products ADD COLUMN conversion_factor REAL DEFAULT 1;`);
   } catch (e) { /* Column may already exist */ }
 
   console.log('Creating users table...');
@@ -1020,6 +1033,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
       total_amount DECIMAL(10,2) NOT NULL,
       price_type TEXT DEFAULT 'retail',
+      item_type TEXT DEFAULT 'sale',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products (id)
@@ -1029,6 +1043,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   // Add price_type column to transaction_items for existing databases
   try {
     await db.execAsync(`ALTER TABLE transaction_items ADD COLUMN price_type TEXT DEFAULT 'retail';`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Add item_type column to transaction_items for existing databases (BO/return support)
+  try {
+    await db.execAsync(`ALTER TABLE transaction_items ADD COLUMN item_type TEXT DEFAULT 'sale';`);
   } catch (e) { /* Column may already exist */ }
 
   await db.execAsync(`

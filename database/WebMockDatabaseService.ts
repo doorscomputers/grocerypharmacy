@@ -404,6 +404,7 @@ export class WebMockDatabaseService {
     const category = categories.find(c => c.id === product.category_id);
     const brand = brands.find(b => b.id === product.brand_id);
     const unit = units.find(u => u.id === product.unit_id);
+    const purchaseUnit = units.find(u => u.id === product.purchase_unit_id);
     const size = sizes.find(s => s.id === product.size_id);
 
     const newProduct = {
@@ -417,12 +418,15 @@ export class WebMockDatabaseService {
       barcode: product.barcode || product.code || '',
       is_active: product.is_active ?? 1,
       is_vat_inclusive: product.is_vat_inclusive ?? true,
+      conversion_factor: product.conversion_factor || 1,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       category_name: category?.name || '',
       brand_name: brand?.name || '',
       unit_name: unit?.name || '',
       unit_abbreviation: unit?.abbreviation || '',
+      purchase_unit_name: purchaseUnit?.name || '',
+      purchase_unit_abbreviation: purchaseUnit?.abbreviation || '',
       size_name: size?.name || '',
     };
 
@@ -454,6 +458,7 @@ export class WebMockDatabaseService {
       const category = categories.find(c => c.id === product.category_id);
       const brand = brands.find(b => b.id === product.brand_id);
       const unit = units.find(u => u.id === product.unit_id);
+      const purchaseUnit = units.find(u => u.id === (product.purchase_unit_id ?? products[index].purchase_unit_id));
       const size = sizes.find(s => s.id === product.size_id);
       products[index] = {
         ...products[index],
@@ -462,6 +467,8 @@ export class WebMockDatabaseService {
         brand_name: brand?.name || '',
         unit_name: unit?.name || '',
         unit_abbreviation: unit?.abbreviation || '',
+        purchase_unit_name: purchaseUnit?.name || '',
+        purchase_unit_abbreviation: purchaseUnit?.abbreviation || '',
         size_name: size?.name || '',
         updated_at: new Date().toISOString(),
       };
@@ -3129,6 +3136,16 @@ export class WebMockDatabaseService {
     console.log(`[WebMock] Sales return processed: ${returnNumber}, Total: ₱${totalAmount}`);
     return { returnId, returnNumber };
   }
+
+  // ============ RETURNS ANALYTICS ============
+  public async getBOReturnItems(startDate: string, endDate: string): Promise<any[]> { return []; }
+  public async getStandaloneReturnItems(startDate: string, endDate: string): Promise<any[]> { return []; }
+  public async getTopReturnedProducts(startDate: string, endDate: string, limit: number = 20): Promise<any[]> { return []; }
+  public async getReturnsSummary(startDate: string, endDate: string): Promise<any> {
+    return { boCount: 0, boTotal: 0, refundCount: 0, refundTotal: 0, exchangeCount: 0, exchangeTotal: 0 };
+  }
+  public async getReturnReasonAnalysis(startDate: string, endDate: string): Promise<any[]> { return []; }
+  public async getRefundMethodBreakdown(startDate: string, endDate: string): Promise<any[]> { return []; }
 
   public async getSalesReturnsReport(startDate?: string, endDate?: string): Promise<any> {
     let filteredReturns = [...salesReturns];

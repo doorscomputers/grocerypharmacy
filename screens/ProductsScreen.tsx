@@ -43,6 +43,8 @@ interface Product extends BaseProduct {
   brand_name?: string;
   unit_name?: string;
   unit_abbreviation?: string;
+  purchase_unit_name?: string;
+  purchase_unit_abbreviation?: string;
   size_name?: string;
 }
 
@@ -80,6 +82,8 @@ export default function ProductsScreen({ navigation }: Props) {
     category_id: null as number | null,
     brand_id: null as number | null,
     unit_id: null as number | null,
+    purchase_unit_id: null as number | null,
+    conversion_factor: '1',
     size_id: null as number | null,
     unit: 'pcs',
     vat_type: 'vatable' as 'vatable' | 'vat_exempt' | 'zero_rated',
@@ -93,7 +97,7 @@ export default function ProductsScreen({ navigation }: Props) {
   const [selectedProductForLabel, setSelectedProductForLabel] = useState<Product | null>(null);
 
   // Dropdown modal states
-  const [activeDropdown, setActiveDropdown] = useState<'category' | 'brand' | 'unit' | 'size' | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'category' | 'brand' | 'unit' | 'purchase_unit' | 'size' | null>(null);
   const [dropdownSearch, setDropdownSearch] = useState('');
 
   // Quick Add dialog states
@@ -186,6 +190,8 @@ export default function ProductsScreen({ navigation }: Props) {
       category_id: null,
       brand_id: null,
       unit_id: null,
+      purchase_unit_id: null,
+      conversion_factor: '1',
       size_id: null,
       unit: 'pcs',
       vat_type: 'vatable' as 'vatable' | 'vat_exempt' | 'zero_rated',
@@ -209,6 +215,8 @@ export default function ProductsScreen({ navigation }: Props) {
       category_id: null as number | null,
       brand_id: null as number | null,
       unit_id: null as number | null,
+      purchase_unit_id: null as number | null,
+      conversion_factor: '1',
       size_id: null as number | null,
       unit: 'pcs',
       vat_type: 'vatable' as 'vatable' | 'vat_exempt' | 'zero_rated',
@@ -236,6 +244,8 @@ export default function ProductsScreen({ navigation }: Props) {
       category_id: product.category_id || null,
       brand_id: product.brand_id || null,
       unit_id: product.unit_id || null,
+      purchase_unit_id: (product as any).purchase_unit_id || null,
+      conversion_factor: ((product as any).conversion_factor || 1).toString(),
       size_id: product.size_id || null,
       unit: product.unit || product.unit_abbreviation || 'pcs',
       vat_type: (product.vat_type || 'vatable') as 'vatable' | 'vat_exempt' | 'zero_rated',
@@ -323,6 +333,13 @@ export default function ProductsScreen({ navigation }: Props) {
         return;
       }
 
+      const conversionFactor = parseFloat(formData.conversion_factor) || 1;
+      if (conversionFactor <= 0) {
+        Alert.alert('Error', 'Conversion factor must be greater than 0');
+        setLoading(false);
+        return;
+      }
+
       const productData = {
         code: formData.code.trim(),
         name: formData.name.trim(),
@@ -330,11 +347,13 @@ export default function ProductsScreen({ navigation }: Props) {
         price: price,
         wholesale_price: wholesalePrice,
         cost: cost,
-        stock_quantity: parseInt(formData.stock_quantity) || 0,
+        stock_quantity: parseFloat(formData.stock_quantity) || 0,
         reorder_level: parseInt(formData.reorder_level) || 0,
         category_id: formData.category_id,
         brand_id: formData.brand_id,
         unit_id: formData.unit_id,
+        purchase_unit_id: formData.purchase_unit_id,
+        conversion_factor: conversionFactor,
         size_id: formData.size_id,
         unit: formData.unit,
         vat_type: formData.vat_type,
@@ -482,9 +501,15 @@ export default function ProductsScreen({ navigation }: Props) {
   };
 
   const getSelectedUnitName = () => {
-    if (!formData.unit_id) return 'Select Unit';
+    if (!formData.unit_id) return 'Select Selling Unit';
     const unit = units.find(u => u.id === formData.unit_id);
-    return unit ? `${unit.name} (${unit.abbreviation})` : 'Select Unit';
+    return unit ? `${unit.name} (${unit.abbreviation})` : 'Select Selling Unit';
+  };
+
+  const getSelectedPurchaseUnitName = () => {
+    if (!formData.purchase_unit_id) return 'None (Same as Selling Unit)';
+    const unit = units.find(u => u.id === formData.purchase_unit_id);
+    return unit ? `${unit.name} (${unit.abbreviation})` : 'None (Same as Selling Unit)';
   };
 
   const getSelectedSizeName = () => {
@@ -994,9 +1019,9 @@ export default function ProductsScreen({ navigation }: Props) {
                   </TouchableRipple>
                 </View>
 
-                {/* Unit Dropdown Button */}
+                {/* Selling Unit Dropdown Button */}
                 <View style={styles.dropdownContainer}>
-                  <Paragraph style={styles.dropdownLabel}>Unit of Measure</Paragraph>
+                  <Paragraph style={styles.dropdownLabel}>Selling Unit</Paragraph>
                   <TouchableRipple
                     onPress={() => setActiveDropdown('unit')}
                     style={styles.dropdownButton}
@@ -1007,6 +1032,38 @@ export default function ProductsScreen({ navigation }: Props) {
                     </View>
                   </TouchableRipple>
                 </View>
+
+                {/* Purchase Unit Dropdown Button */}
+                <View style={styles.dropdownContainer}>
+                  <Paragraph style={styles.dropdownLabel}>Purchase Unit (Bulk)</Paragraph>
+                  <TouchableRipple
+                    onPress={() => setActiveDropdown('purchase_unit')}
+                    style={styles.dropdownButton}
+                  >
+                    <View style={styles.dropdownButtonContent}>
+                      <Paragraph style={styles.dropdownText}>{getSelectedPurchaseUnitName()}</Paragraph>
+                      <IconButton icon="menu-down" size={20} style={styles.dropdownIcon} />
+                    </View>
+                  </TouchableRipple>
+                </View>
+
+                {/* Conversion Factor - only show when purchase unit is set */}
+                {formData.purchase_unit_id && (
+                  <View style={styles.dropdownContainer}>
+                    <Paragraph style={styles.dropdownLabel}>
+                      {`1 ${units.find(u => u.id === formData.purchase_unit_id)?.name || 'Purchase Unit'} = ? ${units.find(u => u.id === formData.unit_id)?.abbreviation || 'selling units'}`}
+                    </Paragraph>
+                    <TextInput
+                      label="Conversion Factor"
+                      value={formData.conversion_factor}
+                      onChangeText={(text) => setFormData(prev => ({...prev, conversion_factor: text}))}
+                      mode="outlined"
+                      keyboardType="numeric"
+                      style={styles.input}
+                      placeholder="e.g. 50 for 1 Sack = 50 kg"
+                    />
+                  </View>
+                )}
 
                 {/* Size Dropdown Button */}
                 <View style={styles.dropdownContainer}>
@@ -1280,7 +1337,7 @@ export default function ProductsScreen({ navigation }: Props) {
         </TouchableOpacity>
       </Modal>
 
-      {/* Unit Dropdown Modal */}
+      {/* Selling Unit Dropdown Modal */}
       <Modal
         visible={activeDropdown === 'unit'}
         transparent
@@ -1290,7 +1347,7 @@ export default function ProductsScreen({ navigation }: Props) {
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
           <View style={[styles.dropdownModal, { width: modalWidth }]}>
             <View style={styles.dropdownHeader}>
-              <Title style={styles.dropdownTitle}>Select Unit</Title>
+              <Title style={styles.dropdownTitle}>Select Selling Unit</Title>
               <Button
                 mode="contained"
                 compact
@@ -1318,6 +1375,63 @@ export default function ProductsScreen({ navigation }: Props) {
                   ]}
                   onPress={() => {
                     setFormData({ ...formData, unit_id: item.id, unit: item.abbreviation || 'pcs' });
+                    closeDropdown();
+                  }}
+                >
+                  <Paragraph style={styles.dropdownItemText}>
+                    {item.id ? `${item.name} (${item.abbreviation})` : item.name}
+                  </Paragraph>
+                </TouchableRipple>
+              )}
+              ListEmptyComponent={<Paragraph style={styles.emptyDropdownText}>No units found</Paragraph>}
+              style={styles.dropdownList}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Purchase Unit Dropdown Modal */}
+      <Modal
+        visible={activeDropdown === 'purchase_unit'}
+        transparent
+        animationType="fade"
+        onRequestClose={closeDropdown}
+      >
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeDropdown}>
+          <View style={[styles.dropdownModal, { width: modalWidth }]}>
+            <View style={styles.dropdownHeader}>
+              <Title style={styles.dropdownTitle}>Select Purchase Unit</Title>
+              <Button
+                mode="contained"
+                compact
+                icon="plus"
+                onPress={() => openQuickAdd('unit')}
+                style={styles.quickAddButton}
+              >
+                Quick Add
+              </Button>
+            </View>
+            <Searchbar
+              placeholder="Search units..."
+              value={dropdownSearch}
+              onChangeText={setDropdownSearch}
+              style={styles.dropdownSearchBar}
+            />
+            <FlatList
+              data={[{ id: null, name: 'None (Same as Selling Unit)', abbreviation: '' }, ...getFilteredUnits()]}
+              keyExtractor={(item) => String(item.id ?? 'none-pu')}
+              renderItem={({ item }) => (
+                <TouchableRipple
+                  style={[
+                    styles.dropdownItem,
+                    formData.purchase_unit_id === item.id && styles.dropdownItemSelected
+                  ]}
+                  onPress={() => {
+                    setFormData(prev => ({
+                      ...prev,
+                      purchase_unit_id: item.id,
+                      conversion_factor: item.id ? prev.conversion_factor : '1',
+                    }));
                     closeDropdown();
                   }}
                 >

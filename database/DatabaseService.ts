@@ -87,7 +87,7 @@ export class DatabaseService {
         }
 
         console.log('Platform check passed, opening database...');
-        this.db = await SQLite.openDatabaseAsync('pos_database.db');
+        this.db = await SQLite.openDatabaseAsync('grocerypos.db');
 
         // Verify database object is valid
         if (!this.db) {
@@ -123,7 +123,7 @@ export class DatabaseService {
             if (err && String(err).includes('NullPointerException')) {
               console.log('NullPointerException detected, attempting to re-open database...');
               try {
-                this.db = await SQLite.openDatabaseAsync('pos_database.db');
+                this.db = await SQLite.openDatabaseAsync('grocerypos.db');
                 console.log('Database re-opened, waiting 2s...');
                 await new Promise(resolve => setTimeout(resolve, 2000));
               } catch (reopenErr) {
@@ -671,6 +671,7 @@ export class DatabaseService {
       tax_amount: number;
       total_amount: number;
       price_type?: 'retail' | 'wholesale';
+      item_type?: 'sale' | 'return';
     }>;
   }) {
     const db = this.getDatabase();
@@ -721,12 +722,17 @@ export class DatabaseService {
       const transactionId = transactionResult.lastInsertRowId;
 
       // Create transaction items and update inventory
+      let hasReturnItems = false;
       for (const item of transaction.items) {
+        const itemType = item.item_type || 'sale';
+        const isReturn = itemType === 'return';
+        if (isReturn) hasReturnItems = true;
+
         await db.runAsync(
           `INSERT INTO transaction_items (
             transaction_id, product_id, product_code, product_name,
-            quantity, unit_price, discount_amount, tax_amount, total_amount, price_type
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            quantity, unit_price, discount_amount, tax_amount, total_amount, price_type, item_type
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             transactionId,
             item.product_id,
@@ -737,19 +743,22 @@ export class DatabaseService {
             item.discount_amount || 0,
             item.tax_amount,
             item.total_amount,
-            item.price_type || 'retail'
+            item.price_type || 'retail',
+            itemType
           ]
         );
 
-        // Record inventory movement (this will also update the stock quantity)
+        // Record inventory movement based on item type
         await this.recordInventoryMovement({
           product_id: item.product_id,
-          movement_type: 'OUT',
+          movement_type: isReturn ? 'IN' : 'OUT',
           quantity: item.quantity,
-          reference_type: 'SALE',
+          reference_type: isReturn ? 'SALES_RETURN' : 'SALE',
           reference_id: transactionId as number,
           reference_number: invoiceNumber,
-          notes: `Sale: ${item.product_name} (${item.quantity} units)`,
+          notes: isReturn
+            ? `Return (BO): ${item.product_name} (${item.quantity} units)`
+            : `Sale: ${item.product_name} (${item.quantity} units)`,
           created_by: transaction.cashier_id
         });
       }
@@ -803,7 +812,9 @@ export class DatabaseService {
         [
           'SALE',
           invoiceNumber,
-          `Sale transaction - Invoice: ${invoiceNumber}`,
+          hasReturnItems
+            ? `Sale with Returns (BO) - Invoice: ${invoiceNumber}`
+            : `Sale transaction - Invoice: ${invoiceNumber}`,
           transaction.total_amount,
           transaction.cashier_id,
           phDateTime,
@@ -2512,22 +2523,35 @@ export class DatabaseService {
           );
 
           if (purchaseDetail) {
-            // Record inventory movement with before/after tracking
+            // Get product's conversion factor for multi-unit support
+            const product = await db.getFirstAsync<{ conversion_factor: number }>(
+              'SELECT COALESCE(conversion_factor, 1) as conversion_factor FROM products WHERE id = ?',
+              [item.product_id]
+            );
+            const conversionFactor = product?.conversion_factor || 1;
+
+            // Convert purchase quantity to selling units
+            const sellingQty = item.quantity_received * conversionFactor;
+
+            // Record inventory movement in selling units
             await this.recordInventoryMovement({
               product_id: item.product_id,
               movement_type: 'IN',
-              quantity: item.quantity_received,
+              quantity: sellingQty,
               reference_type: 'PURCHASE',
               reference_id: purchaseId,
               reference_number: purchase?.purchase_number,
-              notes: `Purchase receiving - PO #${purchase?.purchase_number}`,
+              notes: conversionFactor > 1
+                ? `Purchase receiving - PO #${purchase?.purchase_number} (${item.quantity_received} x ${conversionFactor} = ${sellingQty})`
+                : `Purchase receiving - PO #${purchase?.purchase_number}`,
               created_by: receivedBy
             });
 
-            // Update product cost with the purchase cost
+            // Update product cost per selling unit
+            const costPerSellingUnit = purchaseDetail.unit_cost / conversionFactor;
             await db.runAsync(
               'UPDATE products SET cost = ? WHERE id = ?',
-              [purchaseDetail.unit_cost, item.product_id]
+              [costPerSellingUnit, item.product_id]
             );
           }
         }
@@ -5277,11 +5301,14 @@ export class DatabaseService {
           b.name as brand_name,
           u.name as unit_name,
           u.abbreviation as unit_abbreviation,
+          pu.name as purchase_unit_name,
+          pu.abbreviation as purchase_unit_abbreviation,
           s.name as size_name
          FROM products p
          LEFT JOIN categories c ON p.category_id = c.id
          LEFT JOIN brands b ON p.brand_id = b.id
          LEFT JOIN units u ON p.unit_id = u.id
+         LEFT JOIN units pu ON p.purchase_unit_id = pu.id
          LEFT JOIN sizes s ON p.size_id = s.id
          ${whereClause}
          ORDER BY p.name
@@ -5306,6 +5333,8 @@ export class DatabaseService {
     category_id?: number;
     brand_id?: number;
     unit_id?: number;
+    purchase_unit_id?: number | null;
+    conversion_factor?: number;
     size_id?: number;
     vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
     tax_rate?: number;
@@ -5342,9 +5371,9 @@ export class DatabaseService {
 
       const result = await db.runAsync(
         `INSERT INTO products (
-          code, name, description, price, wholesale_price, cost, category_id, brand_id, unit_id, size_id,
+          code, name, description, price, wholesale_price, cost, category_id, brand_id, unit_id, purchase_unit_id, conversion_factor, size_id,
           vat_type, tax_rate, is_vat_inclusive, stock_quantity, reorder_level, unit, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           productData.code,
           productData.name,
@@ -5355,6 +5384,8 @@ export class DatabaseService {
           productData.category_id || null,
           productData.brand_id || null,
           productData.unit_id || null,
+          productData.purchase_unit_id || null,
+          productData.conversion_factor || 1,
           productData.size_id || null,
           vatType,
           taxRate,
@@ -5383,6 +5414,8 @@ export class DatabaseService {
     category_id?: number | null;
     brand_id?: number | null;
     unit_id?: number | null;
+    purchase_unit_id?: number | null;
+    conversion_factor?: number;
     size_id?: number | null;
     vat_type?: 'vatable' | 'vat_exempt' | 'zero_rated';
     tax_rate?: number;
@@ -5453,6 +5486,14 @@ export class DatabaseService {
       if (updates.unit_id !== undefined) {
         setParts.push('unit_id = ?');
         values.push(updates.unit_id);
+      }
+      if (updates.purchase_unit_id !== undefined) {
+        setParts.push('purchase_unit_id = ?');
+        values.push(updates.purchase_unit_id);
+      }
+      if (updates.conversion_factor !== undefined) {
+        setParts.push('conversion_factor = ?');
+        values.push(updates.conversion_factor);
       }
       if (updates.size_id !== undefined) {
         setParts.push('size_id = ?');
@@ -6366,6 +6407,205 @@ export class DatabaseService {
 
     console.log(`Sales return processed: ${returnNumber}, Total: ${totalAmount}`);
     return { returnId, returnNumber };
+  }
+
+  // ========================================
+  // RETURNS ANALYTICS METHODS
+  // ========================================
+
+  /**
+   * Get BO return items (item_type='return' in transaction_items within normal sales)
+   */
+  public async getBOReturnItems(startDate: string, endDate: string): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const results = await db.getAllAsync(
+        `SELECT ti.id, ti.transaction_id, ti.product_id, ti.product_code, ti.product_name,
+                ti.quantity, ti.unit_price, ti.total_amount, ti.created_at,
+                t.transaction_number, t.invoice_number, t.customer_name,
+                t.transaction_date
+         FROM transaction_items ti
+         JOIN transactions t ON ti.transaction_id = t.id
+         WHERE ti.item_type = 'return'
+           AND DATE(t.transaction_date) >= ?
+           AND DATE(t.transaction_date) <= ?
+           AND t.status = 'COMPLETED'
+         ORDER BY t.transaction_date DESC`,
+        [startDate, endDate]
+      );
+      return results || [];
+    } catch (error) {
+      console.error('Error getting BO return items:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get standalone return items (sales_return_items joined with sales_returns)
+   */
+  public async getStandaloneReturnItems(startDate: string, endDate: string): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const results = await db.getAllAsync(
+        `SELECT sri.id, sri.sales_return_id, sri.product_id, sri.product_code, sri.product_name,
+                sri.quantity, sri.unit_price, sri.total_amount, sri.created_at,
+                sr.return_number, sr.original_invoice_number, sr.customer_name,
+                sr.return_date, sr.refund_method, sr.reason, sr.status as return_status,
+                u.full_name as processed_by_name
+         FROM sales_return_items sri
+         JOIN sales_returns sr ON sri.sales_return_id = sr.id
+         LEFT JOIN users u ON sr.processed_by = u.id
+         WHERE DATE(sr.return_date) >= ?
+           AND DATE(sr.return_date) <= ?
+           AND sr.status = 'COMPLETED'
+         ORDER BY sr.return_date DESC`,
+        [startDate, endDate]
+      );
+      return results || [];
+    } catch (error) {
+      console.error('Error getting standalone return items:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get top returned products combining both BO and standalone sources
+   */
+  public async getTopReturnedProducts(startDate: string, endDate: string, limit: number = 20): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const results = await db.getAllAsync(
+        `SELECT product_id, product_code, product_name,
+                SUM(quantity) as total_quantity,
+                COUNT(*) as times_returned,
+                SUM(total_amount) as total_amount
+         FROM (
+           SELECT ti.product_id, ti.product_code, ti.product_name, ti.quantity, ABS(ti.total_amount) as total_amount
+           FROM transaction_items ti
+           JOIN transactions t ON ti.transaction_id = t.id
+           WHERE ti.item_type = 'return'
+             AND DATE(t.transaction_date) >= ? AND DATE(t.transaction_date) <= ?
+             AND t.status = 'COMPLETED'
+           UNION ALL
+           SELECT sri.product_id, sri.product_code, sri.product_name, sri.quantity, sri.total_amount
+           FROM sales_return_items sri
+           JOIN sales_returns sr ON sri.sales_return_id = sr.id
+           WHERE DATE(sr.return_date) >= ? AND DATE(sr.return_date) <= ?
+             AND sr.status = 'COMPLETED'
+         )
+         GROUP BY product_id, product_code, product_name
+         ORDER BY total_quantity DESC
+         LIMIT ?`,
+        [startDate, endDate, startDate, endDate, limit]
+      );
+      return results || [];
+    } catch (error) {
+      console.error('Error getting top returned products:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get returns summary: aggregate counts/amounts for BO, Standalone Refund, and Exchange
+   */
+  public async getReturnsSummary(startDate: string, endDate: string): Promise<any> {
+    const db = this.getDatabase();
+    try {
+      // BO returns
+      const boResult = await db.getFirstAsync<any>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(ABS(ti.total_amount)), 0) as total
+         FROM transaction_items ti
+         JOIN transactions t ON ti.transaction_id = t.id
+         WHERE ti.item_type = 'return'
+           AND DATE(t.transaction_date) >= ? AND DATE(t.transaction_date) <= ?
+           AND t.status = 'COMPLETED'`,
+        [startDate, endDate]
+      );
+
+      // Standalone refunds (CASH, CREDIT, STORE_CREDIT)
+      const refundResult = await db.getFirstAsync<any>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+         FROM sales_returns
+         WHERE refund_method IN ('CASH', 'CREDIT', 'STORE_CREDIT')
+           AND DATE(return_date) >= ? AND DATE(return_date) <= ?
+           AND status = 'COMPLETED'`,
+        [startDate, endDate]
+      );
+
+      // Exchanges
+      const exchangeResult = await db.getFirstAsync<any>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+         FROM sales_returns
+         WHERE refund_method = 'EXCHANGE'
+           AND DATE(return_date) >= ? AND DATE(return_date) <= ?
+           AND status = 'COMPLETED'`,
+        [startDate, endDate]
+      );
+
+      return {
+        boCount: boResult?.count || 0,
+        boTotal: boResult?.total || 0,
+        refundCount: refundResult?.count || 0,
+        refundTotal: refundResult?.total || 0,
+        exchangeCount: exchangeResult?.count || 0,
+        exchangeTotal: exchangeResult?.total || 0,
+      };
+    } catch (error) {
+      console.error('Error getting returns summary:', error);
+      return { boCount: 0, boTotal: 0, refundCount: 0, refundTotal: 0, exchangeCount: 0, exchangeTotal: 0 };
+    }
+  }
+
+  /**
+   * Get return reason analysis from standalone returns
+   */
+  public async getReturnReasonAnalysis(startDate: string, endDate: string): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const results = await db.getAllAsync(
+        `SELECT sr.reason,
+                COUNT(DISTINCT sr.id) as return_count,
+                SUM(sri.quantity) as total_quantity,
+                SUM(sri.total_amount) as total_amount
+         FROM sales_returns sr
+         JOIN sales_return_items sri ON sr.id = sri.sales_return_id
+         WHERE DATE(sr.return_date) >= ? AND DATE(sr.return_date) <= ?
+           AND sr.status = 'COMPLETED'
+         GROUP BY sr.reason
+         ORDER BY total_amount DESC`,
+        [startDate, endDate]
+      );
+      return results || [];
+    } catch (error) {
+      console.error('Error getting return reason analysis:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get refund method breakdown from standalone returns
+   */
+  public async getRefundMethodBreakdown(startDate: string, endDate: string): Promise<any[]> {
+    const db = this.getDatabase();
+    try {
+      const results = await db.getAllAsync(
+        `SELECT sr.refund_method,
+                COUNT(DISTINCT sr.id) as transaction_count,
+                SUM(sri.quantity) as total_quantity,
+                SUM(sri.total_amount) as total_amount
+         FROM sales_returns sr
+         JOIN sales_return_items sri ON sr.id = sri.sales_return_id
+         WHERE DATE(sr.return_date) >= ? AND DATE(sr.return_date) <= ?
+           AND sr.status = 'COMPLETED'
+         GROUP BY sr.refund_method
+         ORDER BY total_amount DESC`,
+        [startDate, endDate]
+      );
+      return results || [];
+    } catch (error) {
+      console.error('Error getting refund method breakdown:', error);
+      return [];
+    }
   }
 
   // ========================================

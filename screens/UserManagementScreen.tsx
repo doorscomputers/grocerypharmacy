@@ -2,31 +2,34 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
-  ScrollView,
+  FlatList,
   Alert,
 } from 'react-native';
 import {
   Card,
   Title,
   Button,
-  DataTable,
   IconButton,
   Portal,
   Dialog,
   Paragraph,
   Chip,
+  Text,
+  Divider,
   useTheme,
+  ActivityIndicator,
 } from 'react-native-paper';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { User } from '../database/schema';
 import { useAuth } from '../contexts/AuthContext';
-import { RoleGuard } from '../components/RoleGuard';
 import { PermissionService } from '../utils/permissions';
 import { StableTextInput } from '../components/StableTextInput';
 import { hashPassword } from '../utils/passwordHash';
 import { useResponsiveTheme } from '../utils/responsive';
+import { useResponsive } from '../utils/responsive';
 
 type UserManagementScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -58,6 +61,8 @@ export default function UserManagementScreen({ navigation }: Props) {
   const theme = useTheme();
   const { user: currentUser } = useAuth();
   const { sp, fs, lo } = useResponsiveTheme();
+  const { isPhone, isTablet, isLandscape } = useResponsive();
+  const insets = useSafeAreaInsets();
 
   const DEFAULT_PASSWORD = '123456';
 
@@ -105,14 +110,28 @@ export default function UserManagementScreen({ navigation }: Props) {
   };
 
   const handleToggleUserStatus = async (user: User) => {
-    try {
-      const dbService = getDatabase();
-      await dbService.updateUser(user.id, { is_active: !user.is_active });
-      loadUsers();
-    } catch (error) {
-      console.error('Error updating user status:', error);
-      Alert.alert('Error', 'Failed to update user status');
-    }
+    const action = user.is_active ? 'deactivate' : 'activate';
+    Alert.alert(
+      `${action.charAt(0).toUpperCase() + action.slice(1)} User`,
+      `Are you sure you want to ${action} ${user.full_name}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: action.charAt(0).toUpperCase() + action.slice(1),
+          style: user.is_active ? 'destructive' : 'default',
+          onPress: async () => {
+            try {
+              const dbService = getDatabase();
+              await dbService.updateUser(user.id, { is_active: !user.is_active });
+              loadUsers();
+            } catch (error) {
+              console.error('Error updating user status:', error);
+              Alert.alert('Error', 'Failed to update user status');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleEditUser = (user: User) => {
@@ -142,7 +161,6 @@ export default function UserManagementScreen({ navigation }: Props) {
         role: editUserData.role,
       };
 
-      // Only update password if a new one was provided
       if (editUserData.newPassword) {
         updateData.password_hash = hashPassword(editUserData.newPassword);
       }
@@ -183,209 +201,289 @@ export default function UserManagementScreen({ navigation }: Props) {
       case 'MANAGER':
         return theme.colors.primary;
       case 'CASHIER':
-        return theme.colors.outline;
+        return '#607D8B';
       default:
         return theme.colors.outline;
     }
   };
 
-  return (
-    <RoleGuard permission="MANAGE_USERS">
-      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <View style={styles.header}>
-          <Title style={[styles.title, { fontSize: fs.h2 }]}>User Management</Title>
-          <Button
-            mode="contained"
-            onPress={() => setDialogVisible(true)}
-            icon="account-plus"
-            style={styles.addButton}
-          >
-            Add User
-          </Button>
-        </View>
+  // Allow ADMIN and MANAGER roles to access User Management
+  if (currentUser?.role !== 'ADMIN' && currentUser?.role !== 'MANAGER') {
+    return (
+      <Card style={{ margin: 16, padding: 16 }}>
+        <Card.Content>
+          <Title>Access Restricted</Title>
+          <Paragraph>You don't have permission to access this feature.</Paragraph>
+        </Card.Content>
+      </Card>
+    );
+  }
 
-        <ScrollView style={styles.content} contentContainerStyle={{ padding: lo.screenPadding }}>
-          <Card style={styles.card}>
-            <Card.Content style={{ padding: sp.md }}>
-              <DataTable>
-                <DataTable.Header>
-                  <DataTable.Title>Username</DataTable.Title>
-                  <DataTable.Title>Full Name</DataTable.Title>
-                  <DataTable.Title>Role</DataTable.Title>
-                  <DataTable.Title>Status</DataTable.Title>
-                  <DataTable.Title>Actions</DataTable.Title>
-                </DataTable.Header>
+  // Managers cannot see ADMIN users
+  const visibleUsers = currentUser?.role === 'MANAGER'
+    ? users.filter(u => u.role !== 'ADMIN')
+    : users;
 
-                {users.map((user) => (
-                  <DataTable.Row key={user.id}>
-                    <DataTable.Cell>{user.username}</DataTable.Cell>
-                    <DataTable.Cell>{user.full_name}</DataTable.Cell>
-                    <DataTable.Cell>
-                      <Chip
-                        textStyle={{ color: 'white' }}
-                        style={{ backgroundColor: getRoleColor(user.role) }}
-                        compact
-                      >
-                        {PermissionService.getRoleDisplayName(user.role as any)}
-                      </Chip>
-                    </DataTable.Cell>
-                    <DataTable.Cell>
-                      <Chip
-                        mode={user.is_active ? 'outlined' : 'flat'}
-                        textStyle={{
-                          color: user.is_active ? theme.colors.primary : theme.colors.error
-                        }}
-                        compact
-                      >
-                        {user.is_active ? 'Active' : 'Inactive'}
-                      </Chip>
-                    </DataTable.Cell>
-                    <DataTable.Cell>
-                      <View style={styles.actionButtons}>
-                        <IconButton
-                          icon="pencil"
-                          size={20}
-                          onPress={() => handleEditUser(user)}
-                          iconColor={theme.colors.primary}
-                        />
-                        <IconButton
-                          icon={user.is_active ? 'account-cancel' : 'account-check'}
-                          size={20}
-                          onPress={() => handleToggleUserStatus(user)}
-                          disabled={user.id === currentUser?.id}
-                          iconColor={user.is_active ? theme.colors.error : theme.colors.primary}
-                        />
-                      </View>
-                    </DataTable.Cell>
-                  </DataTable.Row>
-                ))}
-              </DataTable>
+  // Managers can only assign Cashier or Manager roles
+  const availableRoles: ('CASHIER' | 'MANAGER' | 'ADMIN')[] =
+    currentUser?.role === 'ADMIN' ? ['CASHIER', 'MANAGER', 'ADMIN'] : ['CASHIER', 'MANAGER'];
 
-              {users.length === 0 && !loading && (
-                <View style={styles.emptyState}>
-                  <Paragraph style={styles.emptyText}>No users found</Paragraph>
-                </View>
-              )}
-            </Card.Content>
-          </Card>
-        </ScrollView>
+  // Use 2 columns on tablet landscape, 1 column otherwise
+  const numColumns = isTablet && isLandscape ? 2 : 1;
 
-        <Portal>
-          <Dialog visible={dialogVisible} onDismiss={() => setDialogVisible(false)}>
-            <Dialog.Title>Add New User</Dialog.Title>
-            <Dialog.Content>
-              <StableTextInput
-                label="Username"
-                value={newUser.username}
-                onChangeText={(text) => setNewUser(prev => ({ ...prev, username: text }))}
+  const renderUserCard = ({ item }: { item: User }) => {
+    const isSelf = item.id === currentUser?.id;
+
+    return (
+      <Card style={[
+        styles.userCard,
+        {
+          marginHorizontal: sp.sm,
+          marginVertical: sp.xs,
+          flex: numColumns === 2 ? 1 : undefined,
+          maxWidth: numColumns === 2 ? '49%' : undefined,
+        },
+      ]}>
+        <Card.Content style={{ paddingVertical: sp.md, paddingHorizontal: sp.md }}>
+          {/* Top row: Name + Role */}
+          <View style={styles.cardHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.userName, { fontSize: fs.cardTitle }]} numberOfLines={1}>
+                {item.full_name}
+              </Text>
+              <Text style={[styles.userUsername, { fontSize: fs.bodySmall }]}>
+                @{item.username}
+              </Text>
+            </View>
+            <View style={styles.cardBadges}>
+              <Chip
+                textStyle={{ color: '#FFFFFF', fontSize: fs.body }}
+                style={{ backgroundColor: getRoleColor(item.role) }}
+              >
+                {PermissionService.getRoleDisplayName(item.role as any)}
+              </Chip>
+            </View>
+          </View>
+
+          <Divider style={{ marginVertical: sp.sm }} />
+
+          {/* Status + Actions row */}
+          <View style={styles.cardFooter}>
+            <Chip
+              compact
+              icon={item.is_active ? 'check-circle' : 'close-circle'}
+              textStyle={{
+                color: item.is_active ? '#2E7D32' : '#C62828',
+                fontSize: fs.caption,
+              }}
+              style={{
+                backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE',
+              }}
+            >
+              {item.is_active ? 'Active' : 'Inactive'}
+            </Chip>
+
+            <View style={styles.cardActions}>
+              <Button
                 mode="outlined"
-                style={styles.dialogInput}
-                autoCapitalize="none"
-              />
-              <StableTextInput
-                label="Full Name"
-                value={newUser.full_name}
-                onChangeText={(text) => setNewUser(prev => ({ ...prev, full_name: text }))}
-                mode="outlined"
-                style={styles.dialogInput}
-              />
-              <StableTextInput
-                label="Password"
-                value={newUser.password}
-                onChangeText={(text) => setNewUser(prev => ({ ...prev, password: text }))}
-                mode="outlined"
-                secureTextEntry
-                style={styles.dialogInput}
-              />
-              <View style={styles.roleSelector}>
-                <Paragraph>Role:</Paragraph>
-                <View style={styles.roleChips}>
-                  {(['CASHIER', 'MANAGER', 'ADMIN'] as const).map((role) => (
-                    <Chip
-                      key={role}
-                      selected={newUser.role === role}
-                      onPress={() => setNewUser({ ...newUser, role })}
-                      style={[styles.roleChip, newUser.role === role && { backgroundColor: theme.colors.primary }]}
-                      textStyle={{ color: newUser.role === role ? '#FFFFFF' : '#333333' }}
-                    >
-                      {PermissionService.getRoleDisplayName(role)}
-                    </Chip>
-                  ))}
-                </View>
-              </View>
-            </Dialog.Content>
-            <Dialog.Actions>
-              <Button onPress={() => setDialogVisible(false)}>Cancel</Button>
-              <Button mode="contained" onPress={handleCreateUser}>
-                Create User
+                onPress={() => handleEditUser(item)}
+                icon="pencil"
+                compact
+                style={styles.cardActionButton}
+                labelStyle={{ fontSize: fs.caption }}
+              >
+                Edit
               </Button>
-            </Dialog.Actions>
-          </Dialog>
-
-          {/* Edit User Dialog */}
-          <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
-            <Dialog.Title>Edit User</Dialog.Title>
-            <Dialog.Content>
-              <StableTextInput
-                label="Username"
-                value={editUserData.username}
-                onChangeText={(text) => setEditUserData(prev => ({ ...prev, username: text }))}
-                mode="outlined"
-                style={styles.dialogInput}
-                autoCapitalize="none"
-              />
-              <StableTextInput
-                label="Full Name"
-                value={editUserData.full_name}
-                onChangeText={(text) => setEditUserData(prev => ({ ...prev, full_name: text }))}
-                mode="outlined"
-                style={styles.dialogInput}
-              />
-              <View style={styles.passwordSection}>
-                <StableTextInput
-                  label="New Password (leave blank to keep current)"
-                  value={editUserData.newPassword}
-                  onChangeText={(text) => setEditUserData(prev => ({ ...prev, newPassword: text }))}
-                  mode="outlined"
-                  secureTextEntry
-                  style={styles.passwordInput}
-                />
+              {!isSelf && (
                 <Button
                   mode="outlined"
-                  onPress={handleResetPassword}
+                  onPress={() => handleToggleUserStatus(item)}
+                  icon={item.is_active ? 'account-cancel' : 'account-check'}
                   compact
-                  style={styles.resetButton}
+                  style={[
+                    styles.cardActionButton,
+                    { borderColor: item.is_active ? '#E53935' : '#43A047' },
+                  ]}
+                  textColor={item.is_active ? '#E53935' : '#43A047'}
+                  labelStyle={{ fontSize: fs.caption }}
                 >
-                  Reset to Default
+                  {item.is_active ? 'Deactivate' : 'Activate'}
                 </Button>
-              </View>
-              <View style={styles.roleSelector}>
-                <Paragraph>Role:</Paragraph>
-                <View style={styles.roleChips}>
-                  {(['CASHIER', 'MANAGER', 'ADMIN'] as const).map((role) => (
-                    <Chip
-                      key={role}
-                      selected={editUserData.role === role}
-                      onPress={() => setEditUserData(prev => ({ ...prev, role }))}
-                      style={[styles.roleChip, editUserData.role === role && { backgroundColor: theme.colors.primary }]}
-                      textStyle={{ color: editUserData.role === role ? '#FFFFFF' : '#333333' }}
-                    >
-                      {PermissionService.getRoleDisplayName(role)}
-                    </Chip>
-                  ))}
-                </View>
-              </View>
-            </Dialog.Content>
-            <Dialog.Actions>
-              <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
-              <Button mode="contained" onPress={handleSaveUser}>
-                Save Changes
-              </Button>
-            </Dialog.Actions>
-          </Dialog>
-        </Portal>
+              )}
+            </View>
+          </View>
+        </Card.Content>
+      </Card>
+    );
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
+        <ActivityIndicator size="large" />
+        <Paragraph style={{ marginTop: sp.md }}>Loading users...</Paragraph>
       </View>
-    </RoleGuard>
+    );
+  }
+
+  return (
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {/* Header */}
+      <View style={[styles.header, { paddingHorizontal: lo.screenPadding, paddingVertical: sp.sm }]}>
+        <View>
+          <Title style={{ fontSize: fs.h2 }}>User Management</Title>
+          <Paragraph style={{ fontSize: fs.bodySmall, opacity: 0.6 }}>
+            {visibleUsers.length} user{visibleUsers.length !== 1 ? 's' : ''}
+          </Paragraph>
+        </View>
+        <Button
+          mode="contained"
+          onPress={() => setDialogVisible(true)}
+          icon="account-plus"
+          style={{ elevation: 2 }}
+        >
+          Add User
+        </Button>
+      </View>
+
+      <Divider />
+
+      {/* User List */}
+      <FlatList
+        key={numColumns}
+        data={visibleUsers}
+        keyExtractor={(item) => item.id.toString()}
+        renderItem={renderUserCard}
+        numColumns={numColumns}
+        contentContainerStyle={{
+          padding: sp.sm,
+          paddingBottom: insets.bottom + 16,
+        }}
+        columnWrapperStyle={numColumns > 1 ? { gap: sp.sm } : undefined}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Paragraph style={{ fontSize: fs.body, opacity: 0.6 }}>No users found</Paragraph>
+          </View>
+        }
+      />
+
+      {/* Dialogs */}
+      <Portal>
+        {/* Add User Dialog */}
+        <Dialog visible={dialogVisible} onDismiss={() => setDialogVisible(false)}>
+          <Dialog.Title>Add New User</Dialog.Title>
+          <Dialog.Content>
+            <StableTextInput
+              label="Username"
+              value={newUser.username}
+              onChangeText={(text) => setNewUser(prev => ({ ...prev, username: text }))}
+              mode="outlined"
+              style={styles.dialogInput}
+              autoCapitalize="none"
+            />
+            <StableTextInput
+              label="Full Name"
+              value={newUser.full_name}
+              onChangeText={(text) => setNewUser(prev => ({ ...prev, full_name: text }))}
+              mode="outlined"
+              style={styles.dialogInput}
+            />
+            <StableTextInput
+              label="Password"
+              value={newUser.password}
+              onChangeText={(text) => setNewUser(prev => ({ ...prev, password: text }))}
+              mode="outlined"
+              secureTextEntry
+              style={styles.dialogInput}
+            />
+            <View style={styles.roleSelector}>
+              <Paragraph>Role:</Paragraph>
+              <View style={styles.roleChips}>
+                {availableRoles.map((role) => (
+                  <Chip
+                    key={role}
+                    selected={newUser.role === role}
+                    onPress={() => setNewUser({ ...newUser, role })}
+                    style={[styles.roleChip, newUser.role === role && { backgroundColor: theme.colors.primary }]}
+                    textStyle={{ color: newUser.role === role ? '#FFFFFF' : '#333333' }}
+                  >
+                    {PermissionService.getRoleDisplayName(role)}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setDialogVisible(false)}>Cancel</Button>
+            <Button mode="contained" onPress={handleCreateUser}>
+              Create User
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        {/* Edit User Dialog */}
+        <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
+          <Dialog.Title>Edit User</Dialog.Title>
+          <Dialog.Content>
+            <StableTextInput
+              label="Username"
+              value={editUserData.username}
+              onChangeText={(text) => setEditUserData(prev => ({ ...prev, username: text }))}
+              mode="outlined"
+              style={styles.dialogInput}
+              autoCapitalize="none"
+            />
+            <StableTextInput
+              label="Full Name"
+              value={editUserData.full_name}
+              onChangeText={(text) => setEditUserData(prev => ({ ...prev, full_name: text }))}
+              mode="outlined"
+              style={styles.dialogInput}
+            />
+            <View style={styles.passwordSection}>
+              <StableTextInput
+                label="New Password (leave blank to keep current)"
+                value={editUserData.newPassword}
+                onChangeText={(text) => setEditUserData(prev => ({ ...prev, newPassword: text }))}
+                mode="outlined"
+                secureTextEntry
+                style={styles.passwordInput}
+              />
+              <Button
+                mode="outlined"
+                onPress={handleResetPassword}
+                compact
+                style={styles.resetButton}
+              >
+                Reset to Default
+              </Button>
+            </View>
+            <View style={styles.roleSelector}>
+              <Paragraph>Role:</Paragraph>
+              <View style={styles.roleChips}>
+                {availableRoles.map((role) => (
+                  <Chip
+                    key={role}
+                    selected={editUserData.role === role}
+                    onPress={() => setEditUserData(prev => ({ ...prev, role }))}
+                    style={[styles.roleChip, editUserData.role === role && { backgroundColor: theme.colors.primary }]}
+                    textStyle={{ color: editUserData.role === role ? '#FFFFFF' : '#333333' }}
+                  >
+                    {PermissionService.getRoleDisplayName(role)}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
+            <Button mode="contained" onPress={handleSaveUser}>
+              Save Changes
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+    </View>
   );
 }
 
@@ -393,34 +491,50 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  addButton: {
+  userCard: {
     elevation: 2,
   },
-  content: {
-    flex: 1,
-    padding: 16,
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
   },
-  card: {
-    elevation: 4,
+  userName: {
+    fontWeight: '700',
+  },
+  userUsername: {
+    opacity: 0.55,
+    marginTop: 2,
+  },
+  cardBadges: {
+    alignItems: 'flex-end',
+    marginLeft: 8,
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  cardActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  cardActionButton: {
+    borderRadius: 8,
   },
   emptyState: {
     alignItems: 'center',
-    paddingVertical: 32,
-  },
-  emptyText: {
-    fontSize: 16,
-    opacity: 0.6,
+    paddingVertical: 48,
   },
   dialogInput: {
     marginBottom: 16,
@@ -436,10 +550,6 @@ const styles = StyleSheet.create({
   roleChip: {
     marginRight: 8,
     marginBottom: 8,
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   passwordSection: {
     marginBottom: 16,

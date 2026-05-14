@@ -84,7 +84,7 @@ function generateProducts(count) {
 }
 
 async function insertProducts() {
-  const dbPath = path.join(__dirname, '..', 'pos_database.db');
+  const dbPath = path.join(__dirname, '..', 'grocerypos.db');
 
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(dbPath, (err) => {

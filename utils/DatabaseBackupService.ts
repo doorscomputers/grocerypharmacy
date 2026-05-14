@@ -27,7 +27,7 @@ export interface BackupInfo {
 
 const WEB_STORAGE_KEY = 'posmobile_webmock_db';
 const BACKUP_FOLDER_NAME = 'POSBackups';
-const DB_NAME = 'pos_database.db';
+const DB_NAME = 'grocerypos.db';
 
 // Check if running on web platform
 const isWeb = (): boolean => {

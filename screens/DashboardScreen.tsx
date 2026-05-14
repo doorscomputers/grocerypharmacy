@@ -374,6 +374,13 @@ export default function DashboardScreen({ navigation }: Props) {
       color: '#455A64',
       onPress: () => navigation.navigate('Settings'),
     },
+    ...((user?.role === 'ADMIN' || user?.role === 'MANAGER') ? [{
+      id: 'users',
+      label: 'Users',
+      icon: 'account-group',
+      color: '#3F51B5',
+      onPress: () => navigation.navigate('UserManagement'),
+    }] : []),
     {
       id: 'help',
       label: 'Help',
@@ -431,13 +438,6 @@ export default function DashboardScreen({ navigation }: Props) {
       icon: 'backup-restore',
       color: '#4CAF50',
       onPress: handleBackupNow,
-    },
-    {
-      id: 'users',
-      label: 'Users',
-      icon: 'account-group',
-      color: '#3F51B5',
-      onPress: () => navigation.navigate('UserManagement'),
     },
     {
       id: 'permissions',

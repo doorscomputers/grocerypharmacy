@@ -9,6 +9,8 @@ import {
   TouchableOpacity,
   TextInput as RNTextInput,
   Keyboard,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import {
   Card,
@@ -81,6 +83,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   const [quantity, setQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const searchInputRef = useRef<RNTextInput>(null);
+  const editQtyRef = useRef<RNTextInput>(null);
 
   // Edit Item
   const [editItemDialogVisible, setEditItemDialogVisible] = useState(false);
@@ -113,7 +116,7 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
   });
 
   const theme = useTheme();
-  const { sp, fs, lo } = useResponsiveTheme();
+  const { sp, fs, lo, isPhone } = useResponsiveTheme();
 
   useEffect(() => {
     loadData();
@@ -427,10 +430,14 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
 
   const openEditItemDialog = (index: number) => {
     const item = purchaseItems[index];
+    if (!item) return;
     setEditingItemIndex(index);
     setEditItemQuantity(item.quantity_ordered.toString());
     setEditItemUnitCost(item.unit_cost.toString());
     setEditItemDialogVisible(true);
+    setTimeout(() => {
+      editQtyRef.current?.focus();
+    }, 350);
   };
 
   const saveEditedItem = () => {
@@ -1141,29 +1148,79 @@ export default function PurchaseOrderScreen({ navigation }: Props) {
       </Modal>
 
       {/* ===== MODAL: EDIT ITEM ===== */}
-      <Modal visible={editItemDialogVisible} transparent={true} animationType="fade" onRequestClose={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }}>
-        <View style={styles.overlayContainer}>
-          <View style={styles.overlayCard}>
-            <Text style={styles.overlayTitle}>Edit Item</Text>
-            {editingItemIndex !== null && purchaseItems[editingItemIndex] && (
-              <>
-                <View style={styles.editItemHeader}>
-                  <Text style={styles.editItemHeaderText}>{purchaseItems[editingItemIndex].product_name}</Text>
-                </View>
-                <TextInput label="Quantity" value={editItemQuantity} onChangeText={setEditItemQuantity} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" autoFocus />
-                <TextInput label="Unit Cost (₱)" value={editItemUnitCost} onChangeText={setEditItemUnitCost} mode="outlined" style={styles.overlayInput} dense keyboardType="numeric" />
-              </>
-            )}
-            <View style={styles.overlayActions}>
-              <TouchableOpacity style={styles.overlayBtnCancel} onPress={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }}>
-                <Text style={styles.overlayBtnCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.overlayBtnConfirm} onPress={saveEditedItem}>
-                <Text style={styles.overlayBtnConfirmText}>Save</Text>
-              </TouchableOpacity>
-            </View>
+      <Modal visible={editItemDialogVisible} transparent animationType="fade" onRequestClose={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }}>
+        <KeyboardAvoidingView style={editStyles.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={[editStyles.container, { maxWidth: lo.modalMaxWidth }]}>
+            {editingItemIndex !== null && purchaseItems[editingItemIndex] ? (() => {
+              const editItem = purchaseItems[editingItemIndex];
+              const lineTotal = (parseInt(editItemQuantity) || 0) * (parseFloat(editItemUnitCost) || 0);
+              return (
+                <>
+                  {/* Header Bar */}
+                  <View style={editStyles.header}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[editStyles.headerTitle, { fontSize: fs.h3 }]}>Edit Purchase Item</Text>
+                    </View>
+                    <IconButton icon="close" size={isPhone ? 22 : 28} onPress={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }} />
+                  </View>
+
+                  {/* Product Info Bar */}
+                  <View style={editStyles.productBar}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[editStyles.productName, { fontSize: fs.body }]} numberOfLines={1}>{editItem.product_name}</Text>
+                      <Text style={[editStyles.productCode, { fontSize: fs.caption }]}>{editItem.product_code}</Text>
+                    </View>
+                    <View style={editStyles.lineTotalBox}>
+                      <Text style={editStyles.lineTotalLabel}>TOTAL</Text>
+                      <Text style={[editStyles.lineTotalValue, { fontSize: fs.h3 }]}>₱{lineTotal.toFixed(2)}</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ paddingHorizontal: sp.md, paddingTop: sp.md, paddingBottom: sp.sm }}>
+                    {/* Qty & Unit Cost - Side by Side */}
+                    <View style={editStyles.row}>
+                      <View style={editStyles.fieldHalf}>
+                        <Text style={[editStyles.fieldLabel, { fontSize: fs.caption }]}>QUANTITY</Text>
+                        <RNTextInput
+                          ref={editQtyRef}
+                          style={[editStyles.inputLarge, { fontSize: fs.h1 }]}
+                          value={editItemQuantity}
+                          onChangeText={(t) => setEditItemQuantity(t.replace(/[^0-9]/g, ''))}
+                          keyboardType="number-pad"
+                          selectTextOnFocus
+                          placeholder="0"
+                          placeholderTextColor="#BDBDBD"
+                        />
+                      </View>
+                      <View style={editStyles.fieldHalf}>
+                        <Text style={[editStyles.fieldLabel, { fontSize: fs.caption }]}>UNIT COST (₱)</Text>
+                        <RNTextInput
+                          style={[editStyles.inputLarge, { fontSize: fs.h1 }]}
+                          value={editItemUnitCost}
+                          onChangeText={(t) => setEditItemUnitCost(t.replace(/[^0-9.]/g, ''))}
+                          keyboardType="decimal-pad"
+                          selectTextOnFocus
+                          placeholder="0.00"
+                          placeholderTextColor="#BDBDBD"
+                        />
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Action Buttons */}
+                  <View style={[editStyles.buttonRow, { padding: sp.md }]}>
+                    <TouchableOpacity style={editStyles.cancelBtn} onPress={() => { setEditItemDialogVisible(false); setEditingItemIndex(null); }} activeOpacity={0.7}>
+                      <Text style={[editStyles.cancelBtnText, { fontSize: fs.button }]}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={editStyles.saveBtn} onPress={saveEditedItem} activeOpacity={0.7}>
+                      <Text style={[editStyles.saveBtnText, { fontSize: fs.button }]}>Save</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              );
+            })() : null}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ===== MODAL: QUICK ADD PRODUCT ===== */}
@@ -1896,17 +1953,125 @@ const styles = StyleSheet.create({
     color: '#616161',
   },
 
-  // Edit Item Header
-  editItemHeader: {
-    backgroundColor: '#1976D2',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
+});
+
+// ===== Edit Item Modal Styles (Tablet-Optimized) =====
+const editStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
   },
-  editItemHeaderText: {
-    fontSize: 15,
+  container: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 600,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 20,
+    paddingRight: 4,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  headerTitle: {
+    fontWeight: '700',
+    color: '#212121',
+  },
+  productBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1976D2',
+    marginHorizontal: 16,
+    marginTop: 14,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  productName: {
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  productCode: {
+    color: 'rgba(255,255,255,0.7)',
+    marginTop: 2,
+  },
+  lineTotalBox: {
+    alignItems: 'flex-end',
+    marginLeft: 12,
+  },
+  lineTotalLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.7)',
+    letterSpacing: 1,
+  },
+  lineTotalValue: {
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  fieldHalf: {
+    flex: 1,
+  },
+  fieldLabel: {
+    fontWeight: '700',
+    color: '#757575',
+    marginBottom: 6,
+    letterSpacing: 0.5,
+  },
+  inputLarge: {
+    fontWeight: '700',
+    color: '#212121',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     textAlign: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  cancelBtnText: {
+    fontWeight: '600',
+    color: '#616161',
+  },
+  saveBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    backgroundColor: '#2196F3',
+    alignItems: 'center',
+  },
+  saveBtnText: {
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });

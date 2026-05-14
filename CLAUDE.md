@@ -18,7 +18,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a BIR-compliant Mobile Point of Sale (POS) system built with React Native and Expo, specifically designed for Philippine businesses. The app follows Philippine BIR regulations including Revenue Regulations No. 7-2024 and 11-2024.
+This is a BIR-compliant Mobile Point of Sale (POS) system built with React Native and Expo, specifically designed for **grocery stores and other Philippine retail businesses**. The app follows Philippine BIR regulations including Revenue Regulations No. 7-2024 and 11-2024.
+
+### Variable Inventory Management (Multi-Unit Support)
+
+Products support separate **selling units** and **purchase units** with a conversion factor:
+- `unit_id` = selling unit (e.g., Kilogram, Piece, Bottle)
+- `purchase_unit_id` = purchase/bulk unit (e.g., Sack, Case, Box)
+- `conversion_factor` = how many selling units per 1 purchase unit (e.g., 1 Sack = 50 kg)
+- Stock is always tracked in **selling units**
+- When receiving purchases, quantity is auto-converted: `purchase_qty x conversion_factor`
+- Cost is auto-converted to per-selling-unit: `purchase_cost / conversion_factor`
+- Default: `conversion_factor = 1`, `purchase_unit_id = NULL` (single-unit products work unchanged)
 
 ## Common Commands
 
