@@ -151,6 +151,7 @@ export default function DashboardScreen({ navigation }: Props) {
   const [backingUp, setBackingUp] = useState(false);
   const [tempStartDate, setTempStartDate] = useState('');
   const [tempEndDate, setTempEndDate] = useState('');
+  const [unseededCount, setUnseededCount] = useState(0);
 
   const { colors } = useAppTheme();
   const { user, logout } = useAuth();
@@ -234,6 +235,14 @@ export default function DashboardScreen({ navigation }: Props) {
         customerPayments: customerPaymentsTotal,
         supplierPayments: supplierPaymentsTotal,
       });
+
+      // AVCO seed check: count products with stock but no cost seeded.
+      try {
+        const c = await dbService.getUnseededInventoryCount();
+        setUnseededCount(c);
+      } catch (e) {
+        setUnseededCount(0);
+      }
     } catch (error) {
       console.error('Error loading dashboard data:', error);
     } finally {
@@ -517,6 +526,35 @@ export default function DashboardScreen({ navigation }: Props) {
           </View>
           <MaterialCommunityIcons name="chevron-down" size={20} color={colors.textSecondary} />
         </TouchableOpacity>
+
+        {unseededCount > 0 && (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('InitialInventory')}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: '#FFF3CD',
+              borderLeftWidth: 4,
+              borderLeftColor: '#F57C00',
+              padding: 12,
+              marginHorizontal: lo.screenPadding,
+              marginBottom: sp.sm,
+              borderRadius: 6,
+              gap: 10,
+            }}
+          >
+            <MaterialCommunityIcons name="alert" size={22} color="#F57C00" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontWeight: 'bold', color: '#5d4037', fontSize: 13 }}>
+                Set Beginning Inventory ({unseededCount} {unseededCount === 1 ? 'product' : 'products'} need cost)
+              </Text>
+              <Text style={{ fontSize: 11, color: '#6d4c41', marginTop: 2 }}>
+                AVCO cost tracking requires beginning inventory cost. Tap to set it now.
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={22} color="#F57C00" />
+          </TouchableOpacity>
+        )}
 
         {canSplit ? (
           /* Landscape: Hero + Primary Actions side-by-side */

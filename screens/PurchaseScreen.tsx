@@ -26,6 +26,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../App';
 import { getDatabase } from '../database/getDatabase';
 import { Product } from '../database/schema';
+import { computeNewAvco, roundAvco } from '../database/avco';
 import { useAuth } from '../contexts/AuthContext';
 import { toLocalDateString } from '../utils/dateTime';
 import { useResponsiveTheme } from '../utils/responsive';
@@ -44,9 +45,10 @@ interface PurchaseItem {
   product_id: number;
   product_code: string;
   product_name: string;
-  quantity: number;
+  quantity: number;          // paid quantity (what appears on the supplier invoice)
+  bonus_quantity: number;    // free/extra units from supplier — NOT on invoice but added to stock
   unit_cost: number;
-  total_cost: number;
+  total_cost: number;        // = quantity x unit_cost  (invoice amount; bonus is FREE)
 }
 
 interface PurchaseOrder {
@@ -70,6 +72,7 @@ export default function PurchaseScreen({ navigation }: Props) {
   const [referenceNumber, setReferenceNumber] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [purchaseQuantity, setPurchaseQuantity] = useState('');
+  const [bonusQuantity, setBonusQuantity] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const theme = useTheme();
   const { sp, fs, lo } = useResponsiveTheme();
@@ -99,6 +102,7 @@ export default function PurchaseScreen({ navigation }: Props) {
     setSelectedProduct(product);
     setUnitCost(product.cost.toString());
     setPurchaseQuantity('');
+    setBonusQuantity('');
     setDialogVisible(true);
   };
 
@@ -109,10 +113,15 @@ export default function PurchaseScreen({ navigation }: Props) {
     }
 
     const quantity = parseInt(purchaseQuantity);
+    const bonus = parseInt(bonusQuantity || '0') || 0;
     const cost = parseFloat(unitCost);
 
     if (quantity <= 0 || cost <= 0) {
       Alert.alert('Error', 'Quantity and cost must be greater than 0');
+      return;
+    }
+    if (bonus < 0) {
+      Alert.alert('Error', 'Bonus quantity cannot be negative');
       return;
     }
 
@@ -125,8 +134,9 @@ export default function PurchaseScreen({ navigation }: Props) {
           ? {
               ...item,
               quantity: item.quantity + quantity,
+              bonus_quantity: (item.bonus_quantity || 0) + bonus,
               unit_cost: cost,
-              total_cost: (item.quantity + quantity) * cost
+              total_cost: (item.quantity + quantity) * cost  // invoice = paid qty x cost (bonus excluded)
             }
           : item
       ));
@@ -138,8 +148,9 @@ export default function PurchaseScreen({ navigation }: Props) {
         product_code: selectedProduct.code,
         product_name: selectedProduct.name,
         quantity: quantity,
+        bonus_quantity: bonus,
         unit_cost: cost,
-        total_cost: quantity * cost,
+        total_cost: quantity * cost,  // invoice = paid qty x cost (bonus excluded)
       };
       setPurchaseItems([...purchaseItems, newItem]);
     }
@@ -147,6 +158,7 @@ export default function PurchaseScreen({ navigation }: Props) {
     setDialogVisible(false);
     setSelectedProduct(null);
     setPurchaseQuantity('');
+    setBonusQuantity('');
     setUnitCost('');
   };
 
@@ -246,13 +258,13 @@ export default function PurchaseScreen({ navigation }: Props) {
         );
         const purchaseId = purchaseResult.lastInsertRowId;
 
-        // Step 4: Insert purchase_details for each item
+        // Step 4: Insert purchase_details for each item — including bonus_quantity (free units from supplier)
         for (const item of purchaseItems) {
           await db.runAsync(
             `INSERT INTO purchase_details (
               purchase_id, product_id, product_code, product_name,
-              quantity_ordered, quantity_received, unit_cost, total_amount
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              quantity_ordered, quantity_received, bonus_quantity, unit_cost, total_amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               purchaseId,
               item.product_id,
@@ -260,6 +272,7 @@ export default function PurchaseScreen({ navigation }: Props) {
               item.product_name,
               item.quantity,
               item.quantity,
+              item.bonus_quantity || 0,
               item.unit_cost,
               item.total_cost
             ]
@@ -285,34 +298,58 @@ export default function PurchaseScreen({ navigation }: Props) {
           ]
         );
 
-        // Step 6: Update product quantities and record inventory movements
+        // Step 6: Update product quantities and record inventory movements using AVCO (Moving Average Cost).
+        //
+        //   - Invoice money for this delivery  = item.quantity x item.unit_cost   (already in total_cost)
+        //   - Physical units received          = item.quantity + item.bonus_quantity   (paid + free)
+        //   - Effective per-selling-unit cost  = invoice_money / (physical_units * conversion_factor)
+        //
+        // The bonus is FREE from the supplier — it doesn't bill, doesn't increase AP, but it DOES
+        // increase stock and LOWERS the rolling AVCO because the same money buys more units.
         for (const item of purchaseItems) {
-          // Get current stock and conversion factor for multi-unit support
-          const currentProduct = await db.getFirstAsync<{ stock_quantity: number; conversion_factor: number }>(
-            'SELECT stock_quantity, COALESCE(conversion_factor, 1) as conversion_factor FROM products WHERE id = ?',
+          // Get current stock, current AVCO, and conversion factor BEFORE this layer is added
+          const currentProduct = await db.getFirstAsync<{ stock_quantity: number; cost: number; conversion_factor: number }>(
+            'SELECT stock_quantity, cost, COALESCE(conversion_factor, 1) as conversion_factor FROM products WHERE id = ?',
             [item.product_id]
           );
           const quantityBefore = currentProduct?.stock_quantity || 0;
+          const currentAvco = currentProduct?.cost || 0;
           const conversionFactor = currentProduct?.conversion_factor || 1;
 
-          // Convert purchase quantity to selling units
-          const sellingQty = item.quantity * conversionFactor;
-          const quantityAfter = quantityBefore + sellingQty;
-          const totalValue = item.quantity * item.unit_cost;
+          const paidPurchaseQty = item.quantity;
+          const bonusPurchaseQty = item.bonus_quantity || 0;
+          const totalPurchaseQty = paidPurchaseQty + bonusPurchaseQty;
 
-          // Cost per selling unit
-          const costPerSellingUnit = item.unit_cost / conversionFactor;
+          // Total physical units arriving, in selling units
+          const totalSellingQty = totalPurchaseQty * conversionFactor;
+          const quantityAfter = quantityBefore + totalSellingQty;
 
-          // Update stock quantity (in selling units) and cost (per selling unit)
-          await db.runAsync(
-            'UPDATE products SET stock_quantity = ?, cost = ? WHERE id = ?',
-            [quantityAfter, costPerSellingUnit, item.product_id]
+          // Invoice value = what we owe the supplier (PAID units only — bonus is free)
+          const invoiceMoney = paidPurchaseQty * item.unit_cost;
+
+          // Effective cost per selling unit — spread the paid money across ALL physical units
+          const effectiveCostPerSellingUnit = totalSellingQty > 0
+            ? invoiceMoney / totalSellingQty
+            : (item.unit_cost / conversionFactor);
+
+          // Compute new AVCO by weighted-average blending with prior stock
+          const newAvco = roundAvco(
+            computeNewAvco(quantityBefore, currentAvco, totalSellingQty, effectiveCostPerSellingUnit)
           );
 
-          // Record inventory movement in selling units
-          const notes = conversionFactor > 1
-            ? `Purchase from ${supplierName} - ${referenceNumber} (${item.quantity} x ${conversionFactor} = ${sellingQty})`
-            : `Purchase from ${supplierName} - ${referenceNumber}`;
+          // Update stock quantity (in selling units) and AVCO cost
+          await db.runAsync(
+            'UPDATE products SET stock_quantity = ?, cost = ? WHERE id = ?',
+            [quantityAfter, newAvco, item.product_id]
+          );
+
+          // Build movement note describing the math
+          let notes = `Purchase from ${supplierName} - ${referenceNumber}`;
+          if (bonusPurchaseQty > 0) {
+            notes += ` (${paidPurchaseQty} paid + ${bonusPurchaseQty} bonus = ${totalPurchaseQty}${conversionFactor > 1 ? ' x ' + conversionFactor + ' = ' + totalSellingQty + ' units' : ' units'} @ effective PHP ${effectiveCostPerSellingUnit.toFixed(4)}/unit)`;
+          } else if (conversionFactor > 1) {
+            notes += ` (${paidPurchaseQty} x ${conversionFactor} = ${totalSellingQty})`;
+          }
 
           await db.runAsync(
             `INSERT INTO inventory_movements (
@@ -325,11 +362,11 @@ export default function PurchaseScreen({ navigation }: Props) {
               item.product_code,
               item.product_name,
               'IN',
-              sellingQty,
+              totalSellingQty,
               quantityBefore,
               quantityAfter,
-              costPerSellingUnit,
-              totalValue,
+              effectiveCostPerSellingUnit,
+              invoiceMoney,
               'PURCHASE',
               purchaseId,
               referenceNumber,
@@ -559,7 +596,7 @@ export default function PurchaseScreen({ navigation }: Props) {
                 </Paragraph>
 
                 <TextInput
-                  label="Quantity to Purchase"
+                  label="Quantity to Purchase (paid)"
                   value={purchaseQuantity}
                   onChangeText={setPurchaseQuantity}
                   mode="outlined"
@@ -576,10 +613,37 @@ export default function PurchaseScreen({ navigation }: Props) {
                   style={styles.dialogInput}
                 />
 
+                <TextInput
+                  label="Free / Bonus Qty (optional)"
+                  value={bonusQuantity}
+                  onChangeText={setBonusQuantity}
+                  mode="outlined"
+                  keyboardType="numeric"
+                  placeholder="0"
+                  style={styles.dialogInput}
+                />
+                <Paragraph style={{ fontSize: 11, color: '#666', marginTop: -4, marginBottom: 8 }}>
+                  Free items from supplier — added to stock but NOT billed. Lowers average cost.
+                </Paragraph>
+
                 {purchaseQuantity && unitCost && (
-                  <Paragraph style={styles.totalCostPreview}>
-                    Total Cost: ₱{(parseInt(purchaseQuantity) * parseFloat(unitCost)).toFixed(2)}
-                  </Paragraph>
+                  <>
+                    <Paragraph style={styles.totalCostPreview}>
+                      Invoice Total: ₱{(parseInt(purchaseQuantity) * parseFloat(unitCost)).toFixed(2)}
+                    </Paragraph>
+                    {parseInt(bonusQuantity || '0') > 0 && (() => {
+                      const paid = parseInt(purchaseQuantity);
+                      const bonus = parseInt(bonusQuantity || '0');
+                      const cost = parseFloat(unitCost);
+                      const totalUnits = paid + bonus;
+                      const effective = totalUnits > 0 ? (paid * cost) / totalUnits : cost;
+                      return (
+                        <Paragraph style={{ fontSize: 12, color: '#388E3C', marginTop: 4 }}>
+                          Total units received: {totalUnits} ({paid} paid + {bonus} free) — Effective AVCO cost: ₱{effective.toFixed(4)} per unit
+                        </Paragraph>
+                      );
+                    })()}
+                  </>
                 )}
               </>
             )}

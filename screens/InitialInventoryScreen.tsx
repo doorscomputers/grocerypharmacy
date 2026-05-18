@@ -187,17 +187,24 @@ export default function InitialInventoryScreen({ navigation }: Props) {
 
           // Only create inventory movement if quantity > 0
           if (item.initial_quantity > 0) {
+            const totalValue = item.initial_quantity * item.unit_cost;
             await db.runAsync(
               `INSERT INTO inventory_movements (
-                product_id, movement_type, quantity, reference_type,
-                notes, created_by
-              ) VALUES (?, ?, ?, ?, ?, ?)`,
+                product_id, movement_type, quantity,
+                quantity_before, quantity_after,
+                unit_cost, total_value,
+                reference_type, notes, created_by
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 item.product_id,
                 'IN',
                 item.initial_quantity,
-                'MANUAL_ADJUSTMENT',
-                'Initial inventory setup',
+                0,
+                item.initial_quantity,
+                item.unit_cost,
+                totalValue,
+                'BEGINNING_BALANCE',
+                `Beginning inventory - AVCO seed at PHP ${item.unit_cost.toFixed(4)} per unit`,
                 1 // Would get from user context
               ]
             );

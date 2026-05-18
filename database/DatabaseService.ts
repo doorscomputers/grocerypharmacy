@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { verifyPassword } from '../utils/passwordHash';
 import { getPhilippineDateTimeString, getPhilippineDateString, getPhilippineTimeString } from '../utils/dateTime';
+import { computeNewAvco, roundAvco } from './avco';
 import {
   initializeDatabase,
   getNextInvoiceNumber,
@@ -728,11 +729,20 @@ export class DatabaseService {
         const isReturn = itemType === 'return';
         if (isReturn) hasReturnItems = true;
 
+        // AVCO snapshot: read current moving average cost from products and freeze it onto this line.
+        // Once written, this value is IMMUTABLE — never recomputed on re-read. This stability is what
+        // lets the COGS report stay accurate even after later purchases shift the rolling AVCO.
+        const costRow = await db.getFirstAsync<{ cost: number }>(
+          'SELECT cost FROM products WHERE id = ?',
+          [item.product_id]
+        );
+        const unitCostSnapshot = costRow && costRow.cost != null ? roundAvco(costRow.cost) : null;
+
         await db.runAsync(
           `INSERT INTO transaction_items (
             transaction_id, product_id, product_code, product_name,
-            quantity, unit_price, discount_amount, tax_amount, total_amount, price_type, item_type
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            quantity, unit_price, discount_amount, tax_amount, total_amount, price_type, item_type, unit_cost
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             transactionId,
             item.product_id,
@@ -744,7 +754,8 @@ export class DatabaseService {
             item.tax_amount,
             item.total_amount,
             item.price_type || 'retail',
-            itemType
+            itemType,
+            unitCostSnapshot
           ]
         );
 
@@ -2497,6 +2508,7 @@ export class DatabaseService {
     items: Array<{
       product_id: number;
       quantity_received: number;
+      bonus_quantity?: number; // Optional: free/extra units from supplier on THIS receipt
     }>
   ): Promise<void> {
     const db = this.getDatabase();
@@ -2509,49 +2521,81 @@ export class DatabaseService {
           [purchaseId]
         );
 
-        // Update purchase details with received quantities
+        // Update purchase details with received quantities and accumulate bonus quantity (if any)
         for (const item of items) {
           await db.runAsync(
             'UPDATE purchase_details SET quantity_received = quantity_received + ? WHERE purchase_id = ? AND product_id = ?',
             [item.quantity_received, purchaseId, item.product_id]
           );
+          if (item.bonus_quantity && item.bonus_quantity > 0) {
+            await db.runAsync(
+              'UPDATE purchase_details SET bonus_quantity = COALESCE(bonus_quantity, 0) + ? WHERE purchase_id = ? AND product_id = ?',
+              [item.bonus_quantity, purchaseId, item.product_id]
+            );
+          }
 
-          // Update product stock and cost
-          const purchaseDetail = await db.getFirstAsync<any>(
+          // Update product stock and cost — supports supplier bonuses (free/extra units).
+          // Invoice total = quantity_received x unit_cost  (UNCHANGED — what we owe the supplier).
+          // Stock + AVCO use total physical units received THIS RECEIPT = quantity_received + bonus_quantity.
+          // Effective per-unit cost for AVCO blending = invoice_amount / total_physical_units.
+          // IMPORTANT: use the per-receipt deltas (item.quantity_received, item.bonus_quantity), NOT the
+          // accumulated totals on the PO row — partial receipts get their own AVCO update each time.
+          const purchaseDetail = await db.getFirstAsync<{ unit_cost: number }>(
             'SELECT unit_cost FROM purchase_details WHERE purchase_id = ? AND product_id = ?',
             [purchaseId, item.product_id]
           );
 
           if (purchaseDetail) {
-            // Get product's conversion factor for multi-unit support
-            const product = await db.getFirstAsync<{ conversion_factor: number }>(
-              'SELECT COALESCE(conversion_factor, 1) as conversion_factor FROM products WHERE id = ?',
+            // Get product's conversion factor, current stock and current AVCO BEFORE the IN movement
+            const product = await db.getFirstAsync<{ conversion_factor: number; stock_quantity: number; cost: number }>(
+              'SELECT COALESCE(conversion_factor, 1) as conversion_factor, stock_quantity, cost FROM products WHERE id = ?',
               [item.product_id]
             );
             const conversionFactor = product?.conversion_factor || 1;
+            const currentQty = product?.stock_quantity || 0;
+            const currentAvco = product?.cost || 0;
 
-            // Convert purchase quantity to selling units
-            const sellingQty = item.quantity_received * conversionFactor;
+            const paidPurchaseQty = item.quantity_received;
+            const bonusPurchaseQty = Number(item.bonus_quantity) || 0;
+            const totalPurchaseQty = paidPurchaseQty + bonusPurchaseQty;
 
-            // Record inventory movement in selling units
+            // Convert total physical purchase qty to selling units (stock + AVCO denominator)
+            const totalSellingQty = totalPurchaseQty * conversionFactor;
+            // Invoice money for this delivery (what the supplier billed for the paid units only)
+            const invoiceMoney = paidPurchaseQty * purchaseDetail.unit_cost;
+            // Effective per-selling-unit cost: spread the paid invoice across ALL physical units (paid + free)
+            const effectiveCostPerSellingUnit = totalSellingQty > 0
+              ? invoiceMoney / totalSellingQty
+              : (purchaseDetail.unit_cost / conversionFactor);
+
+            // Build a clear note describing the math
+            let movementNote = `Purchase receiving - PO #${purchase?.purchase_number}`;
+            if (bonusPurchaseQty > 0) {
+              movementNote += ` (${paidPurchaseQty} paid + ${bonusPurchaseQty} bonus = ${totalPurchaseQty} ${conversionFactor > 1 ? 'x ' + conversionFactor + ' = ' + totalSellingQty + ' units' : 'units'} @ effective PHP ${effectiveCostPerSellingUnit.toFixed(4)}/unit)`;
+            } else if (conversionFactor > 1) {
+              movementNote += ` (${paidPurchaseQty} x ${conversionFactor} = ${totalSellingQty})`;
+            }
+
+            // Record inventory movement in selling units (this updates stock_quantity)
             await this.recordInventoryMovement({
               product_id: item.product_id,
               movement_type: 'IN',
-              quantity: sellingQty,
+              quantity: totalSellingQty,
               reference_type: 'PURCHASE',
               reference_id: purchaseId,
               reference_number: purchase?.purchase_number,
-              notes: conversionFactor > 1
-                ? `Purchase receiving - PO #${purchase?.purchase_number} (${item.quantity_received} x ${conversionFactor} = ${sellingQty})`
-                : `Purchase receiving - PO #${purchase?.purchase_number}`,
+              notes: movementNote,
               created_by: receivedBy
             });
 
-            // Update product cost per selling unit
-            const costPerSellingUnit = purchaseDetail.unit_cost / conversionFactor;
+            // Update product cost using Perpetual Weighted Average (Moving Average / AVCO)
+            // Formula: new_avco = (current_qty x current_avco + incoming_qty x incoming_cost) / (current_qty + incoming_qty)
+            const newAvco = roundAvco(
+              computeNewAvco(currentQty, currentAvco, totalSellingQty, effectiveCostPerSellingUnit)
+            );
             await db.runAsync(
               'UPDATE products SET cost = ? WHERE id = ?',
-              [costPerSellingUnit, item.product_id]
+              [newAvco, item.product_id]
             );
           }
         }
@@ -5751,11 +5795,29 @@ export class DatabaseService {
 
       // Insert return items
       for (const item of returnData.items) {
+        // AVCO COGS reversal: prefer the ORIGINAL sale's unit_cost so the return reverses at
+        // the exact cost the sale booked. Fall back to current products.cost if the original
+        // line is pre-AVCO (NULL unit_cost).
+        const originalCostRow = await db.getFirstAsync<{ unit_cost: number | null }>(
+          `SELECT unit_cost FROM transaction_items
+           WHERE transaction_id = ? AND product_id = ?
+           ORDER BY id ASC LIMIT 1`,
+          [returnData.original_transaction_id, item.product_id]
+        );
+        let returnUnitCost: number | null = originalCostRow?.unit_cost ?? null;
+        if (returnUnitCost == null) {
+          const fallbackRow = await db.getFirstAsync<{ cost: number }>(
+            'SELECT cost FROM products WHERE id = ?',
+            [item.product_id]
+          );
+          returnUnitCost = fallbackRow && fallbackRow.cost != null ? roundAvco(fallbackRow.cost) : null;
+        }
+
         await db.runAsync(
           `INSERT INTO sales_return_items (
             sales_return_id, product_id, product_code, product_name,
-            quantity, unit_price, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            quantity, unit_price, total_amount, unit_cost
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             returnId,
             item.product_id,
@@ -5763,7 +5825,8 @@ export class DatabaseService {
             item.product_name,
             item.quantity,
             item.unit_price,
-            item.total_amount
+            item.total_amount,
+            returnUnitCost
           ]
         );
 
@@ -9095,6 +9158,229 @@ export class DatabaseService {
       console.error('[DatabaseService] Error getting eSales report data:', error);
       throw error;
     }
+  }
+
+  // Count of active products that have stock on hand but no AVCO cost seeded yet.
+  // Used by the Dashboard "Set Beginning Inventory" warning banner.
+  public async getUnseededInventoryCount(): Promise<number> {
+    const db = this.getDatabase();
+    try {
+      const row = await db.getFirstAsync<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM products
+         WHERE is_active = 1
+           AND stock_quantity > 0
+           AND (cost IS NULL OR cost <= 0)`
+      );
+      return row?.c || 0;
+    } catch (e) {
+      console.warn('getUnseededInventoryCount failed', e);
+      return 0;
+    }
+  }
+
+  // ========================================
+  // COGS / GROSS PROFIT REPORT (Perpetual Moving Average Cost / AVCO)
+  // ========================================
+  // Cost flow:
+  //   1. Beginning inventory (InitialInventoryScreen) seeds products.cost as the AVCO anchor.
+  //   2. Each purchase receiving updates products.cost via the weighted-average formula
+  //      (see computeNewAvco in database/avco.ts).
+  //   3. Each sale snapshots products.cost into transaction_items.unit_cost — immutable.
+  //   4. Returns reverse COGS using the original sale's snapshot when available.
+  //
+  // Pre-AVCO sales (transactions made before the unit_cost column existed) have NULL unit_cost.
+  // Those are EXCLUDED from COGS calculations but their revenue is still reported and a banner
+  // tells the user how much revenue is missing cost data.
+
+  public async getCogsReport(
+    startDate: string,
+    endDate: string
+  ): Promise<{
+    summary: {
+      revenue: number;
+      cogs: number;
+      gross_profit: number;
+      gross_margin_pct: number;
+      transaction_count: number;
+      pre_avco_revenue: number;
+      avco_start_date: string | null;
+    };
+    by_period: Array<{ period: string; revenue: number; cogs: number; gross_profit: number; gross_margin_pct: number }>;
+    by_product: Array<{ product_id: number; product_code: string; product_name: string; qty: number; revenue: number; cogs: number; gross_profit: number; gross_margin_pct: number }>;
+    by_category: Array<{ category_id: number | null; category_name: string; revenue: number; cogs: number; gross_profit: number; gross_margin_pct: number }>;
+  }> {
+    const db = this.getDatabase();
+
+    // Helper to compute gross margin %
+    const marginPct = (revenue: number, profit: number): number => (revenue > 0 ? (profit / revenue) * 100 : 0);
+
+    // ---------- TRANSACTION ITEMS (sales + within-transaction returns) ----------
+    // item_type 'return' lines (BO/exchange) reverse both revenue and COGS within the same transaction.
+    // Rows with NULL unit_cost are pre-AVCO — we count their revenue but contribute 0 to COGS.
+    const tiRows = await db.getAllAsync<any>(
+      `SELECT
+         date(t.transaction_date) AS period,
+         ti.product_id,
+         ti.product_code,
+         ti.product_name,
+         CASE WHEN COALESCE(ti.item_type, 'sale') = 'return' THEN -1 ELSE 1 END AS sign,
+         ti.quantity AS qty,
+         ti.total_amount AS line_amount,
+         ti.unit_cost
+       FROM transaction_items ti
+       JOIN transactions t ON t.id = ti.transaction_id
+       WHERE t.status = 'COMPLETED'
+         AND t.transaction_date >= ?
+         AND t.transaction_date <= ?`,
+      [startDate, endDate]
+    );
+
+    // ---------- SALES RETURNS (separate post-sale returns) ----------
+    const srRows = await db.getAllAsync<any>(
+      `SELECT
+         date(sr.return_date) AS period,
+         sri.product_id,
+         sri.product_code,
+         sri.product_name,
+         sri.quantity AS qty,
+         sri.total_amount AS line_amount,
+         sri.unit_cost
+       FROM sales_return_items sri
+       JOIN sales_returns sr ON sr.id = sri.sales_return_id
+       WHERE sr.return_date >= ?
+         AND sr.return_date <= ?`,
+      [startDate, endDate]
+    );
+
+    // ---------- TRANSACTION COUNT ----------
+    const txCountRow = await db.getFirstAsync<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM transactions
+       WHERE status = 'COMPLETED'
+         AND transaction_date >= ?
+         AND transaction_date <= ?`,
+      [startDate, endDate]
+    );
+    const transaction_count = txCountRow?.c || 0;
+
+    // ---------- PRODUCT -> CATEGORY MAP ----------
+    const catRows = await db.getAllAsync<any>(
+      `SELECT p.id AS product_id, c.id AS category_id, COALESCE(c.name, 'Uncategorized') AS category_name
+       FROM products p
+       LEFT JOIN categories c ON c.id = p.category_id`
+    );
+    const productCategory = new Map<number, { id: number | null; name: string }>();
+    for (const r of catRows) {
+      productCategory.set(r.product_id, { id: r.category_id ?? null, name: r.category_name });
+    }
+
+    // ---------- AVCO start date ----------
+    const startRow = await db.getFirstAsync<{ d: string | null }>(
+      `SELECT MIN(created_at) AS d FROM inventory_movements WHERE reference_type = 'BEGINNING_BALANCE'`
+    );
+    const avco_start_date = startRow?.d || null;
+
+    // ---------- Aggregate ----------
+    let revenue = 0;
+    let cogs = 0;
+    let pre_avco_revenue = 0;
+
+    const periodMap = new Map<string, { revenue: number; cogs: number }>();
+    const productMap = new Map<number, { product_code: string; product_name: string; qty: number; revenue: number; cogs: number }>();
+    const categoryMap = new Map<string, { category_id: number | null; category_name: string; revenue: number; cogs: number }>();
+
+    const addRow = (period: string, productId: number, productCode: string, productName: string, signedQty: number, signedAmount: number, signedCogs: number, isPreAvco: boolean) => {
+      revenue += signedAmount;
+      cogs += signedCogs;
+      if (isPreAvco) pre_avco_revenue += signedAmount;
+
+      const p = periodMap.get(period) || { revenue: 0, cogs: 0 };
+      p.revenue += signedAmount;
+      p.cogs += signedCogs;
+      periodMap.set(period, p);
+
+      const pr = productMap.get(productId) || { product_code: productCode, product_name: productName, qty: 0, revenue: 0, cogs: 0 };
+      pr.qty += signedQty;
+      pr.revenue += signedAmount;
+      pr.cogs += signedCogs;
+      productMap.set(productId, pr);
+
+      const catInfo = productCategory.get(productId) || { id: null, name: 'Uncategorized' };
+      const catKey = catInfo.id != null ? `c${catInfo.id}` : 'cnull';
+      const c = categoryMap.get(catKey) || { category_id: catInfo.id, category_name: catInfo.name, revenue: 0, cogs: 0 };
+      c.revenue += signedAmount;
+      c.cogs += signedCogs;
+      categoryMap.set(catKey, c);
+    };
+
+    for (const r of tiRows) {
+      const sign = Number(r.sign) || 1;
+      const qty = (Number(r.qty) || 0) * sign;
+      const amount = (Number(r.line_amount) || 0) * sign;
+      const hasCost = r.unit_cost != null;
+      const lineCogs = hasCost ? qty * Number(r.unit_cost) : 0;
+      addRow(r.period, r.product_id, r.product_code, r.product_name, qty, amount, lineCogs, !hasCost);
+    }
+
+    for (const r of srRows) {
+      // Sales returns are always reversals
+      const qty = -(Number(r.qty) || 0);
+      const amount = -(Number(r.line_amount) || 0);
+      const hasCost = r.unit_cost != null;
+      const lineCogs = hasCost ? qty * Number(r.unit_cost) : 0;
+      addRow(r.period, r.product_id, r.product_code, r.product_name, qty, amount, lineCogs, !hasCost);
+    }
+
+    const gross_profit = revenue - cogs;
+    const gross_margin_pct = marginPct(revenue, gross_profit);
+
+    const by_period = Array.from(periodMap.entries())
+      .map(([period, v]) => ({
+        period,
+        revenue: v.revenue,
+        cogs: v.cogs,
+        gross_profit: v.revenue - v.cogs,
+        gross_margin_pct: marginPct(v.revenue, v.revenue - v.cogs),
+      }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+
+    const by_product = Array.from(productMap.entries())
+      .map(([product_id, v]) => ({
+        product_id,
+        product_code: v.product_code,
+        product_name: v.product_name,
+        qty: v.qty,
+        revenue: v.revenue,
+        cogs: v.cogs,
+        gross_profit: v.revenue - v.cogs,
+        gross_margin_pct: marginPct(v.revenue, v.revenue - v.cogs),
+      }))
+      .sort((a, b) => b.gross_profit - a.gross_profit);
+
+    const by_category = Array.from(categoryMap.values())
+      .map(v => ({
+        category_id: v.category_id,
+        category_name: v.category_name,
+        revenue: v.revenue,
+        cogs: v.cogs,
+        gross_profit: v.revenue - v.cogs,
+        gross_margin_pct: marginPct(v.revenue, v.revenue - v.cogs),
+      }))
+      .sort((a, b) => b.gross_profit - a.gross_profit);
+
+    return {
+      summary: {
+        revenue,
+        cogs,
+        gross_profit,
+        gross_margin_pct,
+        transaction_count,
+        pre_avco_revenue,
+        avco_start_date,
+      },
+      by_period,
+      by_product,
+      by_category,
+    };
   }
 
   // ========================================

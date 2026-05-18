@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "IgoroTech POS",
-    "slug": "igorotech-pos",
+    "slug": "grocerypharmacy",
     "version": "1.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -64,9 +64,7 @@
       "expo-mail-composer"
     ],
     "extra": {
-      "eas": {
-        "projectId": "e5fcbeed-7753-4414-bbe5-a7afd38643e7"
-      }
+      "eas": {}
     },
     "owner": "romanrapido"
   }

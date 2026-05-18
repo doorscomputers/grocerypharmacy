@@ -125,6 +125,8 @@ export interface DatabaseSchema {
     tax_amount: number;
     total_amount: number;
     price_type: 'retail' | 'wholesale'; // Price type used for this item
+    item_type?: 'sale' | 'return'; // BO/return support
+    unit_cost?: number | null; // AVCO snapshot at time of sale (immutable). NULL for pre-AVCO historical rows.
     created_at: string;
   };
 
@@ -328,6 +330,7 @@ export interface DatabaseSchema {
     product_name: string;
     quantity_ordered: number;
     quantity_received: number;
+    bonus_quantity?: number; // Free / extra units from supplier (e.g. "buy 10, get 1 free"). Affects stock and AVCO but NOT invoice total.
     unit_cost: number;
     discount_amount: number;
     tax_amount: number;
@@ -554,6 +557,7 @@ export interface DatabaseSchema {
     quantity: number;
     unit_price: number;
     total_amount: number;
+    unit_cost?: number | null; // AVCO cost snapshot for COGS reversal (mirrors original sale's unit_cost when available)
     created_at: string;
   };
 
@@ -1034,6 +1038,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       total_amount DECIMAL(10,2) NOT NULL,
       price_type TEXT DEFAULT 'retail',
       item_type TEXT DEFAULT 'sale',
+      unit_cost DECIMAL(12,4) DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products (id)
@@ -1048,6 +1053,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
   // Add item_type column to transaction_items for existing databases (BO/return support)
   try {
     await db.execAsync(`ALTER TABLE transaction_items ADD COLUMN item_type TEXT DEFAULT 'sale';`);
+  } catch (e) { /* Column may already exist */ }
+
+  // Add unit_cost column to transaction_items for AVCO cost-at-sale snapshot (Perpetual Moving Average Cost)
+  try {
+    await db.execAsync(`ALTER TABLE transaction_items ADD COLUMN unit_cost DECIMAL(12,4) DEFAULT NULL;`);
   } catch (e) { /* Column may already exist */ }
 
   await db.execAsync(`
@@ -1553,6 +1563,7 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       product_name TEXT NOT NULL,
       quantity_ordered INTEGER NOT NULL,
       quantity_received INTEGER DEFAULT 0,
+      bonus_quantity REAL DEFAULT 0,
       unit_cost DECIMAL(10,2) NOT NULL,
       discount_amount DECIMAL(10,2) DEFAULT 0,
       tax_amount DECIMAL(10,2) DEFAULT 0,
@@ -1563,6 +1574,12 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       FOREIGN KEY (product_id) REFERENCES products (id)
     );
   `);
+
+  // Migration: add bonus_quantity to purchase_details for existing databases
+  // bonus_quantity tracks free/extra units from supplier — affects stock & AVCO but NEVER the invoice total.
+  try {
+    await db.execAsync(`ALTER TABLE purchase_details ADD COLUMN bonus_quantity REAL DEFAULT 0;`);
+  } catch (e) { /* Column may already exist */ }
 
   // Create supplier_payments table
   await db.execAsync(`
@@ -1932,11 +1949,17 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase) => {
       quantity INTEGER NOT NULL,
       unit_price DECIMAL(10,2) NOT NULL,
       total_amount DECIMAL(10,2) NOT NULL,
+      unit_cost DECIMAL(12,4) DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (sales_return_id) REFERENCES sales_returns (id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products (id)
     );
   `);
+
+  // Add unit_cost to sales_return_items for AVCO COGS reversal on returns
+  try {
+    await db.execAsync(`ALTER TABLE sales_return_items ADD COLUMN unit_cost DECIMAL(12,4) DEFAULT NULL;`);
+  } catch (e) { /* Column may already exist */ }
 
   // Create cash_movements table for cash drawer management
   await db.execAsync(`

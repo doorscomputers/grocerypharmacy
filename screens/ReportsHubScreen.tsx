@@ -39,6 +39,7 @@ export default function ReportsHubScreen({ navigation }: Props) {
       color: '#4CAF50',
       reports: [
         { title: 'Sales Report', description: 'Complete sales with filters & analysis', icon: 'file-chart', screen: 'SalesReport' },
+        { title: 'Cost of Goods Sold', description: 'Revenue, COGS, gross profit and margin (AVCO method)', icon: 'chart-line', screen: 'CostOfGoodsSoldReport' },
         { title: 'Void/Refund/Exchange', description: 'View all voided, refunded & exchanged invoices', icon: 'cash-refund', screen: 'VoidRefundExchangeReport' },
         { title: 'Returns & Refunds Analytics', description: 'Unified returns analysis - BO, refunds, exchanges with product breakdown', icon: 'chart-timeline-variant-shimmer', screen: 'ReturnsAnalyticsReport' },
         { title: 'Sales by Product', description: 'Top selling products report', icon: 'chart-bar', screen: 'SalesReport', params: { initialView: 'products' } },

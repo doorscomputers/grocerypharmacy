@@ -71,6 +71,7 @@ import ResetDataScreen from './screens/ResetDataScreen';
 import PDCTrackingScreen from './screens/PDCTrackingScreen';
 import LicenseGeneratorScreen from './screens/LicenseGeneratorScreen';
 import StockValuationReportScreen from './screens/StockValuationReportScreen';
+import CostOfGoodsSoldReportScreen from './screens/CostOfGoodsSoldReportScreen';
 import ZeroInventoryReportScreen from './screens/ZeroInventoryReportScreen';
 import TopSellingReportScreen from './screens/TopSellingReportScreen';
 import TopCustomersReportScreen from './screens/TopCustomersReportScreen';
@@ -140,6 +141,7 @@ export type RootStackParamList = {
   PDCTracking: undefined;
   LicenseGenerator: undefined;
   StockValuationReport: undefined;
+  CostOfGoodsSoldReport: undefined;
   ZeroInventoryReport: undefined;
   TopSellingReport: undefined;
   TopCustomersReport: undefined;
@@ -648,6 +650,11 @@ function AppNavigator({ theme, trialStatus }: { theme: any; trialStatus: TrialSt
               name="StockValuationReport"
               component={StockValuationReportScreen}
               options={{ title: 'Stock Valuation Report' }}
+            />
+            <Stack.Screen
+              name="CostOfGoodsSoldReport"
+              component={CostOfGoodsSoldReportScreen}
+              options={{ title: 'Cost of Goods Sold Report' }}
             />
             <Stack.Screen
               name="ZeroInventoryReport"
