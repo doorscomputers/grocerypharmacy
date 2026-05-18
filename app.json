@@ -36,7 +36,8 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "package": "com.anonymous.igorotechpos"
     },
@@ -64,7 +65,9 @@
       "expo-mail-composer"
     ],
     "extra": {
-      "eas": {}
+      "eas": {
+        "projectId": "31ce0989-7c8d-4390-ab6c-3ef02ab8d552"
+      }
     },
     "owner": "romanrapido"
   }
